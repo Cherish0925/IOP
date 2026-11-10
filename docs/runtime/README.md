@@ -1,5 +1,7 @@
 # IOP instrument service
 
+[Research episodes / 研究任务记录](episodes.md) · [IOP releases](https://github.com/Cherish0925/IOP/releases)
+
 [Install a host plugin or connect a remote MCP client](../../iop/connect/README.md)
 
 [中文](README.zh-CN.md) · [Architecture](architecture.md) · [HTTP API](http-api.md) · [Device drivers](drivers.md) · [Source](../../src/ai4instruments/iop)

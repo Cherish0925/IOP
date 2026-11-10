@@ -1,5 +1,7 @@
 # IOP 常驻服务
 
+[Research episodes / 研究任务记录](episodes.md) · [IOP releases](https://github.com/Cherish0925/IOP/releases)
+
 [为研究系统安装插件或连接云端 MCP](../../iop/connect/README.zh-CN.md)
 
 [English](README.md) · [服务架构](architecture.zh-CN.md) · [HTTP 接口](http-api.md) · [仪器驱动](drivers.md) · [源码](../../src/ai4instruments/iop)

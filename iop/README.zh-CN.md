@@ -1,10 +1,9 @@
 # IOP Runtime · 仪器运行服务
 
-[**软件总览 · HTML**](overview.html?raw=1) — 0.8.3 的软件结构、实验流程、物理与数字操作、Agent 集成和下载入口。单文件，下载后可离线打开。
 
 [English](README.md) · [下载软件](https://github.com/Cherish0925/IOP/releases/latest) · [桌面与网页](interface.zh-CN.md) · [安装与使用](../docs/runtime/README.zh-CN.md) · [平台配置](platforms.zh-CN.md) · [Agent 接入](agent-setup.zh-CN.md)
 
-**[把研究系统接入 IOP](connect/README.zh-CN.md)** · [中文操作图解](connect/guide.zh-CN.html) · [English guide](connect/guide.en.html)。0.8.5 支持连续实验、批量操作和采集结果归档。
+**[把研究系统接入 IOP](connect/README.zh-CN.md)** · [中文操作图解](connect/guide.zh-CN.html) · [English guide](connect/guide.en.html)。连续实验、批量操作、采集结果和[研究任务记录](../docs/runtime/episodes.md)共用同一个服务。
 
 **让人和 Agent 通过同一个常驻服务使用实验平台。** 服务运行在实验室计算机上，连接实体仪器、计算程序和远端任务服务，执行实验程序，安排串行与并行，保存操作过程和数据。终端、浏览器或 Agent 会话关闭后，已经受理的实验继续运行。
 
@@ -14,7 +13,7 @@ IOP 是仪器操作协议；IOP Runtime 是实现其运行功能的软件。[实
 
 ## 开始使用
 
-下载适合系统的 IOP 0.8.5 软件包并解压。桌面使用运行 `install-desktop.ps1`（Windows）或 `sh install-desktop.sh`（macOS / Linux）；安装后从系统应用菜单打开 **IOP Runtime**。只需要浏览器或服务器运行时，使用 `install.ps1` / `install.sh`。发行包内置 Python、Rust 执行程序及 Runtime／Agent 依赖，核心可离线安装；桌面脚本另行下载图形依赖。
+下载适合系统的 IOP 软件包并解压。桌面使用运行 `install-desktop.ps1`（Windows）或 `sh install-desktop.sh`（macOS / Linux）；安装后从系统应用菜单打开 **IOP Runtime**。只需要浏览器或服务器运行时，使用 `install.ps1` / `install.sh`。发行包内置 Python、Rust 执行程序及 Runtime／Agent 依赖，核心可离线安装；桌面脚本另行下载图形依赖。
 
 | 下载包 | 运行环境 |
 | --- | --- |
