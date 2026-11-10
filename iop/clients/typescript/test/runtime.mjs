@@ -1,0 +1,119 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {spawn, execFileSync} from 'node:child_process';
+import {mkdtemp, readFile, writeFile, rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join, resolve} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {IOP} from '../dist/index.js';
+
+test('TypeScript experiment package calls the running service and streams results', {timeout:30000}, async()=>{
+  const root = fileURLToPath(new URL('../../../../', import.meta.url));
+  const home = await mkdtemp(join(tmpdir(),'iop-typescript-'));
+  const python = process.env.IOP_TEST_PYTHON || 'python3';
+  const env = {...process.env, PYTHONPATH:join(root,'src')};
+  let child, client;
+  try {
+    const program = `import {IOP} from './iop.mjs';
+const client = new IOP(process.env.IOP_ENDPOINT, process.env.IOP_TOKEN);
+const run = client.run(process.env.IOP_RUN_ID);
+const previous = await run.checkpoints();
+if (!previous.main) { await run.checkpoint({next:0}); process.exit(17); }
+const op = await run.invokeRecord('stage','position');
+const result = op.result;
+const episode = await run.beginEpisode('position', {task:{id:'positioning',version:'1'}, observation:result});
+await episode.record({sequence:0,action:'read',observation:result,reward:null,terminated:true,truncated:false,operation_ids:[op.id]});
+if ((await episode.transitions()).transitions.length !== 1) throw Error('Missing episode transition');
+const stream = await run.stream('signal',{format:'uint8',channels:[{name:'sample'}]});
+await stream.append(new Blob([new Uint8Array(4096).fill(7)]),0);
+await stream.append(new Blob([new Uint8Array(4096).fill(7)]),0);
+await run.upload('samples.bin',new Blob([new Uint8Array(1048577).fill(42)]));
+await run.saveResult({angle:result.angle_actual});
+`;
+    await writeFile(join(home,'experiment.mjs'),program);
+    await writeFile(join(home,'iop.mjs'),await readFile(new URL('../dist/index.js', import.meta.url)));
+    execFileSync(python,['-c',`import json,zipfile,sys
+from pathlib import Path
+p=Path(sys.argv[1])
+with zipfile.ZipFile(p/'package.zip','w') as z:
+ z.writestr('package.json',json.dumps({'command':['node','experiment.mjs'],'resume':True}))
+ for name in ('experiment.mjs','iop.mjs'): z.write(p/name,name)
+`,home],{env});
+    child = spawn(python,['-u','-c',`import sys
+from ai4instruments.iop.config import initialize,save_json,home_path
+from ai4instruments.iop.cli import serve
+p=home_path(sys.argv[1]); c=initialize(p,True,0);c['discovery_interval']=0;save_json(p/'config.json',c)
+serve(p)
+`,home],{env,stdio:['ignore','pipe','pipe']});
+    let errors = '';
+    child.stderr.on('data',data=>{errors += data.toString();});
+    const endpoint = await new Promise((resolve,reject)=>{
+      let output = '';
+      child.stdout.on('data',data=>{output += data.toString(); const found=output.match(/http:\/\/127\.0\.0\.1:\d+/);if(found)resolve(found[0]);});
+      child.once('exit',code=>reject(Error('Service exited: '+code+' '+errors)));
+    });
+    const config = JSON.parse(await readFile(join(home,'config.json'),'utf8'));
+    client = new IOP(endpoint,config.token);
+    await client.configureResources({cpu:4});
+    assert.ok((await client.adapters()).some(item=>item.name==='command'));
+    const catalog = await client.instrumentCatalog({model:'SR830'});
+    assert.equal(catalog.total, 1);
+    assert.ok(catalog.profiles[0].operations.includes('read_x'));
+    const run = await client.submitPackage(new Uint8Array(await readFile(join(home,'package.zip'))),{resources:['stage']});
+    assert.equal((await run.wait()).state, 'failed');
+    assert.equal((await run.checkpoints()).main.state.next, 0);
+    assert.equal((await run.resume('next-attempt')).attempt, 2);
+    assert.deepEqual(await run.result(),{angle:0});
+    assert.equal((await (await run.stream('signal')).info()).chunks, 1);
+    const context = await client.context();
+    assert.ok(!('connections' in context.discovery));
+    const history = await client.deviceHistory('stage');
+    const definition = {...history[0].definition, config:{...history[0].definition.config, name:'Translation'}};
+    await client.configureDevice('stage', definition, history[0].revision);
+    const changes = await client.changes(context.cursor);
+    assert.ok(changes.changes.some(e => e.kind === 'device.configured'));
+    await assert.rejects(client.configureDevice('stage', definition, history[0].revision), e => e.code === 'configuration_changed');
+    const external = await client.startExperiment({name:'External scan', resources:['stage'], request_id:'external-scan'});
+    const measured = await external.invokeRecord('stage','position',{}, {requestId:'external-read'});
+    assert.equal(measured.run_id, external.id);
+    const attached = client.run(external.id);
+    assert.equal((await attached.invokeRecord('stage','position',{}, {requestId:'external-read'})).id, measured.id);
+    await attached.upload('position.json', new Blob([JSON.stringify(measured.result)]), undefined, [measured.id]);
+    await attached.saveResult({points:1});
+    await attached.finish();
+    assert.deepEqual(await external.result(), {points:1});
+    assert.equal((await external.operations()).operations.length, 1);
+    const continuous = await client.startExperiment({resources:['stage','aux'],request_id:'continuous'});
+    const steps = [
+      {id:'move',device:'stage',operation:'move_to',arguments:{angle_deg:21}},
+      {id:'read',device:'stage',operation:'position'},
+      {id:'other',device:'aux',operation:'position',after:[]}
+    ];
+    const batch = await continuous.batch(steps,{requestId:'point-21'});
+    assert.equal(batch[1].result.angle_actual,21);
+    assert.deepEqual((await continuous.batch(steps,{requestId:'point-21'})).map(op=>op.id),batch.map(op=>op.id));
+    const acquisition = await continuous.saveAcquisition('point.json',[batch[1].id],{sample:'example'},{accepted:true});
+    const stored = await (await continuous.download(acquisition.id)).json();
+    assert.deepEqual(stored.operations[0].result,batch[1].result);
+    await continuous.finish();
+    await client.release('stage');
+    await assert.rejects(client.invoke('stage','position'),e=>e.code==='device_released');
+    await client.reconnect('stage');
+    assert.deepEqual((await external.files()).find(f => f.name === 'output/position.json').operation_ids, [measured.id]);
+    const file = (await run.files()).find(item=>item.name==='output/samples.bin');
+    assert.equal(file.size,1048577);
+    const response = await run.download(file.id);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    assert.equal(bytes.length,1048577); assert.equal(bytes[bytes.length-1],42);
+    const events=[]; for await (const event of run.watch()) events.push(event);
+    assert.ok(events.some(event=>event.kind==='operation.completed'));
+    assert.ok(events.some(event=>event.kind==='run.completed'));
+  } finally {
+    if (client) await client.request('/v1/shutdown',{}).catch(()=>{});
+    if (child && child.exitCode===null) await new Promise(resolve=>{
+      const timer=setTimeout(()=>child.kill(),3000);
+      child.once('exit',()=>{clearTimeout(timer);resolve();});
+    });
+    await rm(home,{recursive:true,force:true});
+  }
+});

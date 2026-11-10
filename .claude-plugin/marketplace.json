@@ -1,0 +1,13 @@
+{
+  "name": "iop",
+  "owner": {
+    "name": "IOP"
+  },
+  "plugins": [
+    {
+      "name": "iop-lab",
+      "source": "./iop/connect",
+      "description": "IOP laboratory operations and experiment results."
+    }
+  ]
+}

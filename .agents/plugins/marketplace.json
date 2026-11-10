@@ -1,0 +1,20 @@
+{
+  "name": "iop",
+  "interface": {
+    "displayName": "IOP"
+  },
+  "plugins": [
+    {
+      "name": "iop-lab",
+      "source": {
+        "source": "local",
+        "path": "./iop/connect"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

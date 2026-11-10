@@ -1,0 +1,217 @@
+# IOP HTTP API · 0.8.5
+
+[中文安装](README.zh-CN.md) · [Installation](README.md)
+
+Base URL: `http://127.0.0.1:8765`. API bodies are JSON objects. Requests to `/v1/*` include `Authorization: Bearer <config.json token>`. Responses use UTF-8 JSON, except binary file transfers. Errors return `{"error":"message"}` with status 400, 401, 404, 503 or 500. The browser page and `/health` are readable without the token. Maximum JSON request size is 64 MiB.
+
+## Endpoints
+
+| Method | Path | Body / query | Response |
+| --- | --- | --- | --- |
+| GET | `/health` | — | Service name and version |
+| GET | `/v1/ui` | — | Desktop availability and local connection status |
+| POST | `/v1/ui/desktop` | `{"view":"devices"}` | Open a native window on the service computer; local requests only |
+| GET | `/v1/context` | `refresh=true` for a new connection scan | Compact laboratory description: instruments, platforms, drivers, resources and remaining setup |
+| GET | `/v1/schemas/{name}` | `device`, `platform`, `workflow`, `instrument-profile` | Packaged JSON schema |
+| GET | `/v1/adapters` | — | Built-in and installed driver entries |
+| GET | `/v1/resources` | — | Configured capacities and current allocation |
+| POST | `/v1/resources` | `{"capacities":{"cpu":16,"solver":2}}` | Replace named capacities; accepted work must still fit |
+| POST | `/v1/devices/{device_id}/reconnect` | `{}` | Reconnect idle devices sharing a worker |
+| GET | `/v1/status` | — | Active/queued counts, worker limits, service errors, version, hostname, system and uptime |
+| GET | `/v1/devices` | — | Instrument descriptions |
+| GET | `/v1/devices/{device_id}` | — | One instrument description |
+| GET | `/v1/devices/{device_id}/configuration` | — | Saved driver configuration, suitable for export and registration |
+| POST | `/v1/devices/batch` | `{"devices":[...]}` | Per-input index with `device` or `error`; successful entries remain saved |
+| GET / POST | `/v1/instrument-profiles` | Model description for POST | List or save exact manufacturer/model matching and operations |
+| POST | `/v1/devices/{device_id}/identify` | Optional `request_id` | Accepted identity-query run; saves reported identity and model operations |
+| POST | `/v1/discovery/retry` | Optional `key` connection key | Clear retry delay and start shared background discovery |
+| POST | `/v1/discovery` | `{}` | Start or join a background scan; returns cached inventory and `scanning` immediately |
+| POST | `/v1/devices` | Device record | Registered description; persists configuration; identical retries reuse the device |
+| GET | `/v1/discovery` | `cached=true` to reuse the last scan | Current scan, provider availability and registered devices |
+| POST | `/v1/runs` | Workflow below, or `kind: "external"` with `request_id` and optional name/resources/platform | Accepted run record |
+| POST | `/v1/packages` | Package below | Accepted run record |
+| GET | `/v1/runs` | `limit=100&details=false` for compact summaries | Most recent runs first |
+| GET | `/v1/runs/{run_id}` | `details=false` for a compact state | Run; detailed response includes recent `operation_records` |
+| GET | `/v1/runs/{run_id}/operations` | `after=0&limit=200` | `{"operations":[...],"cursor":N}`; ordered operation history |
+| POST | `/v1/runs/{run_id}/operations` | Operation below; optional `wait=0..25` query | Operation in an external experiment or running package; identical request IDs return existing operations |
+| GET | `/v1/operations/{operation_id}` | `wait=0..25` | State, times, result or error |
+| POST | `/v1/runs/{run_id}/batches` | `{"steps":[...],"request_id":"..."}`; optional `wait=0..25` | Batch receipt, completion flag and operation records |
+| GET | `/v1/runs/{run_id}/batches` | `request_id=...&wait=0..25` | Previously accepted batch and current operations |
+| POST | `/v1/runs/{run_id}/acquisitions` | `{"name":"point.json","operation_ids":["op_..."],"conditions":{},"analysis":{}}` | Artifact containing stored results and configuration versions; no new acquisition |
+| POST | `/v1/devices/{device_id}/release` | `{}` | Release idle connections; retain descriptions until explicit reconnection |
+| POST | `/v1/runs/{run_id}/cancel` | `{}` | Current run, cancellation requested |
+| POST | `/v1/runs/{run_id}/finish` | `{}` | Finish an external experiment with no pending operations; release its reservation |
+| GET | `/v1/runs/{run_id}/result` | — | Saved result without operation history |
+| POST | `/v1/runs/{run_id}/result` | `{"result": ...}` | Saved result; run must be running |
+| POST | `/v1/runs/{run_id}/artifacts` | `{"name":"scan.csv","data":"<base64>","operation_ids":["op_..."]}` | Saved output file; optional links must name completed operations in this run |
+| GET | `/v1/runs/{run_id}/artifacts` | — | File records |
+| POST | `/v1/runs/{run_id}/files?name=raw/data.bin` | Binary body and `Content-Length`; optional URL-encoded `operation_ids` JSON array | Stream a file without base64 encoding |
+| GET | `/v1/artifacts/{artifact_id}` | — | File bytes, streamed |
+| GET | `/v1/events` | `after=0&run_id=...&limit=200&wait=25` | `{"events":[...],"cursor":N}` |
+| POST | `/v1/shutdown` | `{}` | `{"stopping":true}` |
+
+`after` is an exclusive event sequence number. Poll using the returned `cursor`; an empty page means no new events. Omit `run_id` for events across the platform. The optional `wait` (0–25 seconds) waits for new events; a terminal run returns immediately. Python and TypeScript watch iterators resume from the returned cursor.
+
+## Continuous experiments
+
+[Python, TypeScript, MCP and CLI usage](external-experiments.md) · [中文](external-experiments.zh-CN.md)
+
+An external run starts without a steps array and stays open between calls. Use `POST /v1/runs` with `kind: "external"` and a stable submission `request_id`, retain the run ID, invoke operations, save outputs and finish explicitly. Checkpoints and explicit continuation after service interruption share the existing endpoints. This path does not start a process in the service.
+
+Batches default to input order. An explicit `after=[]` starts an independent branch. All steps are recorded before execution; physical actions already completed are not rolled back. Reserve related devices for continuity across steps and batches. Reusing the same request ID and normalized steps returns the existing batch.
+
+## Workflow
+
+```json
+{
+  "name": "Polarization point",
+  "project": "polarization-study",
+  "experiment": "angle-response",
+  "request_id": "polarization-point-001",
+  "resources": ["stage", "meter", "optical-path"],
+  "parameters": {},
+  "steps": [
+    {"id":"move","device":"stage","operation":"move_to","arguments":{"angle_deg":15}},
+    {"id":"setup","device":"meter","operation":"configure","arguments":{"exposure_s":0.05}},
+    {"id":"read","device":"meter","operation":"measure","after":["move","setup"]}
+  ]
+}
+```
+
+`steps` contains 1–10,000 uniquely named steps. `after` references earlier dependencies in the graph; the input list need not be topologically sorted. Cycles and missing references are rejected before submission. Step `resources` adds shared resource names to the device's own resources. Submission `resources` retains resources across the entire experiment; a workflow reservation automatically includes all devices in its steps.
+
+The result maps step IDs to driver results. Step arguments follow the corresponding instrument description, including defaults, types, ranges and units.
+
+## Package
+
+```json
+{
+  "name": "Polarization scan",
+  "project": "polarization-study",
+  "resources": ["stage", "meter", "optical-path"],
+  "parameters": {"angles_deg": [0,15,30,45]},
+  "request_id": "polarization-scan-001",
+  "archive": "<base64 ZIP>"
+}
+```
+
+A ZIP has `package.json` and program files at its root. The default command is `["{python}","experiment.py"]`. Maximum expanded size is 128 MiB. The service sets:
+
+| Variable | Meaning |
+| --- | --- |
+| `IOP_ENDPOINT` | This service's HTTP address |
+| `IOP_TOKEN` | Platform connection token |
+| `IOP_RUN_ID` | Current run identifier |
+| `IOP_RUN_DIR` | Absolute output directory |
+| `IOP_PARAMETERS_JSON` | Submitted parameters as JSON |
+
+The working directory contains extracted program files. Save data in `IOP_RUN_DIR`; the service indexes output files when the process ends. `save_file` registers a file immediately. Program stdout, stderr and the original package remain associated with the run. The command runs in the host environment; install required libraries there.
+
+Within a running package, submit an operation:
+
+```json
+{"device":"stage","operation":"move_to","arguments":{"angle_deg":15},"request_id":"point-001-move"}
+```
+
+The response contains `id`, `run_id` and `state`; poll `/v1/operations/{id}`. Programs express dependencies by waiting for results and parallelism by concurrent submissions. A package with a run reservation may only use resources included in that reservation.
+
+## States and repeated requests
+
+Runs: `queued → running → completed`, or `failed`, `cancelled`, `interrupted`. `cancelling` means the service is ending pending/process work and waiting for active driver calls to return. Operations: `queued → running → completed`, or `failed`, `cancelled`, `interrupted`.
+
+A failed operation ends its run and cancels dependent work. Device calls already executing retain their resources until they return. Cancellation requests do not imply that a physical instrument has instantly stopped; the driver implements the instrument's stop/completion behavior.
+
+The same `request_id` with the same submitted definition returns the original record. Reusing it for a different definition returns an error. Package equality includes the uploaded ZIP bytes. Retrying after a network interruption should reuse the original request ID and payload.
+
+After a service restart, queued runs remain queued, while previously started runs become `interrupted`. Completed physical operations are not automatically repeated. `Run.wait(timeout=...)` only limits client waiting; use `cancel()` to request cancellation.
+
+## File records
+
+```json
+{
+  "id": "file_...",
+  "run_id": "run_...",
+  "name": "output/scan.csv",
+  "size": 348,
+  "media_type": "text/csv",
+  "created": "2026-10-22T12:00:00.000000+00:00"
+}
+```
+
+Names are relative to the run directory. Uploaded files go under `output/`; an existing filename is not overwritten. Large outputs can be written directly by a hosted program and downloaded through the streaming endpoint.
+
+## Platforms and native drivers
+
+| Method | Path | Body / result |
+| --- | --- | --- |
+| GET | `/v1/platforms` | Current platform definitions, revisions, missing devices and active runs. |
+| POST | `/v1/platforms/preview` | `{ "definition": { ... } }`; parses a platform without saving or executing it. |
+| POST | `/v1/platforms` | `{ "definition": { ... }, "expected_revision": 0 }`; use current revision for updates. |
+| GET | `/v1/platforms/{id}` | One platform. |
+| GET | `/v1/platforms/{id}/history` | Saved versions, newest first. |
+| POST | `/v1/platforms/{id}/procedures/{name}` | `{ "request_id": "..." }`; submit a configured procedure and return a run. |
+| POST | `/v1/resources/resolve` | `{ "resources": ["..."], "observation": "..." }`; record observed equipment state and release resources retained after a driver interruption. |
+
+Workflow and package submissions accept `platform` and optional `platform_revision`. The selected definition is retained in the run. Device calls must belong to that platform. Platform resources also apply to calls without a platform ID. `GET /v1/status` includes platform count and `resource_holds`.
+
+[Platform configuration](../../iop/platforms.md) · [中文](../../iop/platforms.zh-CN.md) · [Executable drivers](../../iop/drivers.md)
+
+## Quantities and result bindings
+
+`requirements` maps configured resource names to positive integer quantities. It may appear on a driver description, an operation description, a workflow step or a run. Driver, operation and step quantities combine by taking the maximum for each resource. Run-level requirements reserve capacity for the whole experiment; operations consume those reserved quantities without double counting. `resources` continues to name exclusive shared objects and whole devices.
+
+A step's `bindings` maps parameter names to `{ "step": "source-step", "path": ["value", 0] }`. These sources are implicit dependencies. Paths select keys or array indices; an omitted path selects the whole result. Bound arguments are checked before invoking the destination operation.
+
+`operation.progress` events contain `operation_id` and `progress` with `fraction`, `message` and optional driver fields. Progress is also available on the operation record. Completed package operations remain in SQLite; `operation_count` counts all submitted calls while a running package's `operations` list contains only its unfinished calls. Detailed run responses include up to 10,000 recent operation records; use the cursor endpoint for full history.
+
+HTTP 503 indicates that the configured active-work capacity has been reached and includes `retry_after` in seconds. Submission retries should retain their request identifier. Queued work and accepted experiments continue while new work waits at the caller.
+
+The command adapter's operation context and HTTP asynchronous job descriptions are documented in [software extensions](../../iop/software.md). The schemas for [platforms](../../iop/schema/platform.schema.json) and [workflows](../../iop/schema/workflow.schema.json) are shipped with the source and installation archives.
+
+## Instrument setup and efficient reads
+
+An instrument's `id` may be omitted on registration. The service generates and saves it; identical registrations reuse the same driver. `GET /v1/discovery?cached=true` reports the current background scan without starting another. `connections` retains raw interfaces, `groups` combines known aliases, and `summary` separates configurable interfaces from USB inventory. Windows `COMn` and `ASRLn::INSTR` are recognized as the same endpoint. A USB entry alone does not specify the device's command language.
+
+`GET /v1/operations/{id}?wait=25` waits for that operation to finish, or returns its current state after at most 25 seconds. Python and TypeScript clients use this path for calls inside experiment programs; they do not read the experiment's entire event history for each operation.
+
+Use `GET /v1/runs?details=false` and `GET /v1/runs/{id}?details=false` for summaries. Results, operation lists, experiment definitions and full platform definitions are excluded before the response enters the application. Read `/result` and cursor-paged `/operations` only when needed.
+
+## Instrument discovery records
+
+`instruments` contains persistent identity and setup records with `key`, `device_id`, `identity`, `identity_source`, `required`, `status`, `present`, `first_seen`, `last_seen` and `connection_info`. Presence is `true` for observed, `false` for absent from a working source and `null` when unconfirmed. `identification_summary` reports identified/configured counts and incomplete setup. `groups` retains interface aliases; `related_connections` links USB interfaces sharing VID/PID and serial number without merging logical channels.
+
+The list of required fields uses `protocol`, `communication_parameters`, `control_interface`, `driver` and `model_operations`. `GET /v1/context` includes the corresponding `complete_instrument_setup` tasks. Background identity reads are serialized with device operations. Discovery never runs a profile's measurement or output commands.
+
+## Continuing work · 0.8.2
+
+| Method | Path | Input | Response |
+| --- | --- | --- | --- |
+| GET | `/v1/context` | `detail=summary` (default) or `full` | Summary with event cursor and detail URLs, or complete laboratory inventory |
+| GET | `/v1/context/changes` | `after`, `limit`, `wait` | Bounded change summaries and cursor; no measurement arrays |
+| GET | `/v1/context/devices` | `offset`, `limit` | Compact device page and continuation URL |
+| GET | `/v1/devices/{id}/history` | `limit` | Saved definitions, newest revision first |
+| POST | `/v1/devices/{id}/configuration` | `definition`, `expected_revision` | New configuration revision, applied while the instrument is idle |
+| GET | `/v1/runs/{id}/checkpoints` | — | Named program progress, state and revisions |
+| POST | `/v1/runs/{id}/checkpoints` | `name` (default `main`), `state` | Saved progress after this program's instrument operations finish |
+| POST | `/v1/runs/{id}/resume` | `request_id` | Requeue the same run with a new attempt; requires package `resume:true` and saved progress |
+| GET / POST | `/v1/runs/{id}/streams/{name}` | POST: `definition` with `format` | Data description, bytes, chunk count and next sequence |
+| GET | `/v1/runs/{id}/streams/{name}/chunks` | `after=-1`, `limit=100` | Ordered chunk descriptions and cursor |
+| POST | `/v1/runs/{id}/streams/{name}/chunks?sequence=N` | Binary body and `Content-Length` | Saved artifact; an identical retry returns the original artifact |
+
+A chunk sequence starts at zero. A different body at an existing sequence returns `chunk_changed`; a gap returns `chunk_out_of_order` with `next_sequence`. Fetch bytes through `/v1/artifacts/{id}`. Descriptions state formats and units; the service does not infer binary layouts. Transfers read at most 256 KiB at a time outside the scheduler lock.
+
+`GET /v1/devices/{id}` adds `status`: discovery `present` and `last_seen`, latest `communication`, and driver/resource `state`. An available driver is not a measurement of present physical connectivity. Provider results appear during `phase=discovering`; individual identities update during `identifying`.
+
+HTTP errors retain `error` and add `code`. Configuration conflicts return HTTP 409 and `current_revision`; incorrect arguments return HTTP 400 and the operation's parameter descriptions. Python `IOPError` exposes `status`, `code` and `details`; TypeScript exposes the same fields.
+
+A resumable program re-enters its original command and reads its checkpoints. Completed operation request IDs still return their saved results. After an abrupt stop, operations that had started without a result retain affected resources; operations that had not started are cancelled within the interrupted program. Explicit `effect:"observe"` workflows can read affected device state before `/v1/resources/resolve`. Continuation requires the original instrument and platform definitions; restoring an equivalent saved definition is supported. See [continuing experiments](../../iop/continuity.md) and the [example package](../../examples/iop/resumable-acquisition).
+
+## Installed model descriptions and shared buses (0.8.3)
+
+`GET /v1/instrument-catalog` accepts `manufacturer`, `model`, `serial_number`, `firmware`, `id`, `offset`, `limit` (default 50, maximum 200) and `details=true`. It returns `profiles`, `total`, `offset`, `next_offset` and `errors`. Default profile summaries contain matching conditions, operation names, documentation and `source`; detailed records include executable operation definitions. Package sources include the distribution name, version, entry-point resource and JSON filename. No package code executes during this read.
+
+MCP `instrument_profiles` uses this paginated catalogue. The existing `/v1/instrument-profiles` endpoint continues to list complete definitions or save a laboratory description. Installed package resources are read at service startup. See [package format](../../iop/instrument-packages.md).
+
+If equally specific descriptions match, discovery reports `required: ["instrument_profile"]` and `profile_candidates`. Select a description and apply its missing operations through the existing versioned device configuration endpoint. Existing operations retain precedence. Matching within a source tier does not depend on file order.
+
+Shared connection groups include `device_ids`; a singular `id` is present only for one registered instrument. Modbus registration uses both the bus connection and `config.device_id` to identify a device. Operations address that configured unit. One process shares one connection per bus; different devices retain their own response timeouts. Serial bus settings must agree. Independent buses can execute concurrently.
