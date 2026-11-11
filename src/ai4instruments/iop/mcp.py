@@ -6,7 +6,7 @@ import importlib.util
 import sys
 from pathlib import Path
 from typing import Literal, Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 # Arrays longer than this reach an agent as their description; the values stay in the operation's file.
 AGENT_VALUES = 64
@@ -44,9 +44,19 @@ def drop_titles(schema):
                 drop_titles(item)
 
 
+def summary(operation):
+    return {key: operation[key] for key in OVERVIEW_FIELDS if key in operation}
+
+
 def overview(page):
-    return {**page, 'operations': [{key: op[key] for key in OVERVIEW_FIELDS if key in op}
-                                   for op in compact(page['operations'])]}
+    return {**page, 'operations': [summary(op) for op in compact(page['operations'])]}
+
+
+def waiting(wait):
+    wait = float(wait)
+    if not 0 <= wait <= 25:
+        raise ValueError('wait must be between 0 and 25 seconds')
+    return '?' + urlencode({'wait': wait}) if wait else ''
 
 
 def create_server(client, *, http=False):
@@ -186,11 +196,11 @@ def create_server(client, *, http=False):
 
     @tool()
     def invoke_operation(run_id: str, device: str, operation: str, request_id: str,
-                         arguments: dict | None = None) -> dict:
-        """Submit one operation in an external experiment or running program. Returns its operation ID immediately; read experiment for the result before dependent actions. Reuse request_id for an identical retry."""
-        return client.request('/v1/runs/' + quote(run_id, safe='') + '/operations',
-                              {'device':device, 'operation':operation, 'arguments':arguments or {},
-                               'request_id':request_id})
+                         arguments: dict | None = None, wait: float = 0) -> dict:
+        """Submit one operation in an external experiment or running program. With wait up to 25 seconds, the reply includes its result if it finishes in that time; otherwise read operation_result before dependent actions. Reuse request_id for an identical retry."""
+        return summary(compact(client.request('/v1/runs/' + quote(run_id, safe='') + '/operations' + waiting(wait),
+                                              {'device':device, 'operation':operation, 'arguments':arguments or {},
+                                               'request_id':request_id})))
 
     @tool()
     def finish_experiment(run_id: str) -> dict:
@@ -198,10 +208,11 @@ def create_server(client, *, http=False):
         return client.run(run_id).finish()
 
     @tool()
-    def submit_operations(run_id: str, steps: list[dict], request_id: str) -> dict:
-        """Submit a batch within an existing experiment. Steps run in order by default. after=[] starts an independent branch; after=[IDs] joins branches. All steps are accepted together. Returns immediately; read experiment for results."""
-        return compact(client.request('/v1/runs/' + quote(run_id, safe='') + '/batches',
-                                      {'steps':steps, 'request_id':request_id}))
+    def submit_operations(run_id: str, steps: list[dict], request_id: str, wait: float = 0) -> dict:
+        """Submit a batch within an existing experiment. Steps run in order by default. after=[] starts an independent branch; after=[IDs] joins branches. All steps are accepted together. With wait up to 25 seconds, the reply includes results of steps that finish in that time; complete tells whether all did."""
+        batch = client.request('/v1/runs/' + quote(run_id, safe='') + '/batches' + waiting(wait),
+                               {'steps':steps, 'request_id':request_id})
+        return {**batch, 'operations': [summary(op) for op in compact(batch.get('operations', []))]}
 
     @tool()
     def save_acquisition(run_id: str, name: str, operation_ids: list[str],

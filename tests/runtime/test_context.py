@@ -162,6 +162,9 @@ class MCPCase(unittest.TestCase):
                 external = call('start_experiment', {'request_id':'adaptive-scan', 'resources':['stage']})
                 operation = {'run_id':external['id'], 'device':'stage', 'operation':'position', 'request_id':'adaptive-read'}
                 accepted_op = call('invoke_operation', operation)
+                waited = call('invoke_operation', dict(operation, request_id='adaptive-read-waited', wait=5))
+                self.assertEqual((waited['state'], waited['result']['unit']), ('completed', 'deg'))
+                self.assertNotIn('resources', waited)
                 completed_op = self.client.run(external['id']).invoke_record('stage', 'position', request_id='adaptive-read')
                 self.assertEqual(completed_op['id'], accepted_op['id'])
                 saved = call('save_experiment_file', {'run_id':external['id'], 'name':'point.json',
@@ -172,6 +175,10 @@ class MCPCase(unittest.TestCase):
                 submitted = call('submit_operations', {'run_id':external['id'], 'steps':batch_steps, 'request_id':'mcp-batch'})
                 batch = self.client.run(external['id']).batch(batch_steps, request_id='mcp-batch')
                 self.assertEqual(submitted['operations'][0]['id'], batch[0]['id'])
+                waited_batch = call('submit_operations', {'run_id':external['id'], 'steps':batch_steps,
+                                                          'request_id':'mcp-batch-waited', 'wait':5})
+                self.assertTrue(waited_batch['complete'])
+                self.assertEqual([op['result']['unit'] for op in waited_batch['operations']], ['deg', 'deg'])
                 acquired = call('save_acquisition', {'run_id':external['id'], 'name':'acquisition.json',
                     'operation_ids':[batch[-1]['id']], 'analysis':{'accepted':True}})
                 self.assertEqual(acquired['operation_ids'], [batch[-1]['id']])
