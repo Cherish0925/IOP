@@ -439,6 +439,9 @@ def make_driver(record, registry):
     elif name == 'manual':
         from .manual import Manual
         cls = Manual
+    elif name == 'opcua':
+        from .opcua_driver import OPCUA
+        cls = OPCUA
     else:
         module, separator, class_name = name.partition(":")
         if not separator:

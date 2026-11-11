@@ -426,7 +426,7 @@ export function registerDevice(candidate) {
     generatedID = stem + "-" + i;
   const body = modal(
     t("注册仪器或软件", "Register an instrument or software"),
-    `<div class="form-stack"><p class="inline-note">${candidate ? esc(candidate.name || candidate.address) + " · " + esc(candidate.address) : t("选择设备使用的接口，或导入已有的说明文件。", "Select the interface used by the device, or import an existing description.")}</p><div class="form-grid">${field(t("设备 ID", "Device ID"), `<input id="reg-id" value="${esc(generatedID)}" maxlength="80" aria-describedby="reg-id-note"><small id="reg-id-note">${t("自动生成，可修改", "Generated automatically; editable")}</small>`)}${field(t("显示名称", "Display name"), `<input id="reg-name" value="${esc(candidate?.name || "")}" placeholder="${t("例如：信号发生器", "e.g. Signal generator")}">`)}${field(t("驱动与接口", "Driver & interface"), `<select id="reg-driver"><option value="scpi-tcp">SCPI · TCP/IP</option><option value="scpi-serial">SCPI · ${t("串口", "Serial")}</option><option value="scpi-visa">SCPI · VISA</option><option value="modbus-tcp">Modbus · TCP/IP</option><option value="modbus-serial">Modbus · RTU</option><option value="http">HTTP API</option><option value="command">${t("命令行程序", "Command-line program")}</option><option value="process">${t("独立 SDK 进程", "SDK worker process")}</option></select>`)}${field(t("导入仪器说明", "Import description"), '<input type="file" id="reg-import" accept=".json">')}</div><div id="reg-fields" class="form-grid"></div><details class="raw"><summary>${icon("code")}${t("完整仪器说明", "Full instrument description")}</summary><textarea id="reg-json" spellcheck="false"></textarea><div style="padding:10px 15px"><button class="button small" id="reg-use-json">${t("使用此说明注册", "Register this description")}</button></div></details></div><div class="form-actions"><button class="button" id="reg-cancel">${t("取消", "Cancel")}</button><button class="button primary" id="reg-save">${t("注册设备", "Register device")}</button></div>`,
+    `<div class="form-stack"><p class="inline-note">${candidate ? esc(candidate.name || candidate.address) + " · " + esc(candidate.address) : t("选择设备使用的接口，或导入已有的说明文件。", "Select the interface used by the device, or import an existing description.")}</p><div class="form-grid">${field(t("设备 ID", "Device ID"), `<input id="reg-id" value="${esc(generatedID)}" maxlength="80" aria-describedby="reg-id-note"><small id="reg-id-note">${t("自动生成，可修改", "Generated automatically; editable")}</small>`)}${field(t("显示名称", "Display name"), `<input id="reg-name" value="${esc(candidate?.name || "")}" placeholder="${t("例如：信号发生器", "e.g. Signal generator")}">`)}${field(t("驱动与接口", "Driver & interface"), `<select id="reg-driver"><option value="scpi-tcp">SCPI · TCP/IP</option><option value="scpi-serial">SCPI · ${t("串口", "Serial")}</option><option value="scpi-visa">SCPI · VISA</option><option value="modbus-tcp">Modbus · TCP/IP</option><option value="modbus-serial">Modbus · RTU</option><option value="http">HTTP API</option><option value="opcua">OPC UA</option><option value="manual">${t("人工步骤", "Manual steps")}</option><option value="command">${t("命令行程序", "Command-line program")}</option><option value="process">${t("独立 SDK 进程", "SDK worker process")}</option></select>`)}${field(t("导入仪器说明", "Import description"), '<input type="file" id="reg-import" accept=".json">')}</div><div id="reg-fields" class="form-grid"></div><details class="raw"><summary>${icon("code")}${t("完整仪器说明", "Full instrument description")}</summary><textarea id="reg-json" spellcheck="false"></textarea><div style="padding:10px 15px"><button class="button small" id="reg-use-json">${t("使用此说明注册", "Register this description")}</button></div></details></div><div class="form-actions"><button class="button" id="reg-cancel">${t("取消", "Cancel")}</button><button class="button primary" id="reg-save">${t("注册设备", "Register device")}</button></div>`,
     t("仪器说明", "Instrument description"),
   );
   const selected =
@@ -475,10 +475,25 @@ export function registerDevice(candidate) {
                 t("服务地址", "Service URL"),
                 '<input id="reg-url" placeholder="http://192.168.1.20:8000">',
               )
-            : field(
-                t("程序命令（JSON 数组）", "Program command (JSON array)"),
-                `<textarea id="reg-command" style="min-height:80px">${esc(JSON.stringify(candidate?.transport === "command" ? [candidate.address] : ["{python}", "/path/to/worker.py"]))}</textarea>`,
-              );
+            : kind === "opcua"
+              ? field(
+                  t("服务地址", "Endpoint"),
+                  '<input id="reg-endpoint" placeholder="opc.tcp://192.168.1.20:4840">',
+                ) +
+                field(
+                  t("节点（可选）", "Nodes (optional)"),
+                  '<input id="reg-nodes" placeholder="ns=2;s=Reactor">',
+                  t(
+                    "多个节点用逗号分隔；留空使用全部厂商对象",
+                    "Separate several with commas; leave empty for every vendor object",
+                  ),
+                )
+              : kind === "manual"
+                ? ""
+                : field(
+                    t("程序命令（JSON 数组）", "Program command (JSON array)"),
+                    `<textarea id="reg-command" style="min-height:80px">${esc(JSON.stringify(candidate?.transport === "command" ? [candidate.address] : ["{python}", "/path/to/worker.py"]))}</textarea>`,
+                  );
     if (kind.startsWith("scpi"))
       $("#reg-fields").insertAdjacentHTML(
         "beforeend",
@@ -487,10 +502,10 @@ export function registerDevice(candidate) {
           '<select id="reg-termination"><option value="lf">LF</option><option value="crlf">CRLF</option><option value="cr">CR</option></select>',
         ),
       );
-    if (["http", "command"].includes(kind))
+    if (["http", "command", "manual"].includes(kind))
       $("#reg-fields").insertAdjacentHTML(
         "beforeend",
-        `<div class="full">${field(t("操作说明", "Operations"), '<textarea id="reg-operations" placeholder="{}">{}</textarea>', t("填写程序或 API 提供的操作、参数和结果。", "Describe the operations and parameters supported by this program or API."))}</div>`,
+        `<div class="full">${field(t("操作说明", "Operations"), '<textarea id="reg-operations" placeholder="{}">{}</textarea>', kind === "manual" ? t("每个步骤写明 instruction、parameters 和需要报告的 readings。", "Give each step an instruction, its parameters and the readings to report.") : t("填写程序或 API 提供的操作、参数和结果。", "Describe the operations and parameters supported by this program or API."))}</div>`,
       );
     updateJSON();
   }
@@ -522,7 +537,14 @@ export function registerDevice(candidate) {
         resource: $("#reg-resource").value.trim(),
       });
     else if (kind === "http") config.base_url = $("#reg-url").value.trim();
-    else config.command = readJSON("#reg-command");
+    else if (kind === "opcua") {
+      config.endpoint = $("#reg-endpoint").value.trim();
+      const nodes = $("#reg-nodes")
+        .value.split(",")
+        .map((node) => node.trim())
+        .filter(Boolean);
+      if (nodes.length) config.nodes = nodes;
+    } else if (kind !== "manual") config.command = readJSON("#reg-command");
     if ($("#reg-termination"))
       config.termination = { lf: "\n", crlf: "\r\n", cr: "\r" }[
         $("#reg-termination").value

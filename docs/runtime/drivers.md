@@ -104,6 +104,36 @@ Use `driver: "http"` with `config.base_url`, optional `headers` and `timeout`. E
 
 HTTP 驱动适用于已有 JSON 接口的仪器和设备服务器。参数、路径和返回字段写在仪器说明中。设备返回异步任务时，由实验程序继续查询其状态。
 
+## OPC UA
+
+Use `driver: "opcua"` for controllers, process equipment and instruments with an OPC UA server, including LADS analytical instruments. Install the `opcua` extra. / 带 OPC UA 服务的控制器、过程设备和仪器（含 LADS 分析仪器）以 `driver: "opcua"` 登记，需安装 `opcua` 扩展。
+
+```json
+{
+  "id": "reactor",
+  "driver": "opcua",
+  "config": {
+    "endpoint": "opc.tcp://192.168.1.50:4840",
+    "nodes": ["ns=2;s=Reactor"],
+    "username": "iop",
+    "password_env": "REACTOR_OPCUA_PASSWORD",
+    "unconfirmed_change": "hold"
+  }
+}
+```
+
+| Field / 字段 | Meaning / 含义 |
+| --- | --- |
+| `endpoint` | Server address / 服务地址 |
+| `nodes` | NodeIds of the objects to use; default: every object the vendor placed under Objects / 使用的对象节点，默认取 Objects 下全部厂商对象 |
+| `depth` | Object levels walked below each node, default 6 / 向下遍历的对象层数 |
+| `username`, `password_env` | User name, and the environment variable of the service that holds the password; the password is not stored in the configuration / 用户名，以及服务环境中保存密码的变量名；密码不写入配置 |
+| `security` | Security string such as `Basic256Sha256,SignAndEncrypt,client.der,client.pem` / 安全策略、模式与证书 |
+| `timeout` | Request timeout in seconds, default 5 / 请求超时 |
+| `unconfirmed_change` | `hold`: a write or method call sent without a reply holds the device, as for SCPI / 写入或方法调用发出后无应答时挂起设备 |
+
+Each readable variable becomes `get.<path>` (observe), each writable variable `set.<path>` with one `value` argument, and each method `call.<path>` with its input arguments; `snapshot` reads every scalar variable together. Paths are browse names joined with dots, starting at the node. Types come from the data type, `minimum` and `maximum` from EURange, `unit` from EngineeringUnits and `enum` from EnumStrings or EnumValues, so out-of-range values are refused before a request is sent. Numeric arrays return the shared array description and are saved as files. A Bad status fails the read; an Uncertain status is returned in `status`, and `time` is the server's source timestamp. `identity` comes from the Device Integration properties Manufacturer, Model and SerialNumber of a single node, otherwise from the server's build information. Structures and other values IOP cannot write stay readable; their set and call operations are listed in `unsupported`. A device holds at most 2000 variables and methods; choose narrower nodes on larger servers and use `allowed_operations` to expose a subset. / 可读变量生成 `get.<路径>`，可写变量生成 `set.<路径>`，方法生成 `call.<路径>`；`snapshot` 一次读取全部标量变量。类型、范围、单位和枚举取自服务的地址空间，超出范围的值在发送前即被拒绝。数值数组使用统一的数组说明并保存为文件。状态为 Bad 时读取失败，Uncertain 记在 `status` 中；`time` 是服务给出的采样时间。
+
 ## QCoDeS drivers / QCoDeS 驱动
 
 [QCoDeS](https://microsoft.github.io/Qcodes/) provides drivers for many source-measure units, multimeters, network and spectrum analyzers, waveform generators, lock-in amplifiers, magnet supplies and temperature controllers. Install the `qcodes` extra and register a driver class with `driver: "qcodes"`. / QCoDeS 已有大量源表、万用表、网络与频谱分析仪、波形发生器、锁相、磁体电源和温控驱动；安装 `qcodes` 扩展后以 `driver: "qcodes"` 登记。
