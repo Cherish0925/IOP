@@ -5,6 +5,7 @@ import math
 import socket
 import time
 from concurrent.futures import CancelledError
+from . import arrays
 from .store import now
 
 
@@ -152,6 +153,25 @@ class SCPI(Driver):
             if not isinstance(self.config['source_address'], str):
                 raise ValueError('source_address must be a local IP address string')
             ipaddress.ip_address(self.config['source_address'])
+        self.max_block_bytes = self.config.get('max_block_bytes', 256 * 1024 * 1024)
+        if type(self.max_block_bytes) is not int or self.max_block_bytes <= 0:
+            raise ValueError('max_block_bytes must be a positive integer')
+        if not isinstance(self.config.get('block_terminated', True), bool):
+            raise ValueError('block_terminated must be true or false')
+        # Array results and binary writes are checked once, when the instrument is registered.
+        self.arrays, self.writes = {}, {}
+        for name, spec in self.config.get('operations', {}).items():
+            try:
+                if spec.get('result', {}).get('type') == 'array':
+                    if 'query' not in spec:
+                        raise ValueError('an array result needs a query')
+                    self.arrays[name] = arrays.check_result(spec['result'])
+                if 'data' in spec:
+                    if 'write' not in spec:
+                        raise ValueError('binary data is sent with a write command')
+                    self.writes[name] = arrays.check_data(spec['data'], spec.get('parameters', {}))
+            except ValueError as error:
+                raise ValueError(f'Operation {name}: {error}') from None
 
     def describe(self):
         operations = {
@@ -162,7 +182,7 @@ class SCPI(Driver):
         operations.update(self.config.get("operations", {}))
         connection = {k: self.config[k] for k in ('host', 'port', 'resource', 'backend', 'baudrate',
             'bytesize', 'parity', 'stopbits', 'xonxoff', 'rtscts', 'dsrdtr', 'timeout', 'termination', 'source_address',
-            'unconfirmed_change') if k in self.config}
+            'unconfirmed_change', 'max_block_bytes', 'block_terminated') if k in self.config}
         return {"name":self.config.get("name", self.id), "mode":"hardware", "transport":self.config.get("transport", "tcp"), 'connection': connection,
                 "operations":operations}
 
@@ -245,6 +265,72 @@ class SCPI(Driver):
             self.close()
             raise
 
+    def _receive(self):
+        """Read more bytes; raise after `timeout` seconds without data, so large blocks may take longer."""
+        if self.config.get('transport', 'tcp') == 'tcp':
+            self.connection.settimeout(self.timeout)
+            chunk = self.connection.recv(65536)
+            if not chunk:
+                raise ConnectionError('Instrument closed the connection')
+        else:
+            self.connection.timeout = self.timeout
+            chunk = self.connection.read(min(65536, max(1, self.connection.in_waiting)))
+            if not chunk:
+                raise TimeoutError('Instrument response timed out')
+        self.received.extend(chunk)
+
+    def exchange_block(self, command, payload=None):
+        """Send a command followed by an IEEE 488.2 block, or query and return the block received."""
+        if "\n" in command or "\r" in command:
+            raise ValueError("Use one text command per operation")
+        encoding = self.config.get('encoding', 'ascii')
+        terminator = self.termination.encode(encoding)
+        terminated = self.config.get('block_terminated', True)
+        try:
+            self.connect()
+            kind = self.config.get('transport', 'tcp')
+            if payload is not None:
+                wire = command.encode(encoding) + arrays.block(payload) + terminator
+                self.transmitted = True
+                if kind == 'tcp':
+                    self.connection.sendall(wire)
+                elif kind == 'serial':
+                    self.connection.write(wire)
+                else:
+                    self.connection.write_raw(wire)
+                return None
+            if kind == 'visa':
+                self.transmitted = True
+                data = self.connection.query_binary_values(command, datatype='s', container=bytes,
+                                                           expect_termination=terminated)
+                if len(data) > self.max_block_bytes:
+                    raise ValueError('Binary block exceeds max_block_bytes')
+                return data
+            wire = (command + self.termination).encode(encoding)
+            self.transmitted = True
+            if kind == 'tcp':
+                self.connection.sendall(wire)
+            else:
+                self.connection.write(wire)
+            while (parsed := arrays.parse_block(self.received)) is None:
+                if len(self.received) > self.max_block_bytes + 16:
+                    raise ValueError('Binary block exceeds max_block_bytes')
+                self._receive()
+            data, end = parsed
+            if len(data) > self.max_block_bytes:
+                raise ValueError('Binary block exceeds max_block_bytes')
+            del self.received[:end]
+            if terminated:
+                while len(self.received) < len(terminator) and terminator.startswith(bytes(self.received)):
+                    self._receive()
+                if not self.received.startswith(terminator):
+                    raise ValueError('Expected the response terminator after the binary block')
+                del self.received[:len(terminator)]
+            return data
+        except Exception:
+            self.close()
+            raise
+
     def invoke(self, operation, arguments, cancelled):
         if cancelled.is_set():
             raise CancelledError()
@@ -253,6 +339,10 @@ class SCPI(Driver):
         template = spec.get("query", spec.get("write"))
         command = template.format_map(arguments) if template else arguments["command"]
         completion = spec.get("completion")
+        array_spec, data_spec = self.arrays.get(operation), self.writes.get(operation)
+        payload = None
+        if data_spec:
+            payload = arrays.encode(arguments[data_spec['parameter']], data_spec['dtype'], data_spec['byte_order'])
         # Identity verification on a new connection is not this operation's command.
         try:
             self.connect()
@@ -261,7 +351,12 @@ class SCPI(Driver):
             raise
         self.transmitted = False
         try:
-            value = self.exchange(command, is_query)
+            if payload is not None:
+                value = self.exchange_block(command, payload)
+            elif array_spec and array_spec['encoding'] == 'block':
+                value = self.exchange_block(command)
+            else:
+                value = self.exchange(command, is_query)
             if completion:
                 deadline = time.monotonic() + float(completion.get("timeout", 30))
                 while True:
@@ -283,7 +378,11 @@ class SCPI(Driver):
                     f"{command!r} was sent; completion was not confirmed ({type(error).__name__}: {error})") from error
             raise
         result = {"time":now(), "source":"device" if is_query else "driver", "command":command}
-        if is_query:
+        if array_spec:
+            if array_spec['encoding'] == 'ascii':
+                value = arrays.encode(arrays.parse_ascii(value, array_spec['separator']), 'float64', array_spec['byte_order'])
+            result.update(arrays.result(value, array_spec, cancelled, operation))
+        elif is_query:
             encoding = spec.get("result", {})
             result["value"] = float(value) if encoding.get("type") == "number" else value
             if operation == 'identify':
@@ -296,6 +395,8 @@ class SCPI(Driver):
                 result["unit"] = encoding["unit"]
         else:
             result["sent"] = True
+            if payload is not None:
+                result["data_bytes"] = len(payload)
         if completion:
             result["completion_response"] = observed
         return result

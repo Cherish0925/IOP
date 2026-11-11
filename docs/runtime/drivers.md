@@ -53,9 +53,36 @@ These commands and ranges illustrate the format; use those specified for the act
 
 All support `timeout` in seconds and `termination`. Text encoding defaults to ASCII. VISA support depends on the installed vendor library or pyvisa-py backend and its transport dependencies.
 
-Built-in `identify`, `query` and `write` operations provide `*IDN?`, a raw text query and a raw text write. A write result with `sent: true` means the command was sent. A named operation with `completion` also waits for its specified device response. Motion or acquisition completion must follow the actual device's documented status mechanism. This SCPI driver handles text; binary image and waveform transfers belong in model-specific drivers.
+Built-in `identify`, `query` and `write` operations provide `*IDN?`, a raw text query and a raw text write. A write result with `sent: true` means the command was sent. A named operation with `completion` also waits for its specified device response. Motion or acquisition completion must follow the actual device's documented status mechanism.
 
-内置 `identify`、`query`、`write` 分别读取身份、查询文本和写入文本。`sent: true` 表示命令已发送；定义 `completion` 的操作还会等待相应设备回复。运动、稳定和采集完成的含义按仪器手册定义。二进制图像与波形传输使用对应型号驱动。
+内置 `identify`、`query`、`write` 分别读取身份、查询文本和写入文本。`sent: true` 表示命令已发送；定义 `completion` 的操作还会等待相应设备回复。运动、稳定和采集完成的含义按仪器手册定义。
+
+### Arrays and binary blocks / 数组与二进制块
+
+Traces, spectra and other numerical arrays are read with `result.type: "array"`. `encoding: "block"` (default) reads an IEEE 488.2 definite-length block, `#<digits><length><bytes>`, and needs `dtype` (`int8` … `uint64`, `float32`, `float64`) and `byte_order` (`little` or `big`). `encoding: "ascii"` reads separated numbers as `float64`. Select the matching data format on the instrument first, for example with a `FORM` command from its manual. / 波形、谱线等数组用 `result.type: "array"` 读取：`block` 读取 IEEE 488.2 定长块，需写明元素类型和字节序；`ascii` 读取分隔的数值。仪器端的数据格式按手册先设定。
+
+```json
+"read_trace": {
+  "query": "CALC1:DATA:SDAT?", "effect": "observe", "parameters": {},
+  "result": {"type": "array", "dtype": "float64", "byte_order": "little", "shape": [-1, 2],
+             "axes": [{"name": "point"}, {"name": "component", "labels": ["re", "im"]}]}
+}
+```
+
+The result carries `data`: `dtype`, `byte_order`, `shape`, `count`, `bytes`, `sha256`, and `unit` and `axes` when described. The payload is saved unchanged as `<operation>.bin` (or `result.file`) in the operation's output directory. Arrays up to `inline_limit` elements (default 1024) are also returned as nested lists in `values`. The operation record lists its files in `files` as soon as it ends, so a running experiment can download them. Drivers for cameras, digitizers or other SDKs can produce the same description with `ai4instruments.iop.arrays.result(payload, arrays.check_result(spec), context, name)`. / 结果中的 `data` 描述元素类型、字节序、形状、数量、字节数、校验值以及单位和坐标轴。原始数据原样保存在操作输出目录，小数组同时以 `values` 返回；操作结束时文件即列入操作记录，实验进行中即可下载。相机、采集卡等 SDK 驱动可用同一函数生成相同描述。
+
+A write with `data` sends one block after its command. `data.parameter` names an array parameter; `dtype` and `byte_order` encode its values. / 带 `data` 的写操作在命令后发送一个二进制块，用于任意波形表等大数组。
+
+```json
+"load_waveform": {
+  "write": "SOUR1:DATA:ARB {name},",
+  "parameters": {"name": {"type": "string"}, "samples": {"type": "array", "items": {"type": "integer"}, "maxItems": 65536}},
+  "data": {"parameter": "samples", "dtype": "int16", "byte_order": "big"},
+  "completion": {"query": "*OPC?"}
+}
+```
+
+`max_block_bytes` (default 256 MiB) limits a received block. `block_terminated: false` is for instruments that send no terminator after a block. Indefinite-length blocks (`#0`) are refused; select a definite-length format. A block read ends with an error after `timeout` seconds without new bytes, so long transfers continue while data arrives. / `max_block_bytes` 限制单个接收块大小；块后不发终止符的仪器设 `block_terminated: false`；不支持 `#0` 不定长块。读取块时，`timeout` 指连续无新数据的时长。
 
 ## Modbus TCP and RTU
 

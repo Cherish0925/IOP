@@ -1121,6 +1121,14 @@ class Engine:
                     self._save_run(run, 'run.failing')
                     self._stop_pending(run)
             op['ended'] = now()
+            output = self.home / 'runs' / run['id'] / 'output'
+            written = output / 'operations' / op_id
+            if written.is_dir():
+                # Files a driver wrote for this operation are listed and downloadable as soon as it ends.
+                op['files'] = [{key: item[key] for key in ('id', 'name', 'size')} for item in (
+                    self._file_record(run['id'], path, 'output/' + path.relative_to(output).as_posix(), [op_id])
+                    for path in sorted(written.rglob('*'))
+                    if path.is_file() and not path.is_symlink() and path.resolve().is_relative_to(written.resolve()))]
             self.communication[op['device']] = {'time': op['ended'], 'operation_id': op_id,
                 'state': op['state'], 'error': op.get('error')}
             with self.store.transaction():

@@ -127,6 +127,39 @@
               },
               "result": {
                 "type": "object"
+              },
+              "data": {
+                "type": "object",
+                "required": [
+                  "parameter",
+                  "dtype"
+                ],
+                "description": "Binary block sent after the write command; see docs/runtime/drivers.md",
+                "properties": {
+                  "parameter": {
+                    "type": "string"
+                  },
+                  "dtype": {
+                    "enum": [
+                      "int8",
+                      "uint8",
+                      "int16",
+                      "uint16",
+                      "int32",
+                      "uint32",
+                      "int64",
+                      "uint64",
+                      "float32",
+                      "float64"
+                    ]
+                  },
+                  "byte_order": {
+                    "enum": [
+                      "little",
+                      "big"
+                    ]
+                  }
+                }
               }
             },
             "oneOf": [
