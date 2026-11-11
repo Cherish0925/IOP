@@ -201,3 +201,32 @@ def result(payload, spec, context=None, name='data'):
     if not saved or count <= spec['inline_limit']:
         fields['values'] = nest(decode(payload, spec['dtype'], spec['byte_order']), shape)
     return fields
+
+
+_NUMPY = {'float64': 'float64', 'float32': 'float32', 'int8': 'int8', 'int16': 'int16', 'int32': 'int32',
+          'int64': 'int64', 'uint8': 'uint8', 'uint16': 'uint16', 'uint32': 'uint32', 'uint64': 'uint64', 'bool': 'uint8'}
+
+
+def ndarray(values, context, name, unit='', axes=None, **options):
+    """Describe and save a NumPy array, as drivers built on Python libraries return them.
+
+    Complex values gain a last re/im axis. ``options`` are ``file`` and ``inline_limit``.
+    """
+    import numpy
+    data = numpy.asarray(values)
+    axes = list(axes or [])
+    if numpy.iscomplexobj(data):
+        data = numpy.ascontiguousarray(data, dtype='<c16').view('<f8').reshape(data.shape + (2,))
+        axes = axes + [{'name': 'component', 'labels': ['re', 'im']}] if axes else []
+    dtype = _NUMPY.get(data.dtype.name)
+    if dtype is None:
+        raise ValueError(f'{name} returned {data.dtype} values; only numeric arrays are supported')
+    if data.ndim == 0 or 0 in data.shape:
+        raise ValueError(f'{name} returned an empty array')
+    payload = numpy.ascontiguousarray(data, dtype=numpy.dtype(dtype).newbyteorder('<')).tobytes()
+    spec = {'dtype': dtype, 'byte_order': 'little', 'shape': list(data.shape), **options}
+    if unit:
+        spec['unit'] = unit
+    if axes and len(axes) == data.ndim:
+        spec['axes'] = axes
+    return result(payload, check_result(spec), context, name)

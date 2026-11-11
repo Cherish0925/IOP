@@ -507,6 +507,9 @@ def make_driver(record, registry):
     elif name == 'epics':
         from .epics_driver import EPICS
         cls = EPICS
+    elif name == 'python':
+        from .python_driver import PythonObject
+        cls = PythonObject
     else:
         module, separator, class_name = name.partition(":")
         if not separator:

@@ -11,6 +11,7 @@ def adapters():
         ('epics', 'EPICS Channel Access process variables, with units, limits and put completion'),
         ('command', 'Executable programs and command-line solvers'),
         ('qcodes', 'QCoDeS instrument drivers, with operations from their parameter metadata'),
+        ('python', 'Objects of installed Python libraries and vendor SDKs, with operations bound to their methods'),
         ('manual', 'Steps a person performs, with instructions and reported readings'),
         ('process', 'Independent SDK workers using JSON lines'),
         ('simulated', 'In-process demonstration instruments'),

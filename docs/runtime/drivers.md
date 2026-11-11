@@ -312,6 +312,47 @@ Steps a person performs, such as mounting a sample, aligning by eye, reading an 
 
 Waiting does not occupy instrument workers. Cancelling the experiment withdraws the task. A report records what the reporter stated; an agent relays only what the person said. Manual devices run in the service, without `execution`. / 等待不占用仪器工作线程；取消实验即撤回待办。报告内容即报告人的陈述，Agent 只转述人的原话。
 
+## Python libraries and vendor SDKs / Python 库与厂商 SDK
+
+Cameras, spectrometers, motion stages and many other devices are controlled through Python packages: instrument libraries such as pylablib, PyMeasure and InstrumentKit, or a vendor's SDK. `driver: "python"` creates one object of such a package and binds named operations to its methods and attributes, so the package is used from a description without writing a driver class. / 相机、光谱仪、位移台等设备多通过 Python 包控制：pylablib、PyMeasure、InstrumentKit 等仪器库，或厂商 SDK。`driver: "python"` 创建该包的一个对象，把具名操作对应到它的方法和属性，只写说明，不写驱动类。
+
+```json
+{
+  "id": "delay-stage",
+  "driver": "python",
+  "execution": {"mode": "process"},
+  "config": {
+    "object": "pylablib.devices.Thorlabs:KinesisMotor",
+    "arguments": ["27000001"],
+    "keywords": {"scale": "stage"},
+    "operations": {
+      "move_to": {
+        "call": "move_to",
+        "parameters": {"position": {"type": "number", "minimum": 0, "maximum": 0.025, "unit": "m"}},
+        "completion": {"call": "is_moving", "equals": false, "timeout": 60},
+        "on_cancel": {"call": "stop"}
+      },
+      "position": {"call": "get_position", "effect": "observe", "result": {"unit": "m"}}
+    }
+  }
+}
+```
+
+The names above illustrate the format; use those documented by the package and its version. / 示例中的名称仅说明格式，以所用包及其版本的文档为准。
+
+| Field / 字段 | Meaning / 含义 |
+| --- | --- |
+| `object` | `module:Class` or a factory function; called with `arguments` and `keywords` / 类或工厂函数，以 `arguments`、`keywords` 调用 |
+| `context` | `true` to enter the object as a context manager and exit it on close / 以上下文管理器方式进入和退出 |
+| `close` | Method called when the device closes; default `close` when present / 关闭时调用的方法 |
+| `call` | Method called with the operation's parameters as keyword arguments. `positional` lists parameters passed by position; `fixed` gives constant keyword arguments / 调用的方法；`positional` 指定按位置传入的参数，`fixed` 给出固定参数 |
+| `get`, `set` | Attribute read, or attribute written with the operation's single parameter / 读取属性，或用唯一的参数写入属性 |
+| `completion` | A `call` or `get` read every `interval` seconds until it `equals` a value, within `timeout` / 周期读取直到等于指定值 |
+| `on_cancel` | Call made when the operation is cancelled while waiting, such as `stop` / 等待中被取消时调用，如 `stop` |
+| `result` | `unit`; `path` selects from the returned value; `items` names several returned values, each with its `path` and `unit` / 单位；`path` 从返回值中选取；`items` 为多个返回值分别命名 |
+
+Names are dotted paths from the object, such as `channels.1.voltage`; private names are not reachable. NumPy arrays, including camera frames, return the shared array description and are saved as files; tuples, named tuples, dataclasses, enumerations and NumPy scalars become JSON values. All calls to the object, including its creation, run on one thread, as COM and DLL based SDKs require. `execution.mode: "process"` keeps a faulting SDK away from other instruments. With `unconfirmed_change: "hold"`, an exception raised by a change operation holds the device, except argument errors (`TypeError`, `ValueError`), which a library raises before acting. / 名称是从对象出发的点分路径，私有名称不可访问。NumPy 数组（含相机图像）使用统一的数组说明并保存为文件。对该对象的全部调用（含创建）在同一线程执行，满足 COM 和 DLL 类 SDK 的要求。建议以独立进程运行。
+
 ## Python driver / Python 驱动
 
 Implement these methods in an installed Python module:

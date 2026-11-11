@@ -94,7 +94,7 @@ The service works with devices, named operations, experiment programs, dependenc
 
 | Layer | Implemented support |
 | --- | --- |
-| Communication and drivers | SCPI and other text command protocols over TCP / serial / VISA, Modbus TCP / RTU, HTTP JSON, OPC UA, EPICS Channel Access, QCoDeS drivers, custom Python drivers, manual steps performed by people |
+| Communication and drivers | SCPI and other text command protocols over TCP / serial / VISA, Modbus TCP / RTU, HTTP JSON, OPC UA, EPICS Channel Access, QCoDeS drivers, Python libraries and vendor SDKs by description, custom Python drivers, manual steps performed by people |
 | Instrument descriptions | Named operations, parameter types, units, ranges, resources and driver-defined completion |
 | Persistent service | Registration, discovery, dependency scheduling, program processes, data storage and retrieval |
 | Experiment programs | Python logic, loops, feedback, fitting and analysis; other languages can use HTTP |
@@ -132,7 +132,7 @@ Before registering the example, replace its address, commands, units and complet
 | OPC UA servers | Variables and methods with types, ranges, units and enumerations from the address space |
 | EPICS IOCs | Channel Access PVs with units, control limits, enumerations, alarms and put completion |
 | QCoDeS drivers | Parameters of installed QCoDeS instrument drivers with their validators and units |
-| Vendor SDKs, cameras, motion systems, existing platforms | Installed Python driver specified as `module:Class` |
+| Vendor SDKs, cameras, motion systems, existing platforms | An object of the installed Python package with described operations (`driver: "python"`), or a Python driver specified as `module:Class` |
 | Automatic registration | Configured discovery profiles match connection metadata and supply device records |
 
 **A discovered connection needs a matching instrument description and driver before its capabilities can be used.** USB inventory also includes non-instrument peripherals. Network instruments use configured addresses; VISA may additionally discover network resources supported by its backend.
