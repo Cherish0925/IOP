@@ -226,9 +226,36 @@
               },
               "reply": {
                 "description": "scpi write: true, false or {\"match\": pattern} for its acknowledgment line"
+              },
+              "type": {
+                "enum": [
+                  "uint16",
+                  "int16",
+                  "uint32",
+                  "int32",
+                  "float32",
+                  "uint64",
+                  "int64",
+                  "float64"
+                ],
+                "description": "modbus: how the value is held in registers; default uint16"
+              },
+              "word_order": {
+                "enum": [
+                  "big",
+                  "little"
+                ],
+                "description": "modbus: order of the registers of one value; default big (high word first)"
+              },
+              "byte_order": {
+                "enum": [
+                  "big",
+                  "little"
+                ],
+                "description": "modbus: order of the two bytes within a register; default big"
               }
             },
-            "description": "scpi: exactly one of query or write. modbus: function, with fixed arguments, scale, offset, signed, unit and value_parameter. http: path, method, query, body, result_path and unit."
+            "description": "scpi: exactly one of query or write. modbus: function, with fixed arguments, type, word_order, byte_order, scale, offset, unit and value_parameter. http: path, method, query, body, result_path and unit."
           }
         },
         "protocol": {

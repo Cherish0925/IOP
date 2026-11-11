@@ -81,6 +81,11 @@ def validate_profile(profile):
                 raise ValueError(f'Operation {operation}: arguments must be an object')
             if 'value_parameter' in spec and spec['value_parameter'] not in params:
                 raise ValueError(f'Operation {operation}: describe value parameter ' + str(spec['value_parameter']))
+            from .adapters import modbus_value
+            try:
+                modbus_value(spec)
+            except ValueError as error:
+                raise ValueError(f'Operation {operation}: {error}') from None
             continue
         else:
             if str(spec.get('method', 'GET')).upper() not in ('GET', 'POST', 'PUT', 'PATCH', 'DELETE'):

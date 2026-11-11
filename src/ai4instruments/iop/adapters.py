@@ -2,12 +2,56 @@
 from __future__ import annotations
 import json
 import math
+import struct
 import threading
 from concurrent.futures import CancelledError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 from .drivers import Driver
 from .store import now
+
+
+# Values spanning registers: struct code and register count.
+MODBUS_TYPES = {'uint16': ('H', 1), 'int16': ('h', 1), 'uint32': ('I', 2), 'int32': ('i', 2), 'float32': ('f', 2),
+                'uint64': ('Q', 4), 'int64': ('q', 4), 'float64': ('d', 4)}
+
+
+def modbus_value(spec):
+    """Check how a named operation reads or writes its value; return (type, word_order, byte_order)."""
+    kind = spec.get('type', 'int16' if spec.get('signed') else 'uint16')
+    if kind not in MODBUS_TYPES:
+        raise ValueError('type must be one of ' + ', '.join(MODBUS_TYPES))
+    orders = spec.get('word_order', 'big'), spec.get('byte_order', 'big')
+    if any(order not in ('big', 'little') for order in orders):
+        raise ValueError('word_order and byte_order are big or little')
+    if 'value_parameter' in spec and MODBUS_TYPES[kind][1] > 1 and spec.get('function') != 'write_registers':
+        raise ValueError(f'{kind} spans {MODBUS_TYPES[kind][1]} registers; write it with write_registers')
+    return (kind, *orders)
+
+
+def decode_registers(registers, kind, word_order='big', byte_order='big'):
+    """Values of ``kind`` held in consecutive 16-bit registers."""
+    code, words = MODBUS_TYPES[kind]
+    if len(registers) % words:
+        raise ValueError(f'{len(registers)} registers do not hold whole {kind} values; read a multiple of {words}')
+    values = []
+    for start in range(0, len(registers), words):
+        group = registers[start:start + words]
+        if word_order == 'little':
+            group = group[::-1]
+        raw = b''.join(struct.pack('>H' if byte_order == 'big' else '<H', register) for register in group)
+        values.append(struct.unpack('>' + code, raw)[0])
+    return values
+
+
+def encode_registers(value, kind, word_order='big', byte_order='big'):
+    code, words = MODBUS_TYPES[kind]
+    try:
+        raw = struct.pack('>' + code, value if code in 'fd' else round(value))
+    except struct.error:
+        raise ValueError(f'{value} is outside the {kind} range') from None
+    registers = [struct.unpack('>H' if byte_order == 'big' else '<H', raw[i:i + 2])[0] for i in range(0, len(raw), 2)]
+    return registers[::-1] if word_order == 'little' else registers
 
 
 class _ModbusBus:
@@ -62,6 +106,11 @@ class Modbus(Driver):
         self.timeout = float(self.config.get('timeout', 3))
         if not math.isfinite(self.timeout) or self.timeout <= 0:
             raise ValueError('Modbus timeout must be a positive number')
+        for name, spec in self.config.get('operations', {}).items():
+            try:
+                modbus_value(spec)
+            except ValueError as error:
+                raise ValueError(f'Operation {name}: {error}') from None
         from .discovery import device_connection
         self.bus = device_connection({'driver': 'modbus', 'config': self.config})
         session = _ModbusBus(self.config, self.transport)
@@ -110,9 +159,15 @@ class Modbus(Driver):
         if function not in MODBUS_FUNCTIONS:raise ValueError('Unknown Modbus function: '+function)
         values=dict(spec.get('arguments',{}))
         values.update(arguments)
+        kind, word_order, byte_order = modbus_value(spec)
         if 'value_parameter' in spec:
-            value=values.pop(spec['value_parameter'])
-            values['value']=round((value-float(spec.get('offset',0)))/float(spec.get('scale',1)))
+            value=(values.pop(spec['value_parameter'])-float(spec.get('offset',0)))/float(spec.get('scale',1))
+            if function == 'write_registers':
+                values['values']=encode_registers(value, kind, word_order, byte_order)
+            else:
+                values['value']=round(value)
+        elif function in ('read_holding_registers', 'read_input_registers') and 'function' in spec:
+            values.setdefault('count', MODBUS_TYPES[kind][1])
         values.setdefault('device_id', self.unit)
         if values['device_id'] != self.unit:
             raise ValueError('Use the instrument registered at the requested Modbus address')
@@ -136,10 +191,13 @@ class Modbus(Driver):
         if function.startswith('read_'):
             data=list(response.bits[:values.get('count',1)]) if function in {'read_coils','read_discrete_inputs'} else list(response.registers)
             result['values']=data
-            if len(data)==1:
-                raw=data[0]
-                if spec.get('signed') and isinstance(raw,int) and raw>=32768:raw-=65536
-                result['value']=raw*float(spec.get('scale',1))+float(spec.get('offset',0))
+            if function in ('read_holding_registers', 'read_input_registers') and 'function' in spec:
+                decoded=[raw*float(spec.get('scale',1))+float(spec.get('offset',0))
+                         for raw in decode_registers(data, kind, word_order, byte_order)]
+                if len(decoded)==1:result['value']=decoded[0]
+                else:result['decoded']=decoded
+            elif len(data)==1:
+                result['value']=data[0]*float(spec.get('scale',1))+float(spec.get('offset',0))
             if 'unit' in spec:result['unit']=spec['unit']
         else:
             result['acknowledged']=True
