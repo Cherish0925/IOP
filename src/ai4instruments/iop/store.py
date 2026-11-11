@@ -1,6 +1,7 @@
 """Persistent experiment records and ordered events."""
 from __future__ import annotations
 import json
+import math
 import sqlite3
 import threading
 import time
@@ -14,6 +15,21 @@ def now():
 
 def dumps(value):
     return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+
+
+def finite(value):
+    """Replace NaN and infinities, which JSON cannot carry, with "NaN", "Infinity" and "-Infinity".
+
+    Instruments report these for missing or overranged readings; the reading is recorded rather than
+    failing the operation. The strings follow the protobuf JSON mapping.
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return 'NaN' if value != value else 'Infinity' if value > 0 else '-Infinity'
+    if isinstance(value, dict):
+        return {key: finite(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [finite(item) for item in value]
+    return value
 
 
 class Store:

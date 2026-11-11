@@ -65,8 +65,8 @@ def evaluate(monitor, result):
     violation = 'equals' in monitor and value != monitor['equals']
     for key, outside in (('minimum', lambda v, limit: v < limit), ('maximum', lambda v, limit: v > limit)):
         if key in monitor:
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise ValueError(f'Monitored value {value!r} is not a number')
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                raise ValueError(f'Monitored value {value!r} is not a finite number')
             violation = violation or outside(value, monitor[key])
     return value, violation
 

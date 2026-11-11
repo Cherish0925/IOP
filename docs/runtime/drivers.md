@@ -162,7 +162,7 @@ A device record can carry `calibration`: `id` (required), `date`, `valid_until`,
 
 ## Monitors / 状态监测
 
-A device record can list `monitors`. Each reads one `effect: "observe"` operation every `interval_s` seconds (at least 0.1) and compares the value at `value` (a result path, default `["value"]`) with `minimum`, `maximum` or `equals`. A missing or non-numeric value under a numeric limit, or a failed read, counts as `error`. / 设备记录可列出 `monitors`：按周期读取一个观测操作，将结果中的指定值与上下限或期望值比较；读不到或类型不符视为 `error`。
+A device record can list `monitors`. Each reads one `effect: "observe"` operation every `interval_s` seconds (at least 0.1) and compares the value at `value` (a result path, default `["value"]`) with `minimum`, `maximum` or `equals`. A missing, non-numeric or non-finite value under a numeric limit, or a failed read, counts as `error`. / 设备记录可列出 `monitors`：按周期读取一个观测操作，将结果中的指定值与上下限或期望值比较；读不到、类型不符或为 NaN、无穷大时视为 `error`。
 
 ```json
 "monitors": [
@@ -244,9 +244,9 @@ class TemperatureProbe(Driver):
 
 Register with `{"id":"probe","driver":"my_instruments:TemperatureProbe","config":{}}`. The example intentionally leaves the SDK call to the device implementation. A complete runnable simulated driver is provided in [custom_driver.py](../../examples/iop/custom_driver.py). Install or place that module on the service's Python import path before registering it.
 
-`self.id` identifies the instrument, `self.config` contains driver settings, and `self.registry` provides registered driver objects. Calls to the same device are serialized; different devices may execute on different threads. Driver methods must return JSON-compatible values with units and acquisition context where appropriate. Use bounded communication timeouts and implement the `cancelled` event according to the device. `close()` releases persistent connections.
+`self.id` identifies the instrument, `self.config` contains driver settings, and `self.registry` provides registered driver objects. Calls to the same device are serialized; different devices may execute on different threads. Driver methods must return JSON-compatible values with units and acquisition context where appropriate. NaN and infinite numbers, which instruments report for missing or overranged readings, are recorded as `"NaN"`, `"Infinity"` and `"-Infinity"`; a monitor treats them as a failed read. Use bounded communication timeouts and implement the `cancelled` event according to the device. `close()` releases persistent connections.
 
-将驱动安装在服务使用的 Python 环境中，再以 `module:Class` 登记。同一设备不会同时执行两次调用，不同设备可以在不同线程中执行。返回值使用可序列化为 JSON 的内容，并保留单位与采集信息。通信设置明确的超时时间，按设备行为响应取消请求，`close()` 关闭连接。
+将驱动安装在服务使用的 Python 环境中，再以 `module:Class` 登记。同一设备不会同时执行两次调用，不同设备可以在不同线程中执行。返回值使用可序列化为 JSON 的内容，并保留单位与采集信息。仪器在无读数或超量程时给出的 NaN 和无穷大记为 `"NaN"`、`"Infinity"`、`"-Infinity"`，状态监测将其视为读取失败。通信设置明确的超时时间，按设备行为响应取消请求，`close()` 关闭连接。
 
 The parameter model supports `number`, `integer`, `string`, `boolean`, `array`, `object`, `minimum`, `maximum`, `enum`, `default`, `required` and descriptive `unit`. Required defaults to true; fields with a default may be omitted. Undeclared arguments are rejected. This is the runtime's current parameter format, not a complete JSON Schema implementation.
 

@@ -23,7 +23,7 @@ from .calibration import operation_fields
 from .config import save_json
 from .device_configuration import METADATA, allowed
 from .drivers import make_driver, parameters
-from .store import Store, dumps, now
+from .store import Store, dumps, finite, now
 from . import platforms as platform_model
 from .resources import Allocator, QueueFull, capacities, quantities
 from .execution import Context
@@ -1117,7 +1117,11 @@ class Engine:
             future = self.futures[op_id]
             op = self.operations[op_id]; run = self.runs[op['run_id']]
             try:
-                op['result'] = json.loads(dumps(future.result()))
+                result = future.result()
+                try:
+                    op['result'] = json.loads(dumps(result))
+                except ValueError:
+                    op['result'] = json.loads(dumps(finite(result)))
                 if op['operation'] == 'identify' and self.device_records[op['device']]['driver'] == 'scpi' and op['result'].get('identity'):
                     self.learn_identity(op['device'], op['result']['identity'])
                 op['state'] = 'completed'
