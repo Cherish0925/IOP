@@ -15,7 +15,9 @@ def adapters():
     result = [{'name': name, 'source': 'builtin', 'description': description} for name, description in builtin]
     result[0]['connection_parameters'] = {
         'common': {'timeout': {'type':'number', 'default':5, 'unit':'s'},
-                   'termination': {'type':'string', 'default':'\n'}},
+                   'termination': {'type':'string', 'default':'\n'},
+                   'unconfirmed_change': {'type':'string', 'default':'fail', 'enum':['fail','hold'],
+                       'description':'hold: a change operation whose command was sent but whose reply or completion did not arrive keeps the device unavailable until its state is observed and recorded'}},
         'tcp': {'host': {'type':'string', 'required':True}, 'port': {'type':'integer', 'default':5025},
                 'source_address': {'type':'string', 'description':'Local IPv4 or IPv6 address of the instrument-facing network interface; omit to use system routing'}},
         'serial': {'port': {'type':'string', 'required':True}, 'baudrate': {'type':'integer', 'default':9600},

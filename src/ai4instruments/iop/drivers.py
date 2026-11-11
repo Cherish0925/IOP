@@ -52,6 +52,10 @@ def parameters(spec, supplied):
     return result
 
 
+class UnconfirmedChange(RuntimeError):
+    """A change command may have reached the instrument, but its completion was not confirmed."""
+
+
 class Driver:
     def __init__(self, device_id, config, registry):
         self.id, self.config, self.registry = device_id, config, registry
@@ -125,6 +129,10 @@ class SCPI(Driver):
         self.manager = None
         self.received = bytearray()
         self.expected_identity = None
+        self.transmitted = False
+        self.unconfirmed_change = self.config.get("unconfirmed_change", "fail")
+        if self.unconfirmed_change not in ("fail", "hold"):
+            raise ValueError("unconfirmed_change must be fail or hold")
         self.timeout = float(self.config.get("timeout", 5))
         if not math.isfinite(self.timeout) or self.timeout <= 0:
             raise ValueError("timeout must be positive")
@@ -153,7 +161,8 @@ class SCPI(Driver):
         }
         operations.update(self.config.get("operations", {}))
         connection = {k: self.config[k] for k in ('host', 'port', 'resource', 'backend', 'baudrate',
-            'bytesize', 'parity', 'stopbits', 'xonxoff', 'rtscts', 'dsrdtr', 'timeout', 'termination', 'source_address') if k in self.config}
+            'bytesize', 'parity', 'stopbits', 'xonxoff', 'rtscts', 'dsrdtr', 'timeout', 'termination', 'source_address',
+            'unconfirmed_change') if k in self.config}
         return {"name":self.config.get("name", self.id), "mode":"hardware", "transport":self.config.get("transport", "tcp"), 'connection': connection,
                 "operations":operations}
 
@@ -194,8 +203,10 @@ class SCPI(Driver):
             self.connect()
             kind = self.config.get("transport", "tcp")
             if kind == "visa":
+                self.transmitted = True
                 return self.connection.query(command).strip() if read else self.connection.write(command)
             wire = (command + self.termination).encode(self.config.get("encoding", "ascii"))
+            self.transmitted = True
             if kind == "tcp":
                 self.connection.sendall(wire)
             else:
@@ -241,18 +252,36 @@ class SCPI(Driver):
         is_query = operation == "query" or "query" in spec
         template = spec.get("query", spec.get("write"))
         command = template.format_map(arguments) if template else arguments["command"]
-        value = self.exchange(command, is_query)
         completion = spec.get("completion")
-        if completion:
-            deadline = time.monotonic() + float(completion.get("timeout", 30))
-            while True:
-                observed = self.exchange(completion["query"].format_map(arguments), True)
-                if observed == str(completion.get("equals", "1")):
-                    break
-                if time.monotonic() >= deadline:
-                    raise TimeoutError("Completion response did not arrive")
-                if cancelled.wait(float(completion.get("interval", 0.1))):
-                    raise CancelledError('Operation cancelled')
+        # Identity verification on a new connection is not this operation's command.
+        try:
+            self.connect()
+        except Exception:
+            self.close()
+            raise
+        self.transmitted = False
+        try:
+            value = self.exchange(command, is_query)
+            if completion:
+                deadline = time.monotonic() + float(completion.get("timeout", 30))
+                while True:
+                    observed = self.exchange(completion["query"].format_map(arguments), True)
+                    if observed == str(completion.get("equals", "1")):
+                        break
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("Completion response did not arrive")
+                    if cancelled.wait(float(completion.get("interval", 0.1))):
+                        raise CancelledError('Operation cancelled')
+        except CancelledError:
+            raise
+        except Exception as error:
+            # Once a change command has left this computer, a lost reply does not show
+            # whether the instrument acted. Optionally keep that outcome open.
+            if (self.unconfirmed_change == "hold" and self.transmitted
+                    and spec.get("effect", "change") != "observe"):
+                raise UnconfirmedChange(
+                    f"{command!r} was sent; completion was not confirmed ({type(error).__name__}: {error})") from error
+            raise
         result = {"time":now(), "source":"device" if is_query else "driver", "command":command}
         if is_query:
             encoding = spec.get("result", {})

@@ -1106,11 +1106,13 @@ class Engine:
             except BaseException as error:
                 op.update(state='failed', error=f'{type(error).__name__}: {error}')
                 from .process_driver import DriverUnavailable
-                if isinstance(error, DriverUnavailable):
+                from .drivers import UnconfirmedChange
+                if isinstance(error, (DriverUnavailable, UnconfirmedChange)):
                     op['outcome_unknown'] = True
-                    worker = getattr(self.devices[op['device']], 'worker', None)
-                    self.offline.update({name: str(error) for name, driver in self.devices.items()
-                        if name == op['device'] or (worker is not None and getattr(driver, 'worker', None) is worker)})
+                    if isinstance(error, DriverUnavailable):
+                        worker = getattr(self.devices[op['device']], 'worker', None)
+                        self.offline.update({name: str(error) for name, driver in self.devices.items()
+                            if name == op['device'] or (worker is not None and getattr(driver, 'worker', None) is worker)})
                     affected = self._amounts(op).keys() | self._amounts(run, reserve=True).keys()
                     self.store.hold_resources(affected, op_id, str(error))
                     self.resource_holds = self.store.resource_holds()

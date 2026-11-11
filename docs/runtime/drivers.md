@@ -8,6 +8,8 @@ A description names an instrument's operations and their inputs. A driver perfor
 
 `iop adapters`, Python `client.adapters()` and MCP `available_adapters` expose supported connection fields. TCP `source_address` selects a local IP when the computer has several network interfaces; omit it to use system routing. Serial configuration includes `baudrate`, `bytesize`, `parity`, `stopbits`, `xonxoff`, `rtscts` and `dsrdtr`. Use settings from the instrument manual. / 连接参数可直接查询；多网卡可指定本机 IP，串口参数按仪器手册填写。
 
+A change operation can time out after its command has reached the instrument. By default the operation simply fails. Set `"unconfirmed_change": "hold"` to record such an outcome as unknown instead: once the command or its completion query has been sent and no reply or completion arrives, the operation keeps the device and the experiment's reserved resources unavailable, like an interrupted SDK worker. Operations described with `effect: "observe"` can still read the instrument. Record what they show through `/v1/resources/resolve`, then continue. A failure before anything was sent, and a timeout of an observation, remain ordinary failures. / 设定类操作的命令可能已经到达仪器，回复或完成确认却超时。默认记为失败；设置 `"unconfirmed_change": "hold"` 后，命令发出后未得到回复或完成确认的设定类操作记为结果不明，设备和本实验预留的资源保持挂起，只允许 `effect: "observe"` 的读取操作；读回实际状态并通过 `/v1/resources/resolve` 登记后继续。命令发出前的失败和读取操作超时仍按普通失败处理。
+
 Use `release` to hand an idle connection to another program, then `reconnect` to restore it. Shared SDK workers release all their devices together. / 使用 `release` 释放空闲连接，其他软件用完后通过 `reconnect` 接回。
 
 Copy [scpi-meter.json](../../examples/iop/scpi-meter.json), replace the address and model-specific commands, then register it with `iop register device.json`. / 复制示例，按型号手册修改地址与命令后登记。
