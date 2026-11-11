@@ -149,6 +149,7 @@ class MCPCase(unittest.TestCase):
                 self.assertNotIn(self.config['token'], json.dumps(context))
                 definition = {'schema_version':1, 'id':'mcp-bench', 'devices':['stage']}
                 self.assertEqual(call('configure_platform', {'definition':definition})['revision'], 1)
+                self.assertEqual(call('describe_platform', {'platform':'mcp-bench'})['definition']['devices'], ['stage'])
                 self.assertEqual(self.client.request('/v1/runs'), [])
                 parameters = {'steps':[{'id':'read', 'device':'stage', 'operation':'position'}],
                               'platform':'mcp-bench', 'request_id':'mcp-read'}

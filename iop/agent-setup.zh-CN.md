@@ -44,6 +44,7 @@ iop context --start
 | --- | --- |
 | `lab_context` | 读取实验室现状；可选择重新扫描连接 |
 | `describe_instrument` | 读取单台仪器的操作、参数和单位 |
+| `describe_platform` | 读取单个平台的设备、连接、共享资源、过程和信号时序 |
 | `configuration_schema` | 读取仪器、平台或实验步骤的 JSON 格式 |
 | `register_instrument` | 用已安装驱动登记连接 |
 | `register_instruments` | 批量保存仪器说明，分别返回每项结果；ID 可省略 |

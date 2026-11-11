@@ -44,6 +44,7 @@ An individual instrument can operate without a platform. A platform records rela
 | --- | --- |
 | `lab_context` | Current laboratory description; optional connection refresh |
 | `describe_instrument` | Operations, arguments and units for one device |
+| `describe_platform` | Devices, connections, shared resources, procedures and signal timing of one platform |
 | `configuration_schema` | Device, platform or workflow JSON schema |
 | `register_instrument` | Register a connection using an installed driver |
 | `register_instruments` | Register multiple descriptions, returning each result; IDs may be omitted |

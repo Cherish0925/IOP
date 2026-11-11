@@ -44,6 +44,11 @@ def create_server(client, *, http=False):
         return client.request('/v1/devices/' + quote(device, safe=''))
 
     @server.tool(annotations=read_only)
+    def describe_platform(platform: str) -> dict:
+        """Read a platform's devices, connections, shared resources, procedures and revision. Trigger and clock wiring appears under timing, with arm_order listing receivers before their sources."""
+        return client.platform(platform)
+
+    @server.tool(annotations=read_only)
     def configuration_schema(name: Literal['device', 'platform', 'workflow', 'instrument-profile']) -> dict:
         """Read the JSON schema before preparing a device, platform or workflow definition."""
         return client.schema(name)
