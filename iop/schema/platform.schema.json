@@ -108,6 +108,53 @@
           },
           "description": {
             "type": "string"
+          },
+          "signal": {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "description": "Electrical timing of a trigger, gate, marker, clock, reference or sync connection. Hardware performs the timing; the description records it.",
+            "properties": {
+              "type": {
+                "enum": [
+                  "trigger",
+                  "gate",
+                  "marker",
+                  "clock",
+                  "reference",
+                  "sync"
+                ]
+              },
+              "edge": {
+                "enum": [
+                  "rising",
+                  "falling",
+                  "both"
+                ]
+              },
+              "delay_s": {
+                "type": "number"
+              },
+              "width_s": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "level_v": {
+                "type": "number"
+              },
+              "frequency_hz": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "impedance_ohm": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "description": {
+                "type": "string"
+              }
+            }
           }
         }
       }

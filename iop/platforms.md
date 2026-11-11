@@ -14,6 +14,17 @@ A resource lists the devices that use it. Its optional `operations` mapping rest
 
 An experiment's top-level `resources` reserves equipment and shared objects across steps until completion. Per-operation ordering alone does not preserve a complete change-condition, settle, measure sequence.
 
+## Trigger, clock and reference signals
+
+A connection can carry `signal`: `type` (`trigger`, `gate`, `marker`, `clock`, `reference` or `sync`) and, where known, `edge`, `delay_s`, `width_s`, `level_v`, `frequency_hz`, `impedance_ohm` and `description`.
+
+```json
+{"kind": "electrical", "from": {"device": "awg", "port": "marker1"}, "to": {"device": "camera", "port": "trigger_in"},
+ "signal": {"type": "trigger", "edge": "rising", "delay_s": 2e-6, "level_v": 3.3}}
+```
+
+The platform description then includes `timing`: the signal list and `arm_order`, an order in which to arm every receiver before its source. A loop of signal connections is refused. The instruments generate and receive these signals; IOP records the wiring and its parameters so experiment programs and agents configure each device to match.
+
 ## Run two platforms
 
 These commands use the simulated devices created by `init --demo`. Choose another `--home` directory when an existing installation contains real instruments.

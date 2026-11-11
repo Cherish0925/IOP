@@ -296,6 +296,9 @@ class Engine:
             record = json.loads(dumps(self.platforms[platform_id]))
             record['active_runs'] = [r['id'] for r in self.runs.values() if r.get('platform', {}).get('id') == platform_id]
             record['missing_devices'] = sorted(set(record['definition']['devices']) - self.devices.keys())
+            signals = platform_model.timing(record['definition'])
+            if signals:
+                record['timing'] = signals
             return record
 
     def configure_resources(self, value):
