@@ -152,6 +152,10 @@ Use values actually returned by `iop discover`; the numbers above are placeholde
 
 使用 `iop discover` 返回的真实字段值。服务默认每 30 秒发现一次，已登记的设备不重复添加。设备地址发生变化时，修改配置并重启。
 
+## Limit available operations / 限定可用操作
+
+A device record can list `allowed_operations`: name patterns such as `["read_*", "set_voltage"]` or `["get.*", "set.ch1.*"]`. Other operations disappear from the description and are refused on submission, for every driver and entry point. Use it to remove the generic SCPI `query` and `write` or Modbus register writes from production instruments, so the ranges of named operations cannot be bypassed. `identify` stays available for discovery. Patterns that match no operation are refused when the device is saved. / 设备记录可用 `allowed_operations` 列出允许的操作名模式；其余操作从说明中移除，提交时被拒绝，对所有驱动和入口一致生效。可用来去掉通用 `query`、`write` 等底层命令，使具名操作的参数范围不被绕过。`identify` 保留用于识别。
+
 ## Python driver / Python 驱动
 
 Implement these methods in an installed Python module:

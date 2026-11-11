@@ -20,6 +20,7 @@ from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor, CancelledError
 from pathlib import Path, PurePosixPath
 from .config import save_json
+from .device_configuration import allowed
 from .drivers import make_driver, parameters
 from .store import Store, dumps, now
 from . import platforms as platform_model
@@ -450,7 +451,7 @@ class Engine:
             else:
                 driver = make_driver(record, self.devices)
             try:
-                description = driver.describe()
+                description = allowed(record, driver.describe())
                 if not isinstance(description.get("operations"), dict) or not description["operations"]:
                     raise ValueError("Driver must describe its operations")
                 if any(not isinstance(spec, dict) for spec in description["operations"].values()):
@@ -542,7 +543,7 @@ class Engine:
         metadata = {k:record[k] for k in ('identity', 'identity_source', 'instrument_profile', 'documentation') if k in record}
         if before == record:
             return
-        self.descriptions[device_id] = {'id':device_id, 'driver':record['driver'], **self.devices[device_id].describe(), **metadata}
+        self.descriptions[device_id] = {'id':device_id, 'driver':record['driver'], **allowed(record, self.devices[device_id].describe()), **metadata}
         self.descriptions[device_id]['revision'] = self.store.save_device(record)['revision']
         self.config['devices'] = [record if d['id'] == device_id else d for d in self.config['devices']]
         save_json(self.home / 'config.json', self.config)
@@ -583,7 +584,7 @@ class Engine:
                     self.devices[device_id] = new
                     self.device_records[device_id] = record
                     metadata = {k:record[k] for k in ('identity', 'identity_source', 'instrument_profile', 'documentation') if k in record}
-                    self.descriptions[device_id] = {'id':device_id, 'driver':record['driver'], **new.describe(), **metadata}
+                    self.descriptions[device_id] = {'id':device_id, 'driver':record['driver'], **allowed(record, new.describe()), **metadata}
                     self.descriptions[device_id]['revision'] = self.store.save_device(record)['revision']
                     self.config['devices'] = [record if d['id'] == device_id else d for d in self.config['devices']]
                     save_json(self.home/'config.json', self.config)
@@ -1002,7 +1003,7 @@ class Engine:
                 for name in sorted(affected):
                     created[name] = make_driver(self.device_records[name], registry)
                     registry[name] = created[name]
-                    if created[name].describe() != {k: v for k, v in self.descriptions[name].items() if k not in {'id', 'driver', 'identity', 'identity_source', 'instrument_profile', 'documentation', 'revision'}}:
+                    if allowed(self.device_records[name], created[name].describe()) != {k: v for k, v in self.descriptions[name].items() if k not in {'id', 'driver', 'identity', 'identity_source', 'instrument_profile', 'documentation', 'revision'}}:
                         raise ValueError('Driver description changed; update the device configuration before reuse')
                 with self.lock:
                     self.devices.update(created)

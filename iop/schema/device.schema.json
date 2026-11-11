@@ -28,6 +28,15 @@
       },
       "uniqueItems": true
     },
+    "allowed_operations": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 1,
+      "description": "Operation name patterns available on this instrument, such as read_* or set.ch1.*; identify stays available. Omit to allow all."
+    },
     "execution": {
       "type": "object",
       "required": [

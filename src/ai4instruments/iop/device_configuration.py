@@ -1,5 +1,6 @@
 """Replace idle instrument configurations and retain their previous definitions."""
 import copy
+import fnmatch
 from .config import save_json
 from .drivers import make_driver
 from .errors import RequestError
@@ -8,8 +9,24 @@ from .errors import RequestError
 METADATA = ('identity', 'identity_source', 'instrument_profile', 'documentation')
 
 
+def allowed(record, description):
+    """Keep only the operations a device record allows; identify stays available for discovery."""
+    patterns = record.get('allowed_operations')
+    if patterns is None:
+        return description
+    if not isinstance(patterns, list) or any(not isinstance(p, str) or not p for p in patterns):
+        raise ValueError('allowed_operations must be a list of operation name patterns')
+    operations = {name: spec for name, spec in description.get('operations', {}).items()
+                  if any(fnmatch.fnmatchcase(name, p) for p in patterns)}
+    if not operations:
+        raise ValueError('allowed_operations matches none of the driver operations')
+    if 'identify' in description.get('operations', {}):
+        operations.setdefault('identify', description['operations']['identify'])
+    return {**description, 'operations': operations}
+
+
 def describe(record, driver):
-    description = driver.describe()
+    description = allowed(record, driver.describe())
     operations = description.get('operations')
     if not isinstance(operations, dict) or not operations or any(not isinstance(s, dict) for s in operations.values()):
         raise ValueError('Driver must describe its operations')
