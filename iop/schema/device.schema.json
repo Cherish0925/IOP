@@ -165,6 +165,10 @@
           }
         }
       }
+    },
+    "instrument_profile": {
+      "type": "string",
+      "description": "ID of a model description in /v1/instrument-catalog. Its operations, name and documentation are added at registration; operations in config take precedence."
     }
   }
 }

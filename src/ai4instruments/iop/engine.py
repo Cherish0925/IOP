@@ -419,6 +419,9 @@ class Engine:
             if 'calibration' in record:
                 from .calibration import check
                 check(record['calibration'])
+            if record.get('instrument_profile'):
+                from .identification import apply_profile
+                record = apply_profile(record, self.instrument_profiles())
             device_id = record.get("id", "")
             if not device_id:
                 config = record.get('config', {})

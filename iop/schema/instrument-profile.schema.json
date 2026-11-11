@@ -13,7 +13,13 @@
       "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$"
     },
     "driver": {
-      "const": "scpi"
+      "enum": [
+        "scpi",
+        "modbus",
+        "http"
+      ],
+      "default": "scpi",
+      "description": "Driver whose operations the description holds. SDK drivers describe their own operations."
     },
     "match": {
       "type": "object",
@@ -160,30 +166,64 @@
                     ]
                   }
                 }
+              },
+              "effect": {
+                "enum": [
+                  "observe",
+                  "change"
+                ]
+              },
+              "completion": {
+                "type": "object"
+              },
+              "function": {
+                "enum": [
+                  "read_holding_registers",
+                  "read_input_registers",
+                  "read_coils",
+                  "read_discrete_inputs",
+                  "write_register",
+                  "write_registers",
+                  "write_coil"
+                ]
+              },
+              "arguments": {
+                "type": "object"
+              },
+              "value_parameter": {
+                "type": "string"
+              },
+              "scale": {
+                "type": "number"
+              },
+              "offset": {
+                "type": "number"
+              },
+              "signed": {
+                "type": "boolean"
+              },
+              "unit": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "method": {
+                "enum": [
+                  "GET",
+                  "POST",
+                  "PUT",
+                  "PATCH",
+                  "DELETE"
+                ]
+              },
+              "body": {},
+              "result_path": {
+                "type": "array"
               }
             },
-            "oneOf": [
-              {
-                "required": [
-                  "query"
-                ],
-                "not": {
-                  "required": [
-                    "write"
-                  ]
-                }
-              },
-              {
-                "required": [
-                  "write"
-                ],
-                "not": {
-                  "required": [
-                    "query"
-                  ]
-                }
-              }
-            ]
+            "description": "scpi: exactly one of query or write. modbus: function, with fixed arguments, scale, offset, signed, unit and value_parameter. http: path, method, query, body, result_path and unit."
           }
         }
       },

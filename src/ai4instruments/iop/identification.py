@@ -38,33 +38,78 @@ def validate_profile(profile):
         values = value if isinstance(value, list) else [value]
         if not values or any(not isinstance(v, str) or not v.strip() for v in values):
             raise ValueError('Match values must be nonempty names or lists of names.')
-    if profile.get('driver', 'scpi') != 'scpi':
-        raise ValueError('Instrument profiles describe SCPI operations. Use a discovery profile for an SDK driver.')
+    driver = profile.get('driver', 'scpi')
+    if driver not in ('scpi', 'modbus', 'http'):
+        raise ValueError('Model descriptions hold scpi, modbus or http operations. SDK drivers describe their own '
+                         'operations; register them with a discovery profile.')
     config = profile.get('config', {})
     if not isinstance(config, dict) or set(config) - {'name', 'operations'}:
         raise ValueError('A model description contains a name and operations; connection settings belong to the instrument.')
     operations = config.get('operations', {})
     if not isinstance(operations, dict) or not operations:
         raise ValueError('Provide named instrument operations.')
-    if set(operations) & {'identify', 'query', 'write'}:
-        raise ValueError('Use descriptive operation names; identify, query and write are provided by the driver.')
+    from .adapters import MODBUS_FUNCTIONS
+    builtin = {'scpi': {'identify', 'query', 'write'}, 'modbus': set(MODBUS_FUNCTIONS), 'http': set()}[driver]
+    if set(operations) & builtin:
+        raise ValueError('Use descriptive operation names; ' + ', '.join(sorted(builtin)) + ' are provided by the driver.')
     for operation, spec in operations.items():
         name(operation, 'Operation name')
-        if not isinstance(spec, dict) or ('query' in spec) == ('write' in spec):
-            raise ValueError('Each operation needs exactly one query or write command.')
-        command = spec.get('query', spec.get('write'))
+        if not isinstance(spec, dict):
+            raise ValueError('Each operation is described by an object.')
         params = spec.get('parameters', {})
-        if not isinstance(command, str) or not command.strip() or not isinstance(params, dict):
-            raise ValueError('Provide a command string and parameter descriptions.')
-        if any(not isinstance(p, dict) for p in params.values()):
+        if not isinstance(params, dict) or any(not isinstance(p, dict) for p in params.values()):
             raise ValueError('Each parameter needs a description object.')
-        for _, field, _, _ in string.Formatter().parse(command):
+        if driver == 'scpi':
+            if ('query' in spec) == ('write' in spec):
+                raise ValueError('Each operation needs exactly one query or write command.')
+            template = spec.get('query', spec.get('write'))
+        elif driver == 'modbus':
+            if spec.get('function') not in MODBUS_FUNCTIONS:
+                raise ValueError(f'Operation {operation}: function must be one of ' + ', '.join(MODBUS_FUNCTIONS))
+            if not isinstance(spec.get('arguments', {}), dict):
+                raise ValueError(f'Operation {operation}: arguments must be an object')
+            if 'value_parameter' in spec and spec['value_parameter'] not in params:
+                raise ValueError(f'Operation {operation}: describe value parameter ' + str(spec['value_parameter']))
+            continue
+        else:
+            if str(spec.get('method', 'GET')).upper() not in ('GET', 'POST', 'PUT', 'PATCH', 'DELETE'):
+                raise ValueError(f'Operation {operation}: method must be GET, POST, PUT, PATCH or DELETE')
+            template = spec.get('path')
+        if not isinstance(template, str) or not template.strip():
+            raise ValueError(f'Operation {operation}: provide its ' + ('command' if driver == 'scpi' else 'path'))
+        for _, field, _, _ in string.Formatter().parse(template):
             if field is not None and field not in params:
                 raise ValueError('Describe command parameter: ' + field)
     docs = profile.get('documentation', [])
     if not isinstance(docs, list) or any(not isinstance(url, str) or not url.startswith(('https://', 'http://')) for url in docs):
         raise ValueError('Documentation must be a list of web links.')
     return profile
+
+
+def apply_profile(record, profiles):
+    """Add the operations of the model description named by instrument_profile.
+
+    Operations already in the record take precedence. A record saved with its operations stays
+    usable when the description is no longer installed.
+    """
+    wanted = record.get('instrument_profile')
+    priority = {'builtin': 0, 'package': 1, 'local': 2}
+    found = sorted((p for p in profiles if p['id'] == wanted),
+                   key=lambda p: priority.get(p.get('source', {}).get('kind', 'local'), 2))
+    if not found:
+        if record.get('config', {}).get('operations'):
+            return record
+        raise ValueError('Unknown model description: ' + str(wanted))
+    profile = found[-1]
+    driver = profile.get('driver', 'scpi')
+    if record.setdefault('driver', driver) != driver:
+        raise ValueError(f'Model description {wanted} is for the {driver} driver')
+    config = record.setdefault('config', {})
+    config['operations'] = {**copy.deepcopy(profile['config']['operations']), **config.get('operations', {})}
+    if 'name' in profile['config']:
+        config.setdefault('name', profile['config']['name'])
+    record.setdefault('documentation', list(profile.get('documentation', [])))
+    return record
 
 
 def parse_identity(response):

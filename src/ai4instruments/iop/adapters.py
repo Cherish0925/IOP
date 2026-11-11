@@ -45,6 +45,10 @@ class _ModbusBus:
             self.client = None
 
 
+MODBUS_FUNCTIONS = ('read_holding_registers', 'read_input_registers', 'read_coils', 'read_discrete_inputs',
+                    'write_register', 'write_registers', 'write_coil')
+
+
 class Modbus(Driver):
     def __init__(self, *args):
         super().__init__(*args)
@@ -103,8 +107,7 @@ class Modbus(Driver):
         if cancelled.is_set():raise CancelledError()
         spec=self.describe()['operations'][operation]
         function=spec.get('function',operation)
-        allowed={'read_holding_registers','read_input_registers','read_coils','read_discrete_inputs','write_register','write_registers','write_coil'}
-        if function not in allowed:raise ValueError('Unknown Modbus function: '+function)
+        if function not in MODBUS_FUNCTIONS:raise ValueError('Unknown Modbus function: '+function)
         values=dict(spec.get('arguments',{}))
         values.update(arguments)
         if 'value_parameter' in spec:
