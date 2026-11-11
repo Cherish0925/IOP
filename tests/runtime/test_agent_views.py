@@ -6,6 +6,7 @@ from unittest.mock import patch
 from ai4instruments.iop import arrays
 from ai4instruments.iop.execution import Context
 from ai4instruments.iop.mcp import AGENT_VALUES, compact
+from . import test_service as fixture
 
 
 class CompactCase(unittest.TestCase):
@@ -30,6 +31,20 @@ class ArrayResultCase(unittest.TestCase):
         self.assertEqual((fields['data']['count'], 'values' in fields), (1000, False))
         with self.assertRaisesRegex(ValueError, 'whole float32 elements'):
             arrays.result(payload[:-1], spec)
+
+
+class OverviewCase(unittest.TestCase):
+    setUp = fixture.ServiceCase.setUp
+    tearDown = fixture.ServiceCase.tearDown
+
+    def test_long_operation_lists_end_with_a_count(self):
+        operations = {f'read_channel_{n:02d}': {'path': f'/ch/{n}', 'parameters': {}} for n in range(30)}
+        self.client.register({'id': 'logger', 'driver': 'http', 'config': {'base_url': 'http://192.0.2.5', 'operations': operations}})
+        summary = next(d for d in self.client.context()['devices'] if d['id'] == 'logger')
+        self.assertEqual((len(summary['operations']), summary['operations_omitted']), (24, 6))
+        stage = next(d for d in self.client.context()['devices'] if d['id'] == 'stage')
+        self.assertNotIn('operations_omitted', stage)
+        self.assertEqual(len(self.client.request('/v1/devices/logger')['operations']), 30)
 
 
 if __name__ == '__main__':

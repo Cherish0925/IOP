@@ -21,6 +21,17 @@ def schema_document(name):
     return json.loads(path.read_text(encoding='utf-8'))
 
 
+# Overviews list this many operation names per device; describe_instrument returns all of them.
+SUMMARY_OPERATIONS = 24
+
+
+def operation_names(names):
+    names = list(names)
+    if len(names) <= SUMMARY_OPERATIONS:
+        return {'operations': names}
+    return {'operations': names[:SUMMARY_OPERATIONS], 'operations_omitted': len(names) - SUMMARY_OPERATIONS}
+
+
 def laboratory(engine, refresh=False, detail='summary'):
     if detail not in ('summary', 'full'):
         raise ValueError('Context detail must be summary or full')
@@ -108,7 +119,7 @@ def laboratory(engine, refresh=False, detail='summary'):
     if detail == 'summary':
         states = engine.device_states()
         result['devices'] = [{k: v for k, v in d.items() if k in
-            ('id', 'name', 'driver', 'mode', 'identity', 'revision', 'operations')} |
+            ('id', 'name', 'driver', 'mode', 'identity', 'revision')} | operation_names(d['operations']) |
             {'status': states.get(d['id'], {}), 'description': '/v1/devices/' + d['id']} |
             ({'calibration': {k: d['calibration'][k] for k in ('id', 'valid_until') if k in d['calibration']}}
              if d.get('calibration') else {})
@@ -132,7 +143,7 @@ def device_page(engine, offset=0, limit=100):
         rows = list(engine.descriptions.values())
         states = engine.device_states()
         devices = [{k: v for k, v in row.items() if k in ('id', 'name', 'driver', 'mode', 'identity', 'revision')} |
-                   {'operations': list(row['operations']), 'status': states.get(row['id'], {}),
+                   operation_names(row['operations']) | {'status': states.get(row['id'], {}),
                     'description': '/v1/devices/' + row['id']} for row in rows[offset:offset + limit]]
         return {'devices': devices, 'total': len(rows), 'offset': offset,
                 'next': f'/v1/context/devices?offset={offset + limit}&limit={limit}' if offset + limit < len(rows) else None}

@@ -145,6 +145,8 @@ class MCPCase(unittest.TestCase):
                 self.assertIn('submit_program', tools)
                 self.assertIn('request_id', tools['submit_experiment']['inputSchema']['required'])
                 context = call('lab_context', {})
+                selected = call('describe_instrument', {'device':'stage', 'operations':['pos*']})
+                self.assertEqual(list(selected['operations']), ['position'])
                 self.assertEqual(context['status']['devices'], 3)
                 self.assertNotIn(self.config['token'], json.dumps(context))
                 definition = {'schema_version':1, 'id':'mcp-bench', 'devices':['stage']}

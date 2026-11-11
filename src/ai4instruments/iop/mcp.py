@@ -1,5 +1,6 @@
 """MCP tools forward to the same IOP service used by the desktop and SDKs."""
 from __future__ import annotations
+import fnmatch
 import functools
 import json
 import importlib.util
@@ -103,9 +104,13 @@ def create_server(client, *, http=False):
         return client.changes(after) if after is not None else client.context(refresh)
 
     @tool(annotations=read_only)
-    def describe_instrument(device: str) -> dict:
-        """Read a registered instrument's operations, parameters and units."""
-        return client.request('/v1/devices/' + quote(device, safe=''))
+    def describe_instrument(device: str, operations: list[str] | None = None) -> dict:
+        """Read a registered instrument's operations, parameters and units. operations takes name patterns such as ["set.ch1.*"] to return only those."""
+        description = client.request('/v1/devices/' + quote(device, safe=''))
+        if operations:
+            description['operations'] = {name: spec for name, spec in description['operations'].items()
+                                         if any(fnmatch.fnmatchcase(name, pattern) for pattern in operations)}
+        return description
 
     @tool(annotations=read_only)
     def describe_platform(platform: str) -> dict:
