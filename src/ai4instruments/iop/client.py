@@ -185,8 +185,9 @@ class Client:
         return self.request('/v1/manual-tasks/' + quote(operation_id, safe=''),
                             {'status': status, 'readings': readings or {}, 'note': note, 'by': by})
 
-    def adapters(self):
-        return self.request('/v1/adapters')
+    def adapters(self, name=None):
+        """Installed adapters, or with a name the fields and an example of that adapter's device record."""
+        return self.request('/v1/adapters' + ('?' + urlencode({'name': name}) if name else ''))
 
     def resources(self):
         return self.request('/v1/resources')

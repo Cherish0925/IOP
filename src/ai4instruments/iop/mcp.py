@@ -270,9 +270,9 @@ def create_server(client, *, http=False):
         return {'episode': episode.info(), **episode.transitions(after=after)}
 
     @tool(annotations=read_only)
-    def available_adapters() -> dict:
-        """Read installed adapters and connection parameters before configuring an instrument."""
-        return {'adapters':client.adapters()}
+    def available_adapters(adapter: str | None = None) -> dict:
+        """Read installed adapters. Pass adapter to read the fields of its device record and operations with an example to adapt from the instrument's manual."""
+        return client.adapters(adapter) if adapter else {'adapters':client.adapters()}
 
     @tool()
     def save_experiment_file(run_id: str, name: str, text: str, operation_ids: list[str] | None = None) -> dict:

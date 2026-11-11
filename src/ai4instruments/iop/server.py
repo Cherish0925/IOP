@@ -162,7 +162,11 @@ class Handler(BaseHTTPRequestHandler):
                 result = report(engine, parts[2], body)
             elif parts == ['v1', 'adapters'] and method == 'GET':
                 from .plugins import adapters
-                result = adapters()
+                if 'name' in query:
+                    from .adapter_reference import reference
+                    result = reference(query['name'])
+                else:
+                    result = adapters()
             elif parts == ['v1', 'instrument-profiles']:
                 result = engine.save_instrument_profile(body) if method == 'POST' else engine.instrument_profiles()
             elif parts == ['v1', 'instrument-catalog'] and method == 'GET':

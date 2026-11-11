@@ -17,7 +17,7 @@ Save an acquisition with `save_acquisition` using the completed operation IDs. A
 
 Follow `next_steps` in `lab_context`, such as `inspect_monitors`, `renew_calibration` or `manual_tasks`. A held resource returns to use only through `resolve_resources` with what was actually observed. Report a manual step with `report_manual_step` only from what the person stated.
 
-Use `available_adapters` for connection parameters. A new instrument is described, not programmed: choose the adapter for its interface — `scpi` for text commands (add `protocol` when they are not SCPI), `modbus`, `http`, `opcua`, `epics`, or `python` for an installed Python package — and take commands, ranges and units from its manual. To hand an idle instrument to other software, call `release_instrument`; call `reconnect_instrument` to use it again.
+A new instrument is described, not programmed: choose the adapter for its interface — `scpi` for text commands (add `protocol` when they are not SCPI), `modbus`, `http`, `opcua`, `epics`, or `python` for an installed Python package. `available_adapters(adapter)` returns the record fields and an example; take commands, ranges and units from the instrument's manual. To hand an idle instrument to other software, call `release_instrument`; call `reconnect_instrument` to use it again.
 
 Submit an operation graph with `submit_experiment`, or a research program with `submit_program`. Declare dependencies for steps whose order matters and shared resources for operations that cannot overlap. Keep timing that requires a hardware clock or trigger on the instrument. Program paths and download destinations refer to the computer running the MCP bridge.
 

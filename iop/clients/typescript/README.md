@@ -14,7 +14,7 @@ console.log(await run.result());
 
 `Run.wait({signal})` stops waiting when its signal is aborted. Use `Run.cancel()` to request cancellation of the experiment itself. `Run.watch(cursor)` resumes ordered event retrieval. Both clients support platform setup, operations, experiment packages, events, results and files. `lab.submitPackage(bytes, options)` uploads a ZIP; `run.invoke()` issues an operation from an already-running experiment package; `run.saveResult(value)` saves its result. `run.upload(name, blob)` streams a file and `run.download(id)` returns a Fetch response whose body can be streamed. `run.operations(cursor, limit)` pages through persistent history.
 
-`lab.configureResources({cpu:16, solver:2})` sets capacities; a workflow step or submission can declare `requirements`. Steps can use `bindings` to transfer a previous result into an argument. `lab.adapters()` lists installed drivers and `lab.reconnect(device)` reconnects an idle device.
+`lab.configureResources({cpu:16, solver:2})` sets capacities; a workflow step or submission can declare `requirements`. Steps can use `bindings` to transfer a previous result into an argument. `lab.adapters()` lists installed drivers, `lab.adapterReference(name)` returns the record fields and an example for one, and `lab.reconnect(device)` reconnects an idle device.
 
 The integration test uploads a Node.js experiment package to an actual IOP service, calls an instrument operation, uploads a binary file and reads its result and events.
 

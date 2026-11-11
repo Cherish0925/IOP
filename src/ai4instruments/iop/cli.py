@@ -87,8 +87,10 @@ def parser():
     root.add_argument('--endpoint', help='Remote service URL')
     sub = root.add_subparsers(dest='command', required=True)
     p = sub.add_parser('init', help='Create a configuration'); p.add_argument('--demo', action='store_true'); p.add_argument('--port', type=int, default=8765)
-    for name in ['start','serve','stop','status','open','devices','discover','adapters']:
+    for name in ['start','serve','stop','status','open','devices','discover']:
         sub.add_parser(name)
+    p = sub.add_parser('adapters', help='List adapters, or show the device record fields of one')
+    p.add_argument('name', nargs='?')
     p = sub.add_parser('desktop', help='Open the native desktop window'); p.add_argument('--view', default='overview')
     sub.add_parser('shortcuts', help='Install desktop and browser application entries')
     p = sub.add_parser('context', help='Read the laboratory configuration for an agent or program')
@@ -196,7 +198,7 @@ def main():
         elif args.command == 'discover':
             output(client.discover())
         elif args.command == 'adapters':
-            output(client.adapters())
+            output(client.adapters(args.name))
         elif args.command == 'reconnect':
             output(client.reconnect(args.device))
         elif args.command == 'release':

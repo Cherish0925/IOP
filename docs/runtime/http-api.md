@@ -13,7 +13,7 @@ Base URL: `http://127.0.0.1:8765`. API bodies are JSON objects. Requests to `/v1
 | POST | `/v1/ui/desktop` | `{"view":"devices"}` | Open a native window on the service computer; local requests only |
 | GET | `/v1/context` | `refresh=true` for a new connection scan | Compact laboratory description: instruments, platforms, drivers, resources and remaining setup |
 | GET | `/v1/schemas/{name}` | `device`, `platform`, `workflow`, `instrument-profile` | Packaged JSON schema |
-| GET | `/v1/adapters` | — | Built-in and installed driver entries |
+| GET | `/v1/adapters` | `name=python` for one adapter | Built-in and installed driver entries; with `name`, the fields of that adapter's device record and operations with an example |
 | GET | `/v1/resources` | — | Configured capacities and current allocation |
 | POST | `/v1/resources` | `{"capacities":{"cpu":16,"solver":2}}` | Replace named capacities; accepted work must still fit |
 | POST | `/v1/devices/{device_id}/reconnect` | `{}` | Reconnect idle devices sharing a worker |

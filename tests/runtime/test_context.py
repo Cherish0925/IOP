@@ -198,6 +198,7 @@ class MCPCase(unittest.TestCase):
                 self.assertEqual(saved_episode['episode']['state'], 'ended')
                 self.assertEqual(saved_episode['transitions'][0]['operation_ids'], [batch[-1]['id']])
                 self.assertIn('connection_parameters', call('available_adapters', {})['adapters'][0])
+                self.assertIn('instruction', call('available_adapters', {'adapter':'manual'})['operation'])
                 self.assertEqual(call('finish_experiment', {'run_id':external['id']})['state'], 'completed')
                 self.assertEqual(call('release_instrument', {'device':'stage'})['state'], 'released')
                 self.assertEqual(call('reconnect_instrument', {'device':'stage'})['state'], 'connected')

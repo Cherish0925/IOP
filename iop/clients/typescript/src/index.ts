@@ -60,6 +60,7 @@ export class IOP {
   }
   registerMany(devices: Record<string, unknown>[]) { return this.request('/v1/devices/batch', { devices }); }
   adapters() { return this.request<Record<string, unknown>[]>('/v1/adapters'); }
+  adapterReference(name: string) { return this.request<Record<string, unknown>>('/v1/adapters?' + new URLSearchParams({ name })); }
   instrumentCatalog(options: { manufacturer?: string; model?: string; serial_number?: string; firmware?: string; id?: string; offset?: number; limit?: number; details?: boolean } = {}) {
     const query = new URLSearchParams(Object.entries(options).map(([key, value]) => [key, String(value)]));
     return this.request<{profiles: Record<string, unknown>[]; total: number; offset: number; next_offset: number | null; errors: Record<string, unknown>[]}>(`/v1/instrument-catalog?${query}`);
