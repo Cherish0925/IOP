@@ -1,0 +1,22 @@
+{
+  "name": "dsh-iop",
+  "version": "0.8.7",
+  "description": "IOP laboratory environment",
+  "type": "module",
+  "main": "index.js",
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Cherish0925/IOP",
+    "directory": "iop/connect/deepseek"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml"
+  ]
+}

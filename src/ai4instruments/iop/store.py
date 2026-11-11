@@ -192,8 +192,9 @@ class Store:
         self.db.execute("INSERT INTO events(time,run_id,kind,body) VALUES(?,?,?,?)",
                         (now(), run_id, kind, dumps(data)))
 
-    def events(self, after=0, run_id=None, limit=200, wait=0):
-        query = "SELECT sequence,time,run_id,kind,body FROM events WHERE sequence>?"
+    def events(self, after=0, run_id=None, limit=200, wait=0, summary=False):
+        body = "json_remove(body, '$.result', '$.progress')" if summary else 'body'
+        query = f"SELECT sequence,time,run_id,kind,{body} FROM events WHERE sequence>?"
         args = [int(after)]
         if run_id:
             query += " AND run_id=?"
@@ -214,7 +215,52 @@ class Store:
                     if not row or row[0] in {'completed', 'failed', 'cancelled', 'interrupted'}:
                         break
                 self.changed.wait(deadline - time.monotonic())
-        return [{"sequence": n, "time": t, "run_id": r, "kind": k, **json.loads(b)} for n,t,r,k,b in rows]
+        result = []
+        for n, t, r, k, b in rows:
+            data = json.loads(b)
+            # Older records used sequence for both the event and the stream or
+            # episode item. Keep item numbering without replacing the cursor.
+            if 'sequence' in data:
+                key = 'chunk_sequence' if k == 'stream.chunk' else 'transition_sequence' if k == 'episode.transition' else 'item_sequence'
+                data[key] = data.pop('sequence')
+            result.append({**data, 'sequence': n, 'time': t, 'run_id': r, 'kind': k})
+        return result
+
+    def artifact_page(self, run_id, after=0, limit=100):
+        after, limit = int(after), int(limit)
+        if after < 0 or not 1 <= limit <= 1000:
+            raise ValueError('Use after >= 0 and limit between 1 and 1000')
+        self.get('runs', run_id, summary=True)
+        with self.lock:
+            rows = self.db.execute('SELECT rowid,body FROM artifacts WHERE run_id=? AND rowid>? ORDER BY rowid LIMIT ?',
+                                   (run_id, after, limit+1)).fetchall()
+        page = rows[:limit]
+        return {'files': [json.loads(body) for _, body in page],
+                'cursor': page[-1][0] if page else after, 'has_more': len(rows) > limit}
+
+    def run_updates(self, run_id, after=0, limit=100, wait=0):
+        """Follow changes, including completion of an already observed operation."""
+        after, limit = int(after), int(limit)
+        if after < 0 or not 1 <= limit <= 1000:
+            raise ValueError('Use after >= 0 and limit between 1 and 1000')
+        self.get('runs', run_id, summary=True)
+        events = self.events(after, run_id, limit, wait, summary=True)
+        cursor = events[-1]['sequence'] if events else after
+        identifiers = list(dict.fromkeys(e['operation_id'] for e in events if e.get('operation_id')))
+        fields = ('id', 'run_id', 'state', 'device', 'operation', 'step', 'started', 'ended', 'error', 'outcome_unknown')
+        projection = 'json_object(' + ','.join(f"'{key}',json_extract(body,'$.{key}')" for key in fields) + ')'
+        with self.lock:
+            operations = []
+            if identifiers:
+                marks = ','.join('?' for _ in identifiers)
+                operations = [json.loads(row[0]) for row in self.db.execute(
+                    f'SELECT {projection} FROM operations WHERE run_id=? AND id IN ({marks}) ORDER BY rowid',
+                    [run_id, *identifiers])]
+            more = self.db.execute('SELECT 1 FROM events WHERE run_id=? AND sequence>? LIMIT 1', (run_id,cursor)).fetchone() is not None
+            run = self.get('runs', run_id, summary=True)
+        for op in operations:
+            op['details'] = '/v1/operations/' + op['id']
+        return {'run': run, 'changes': events, 'operations': operations, 'cursor': cursor, 'has_more': more}
 
     def recover(self):
         with self.transaction():

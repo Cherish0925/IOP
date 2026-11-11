@@ -99,7 +99,7 @@ def append(engine, run_id, episode_id, transition):
         engine.store.db.execute('INSERT INTO episode_steps VALUES(?,?,?,?)', (run_id, episode_id, seq, dumps(record)))
         engine.store.db.execute('UPDATE episodes SET next_sequence=?,state=? WHERE run_id=? AND id=?',
                                (seq + 1, state, run_id, episode_id))
-        engine.store.event('episode.transition', run_id, episode_id=episode_id, sequence=seq, state=state)
+        engine.store.event('episode.transition', run_id, episode_id=episode_id, transition_sequence=seq, state=state)
         return record
 
 

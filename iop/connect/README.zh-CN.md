@@ -8,7 +8,7 @@ IOP Runtime 常驻在操纵仪器的计算机上。插件把选定的实验室�
 
 在 Agentic Research OS 打开 **Extensions → Plugins → Add from link**，
 填写 `https://github.com/Cherish0925/IOP`，选择 **iop-lab**，安装并激活。
-仪器电脑先安装 [IOP Runtime 0.8.5](https://github.com/Cherish0925/IOP/releases/tag/iop-v0.8.6)。
+仪器电脑先安装 [IOP Runtime 0.8.5](https://github.com/Cherish0925/IOP/releases/tag/iop-v0.8.7)。
 直接从 GitHub 安装的插件使用工具执行端 PATH 中的 `iop`；需要指定完整路径或远端实验室时，使用下面的具名连接，导入返回的 `research_os` 目录。
 
 Codex：`codex plugin marketplace add Cherish0925/IOP`，再执行 `codex plugin add iop-lab@iop`。
@@ -46,3 +46,15 @@ Claude Code：`claude plugin marketplace add Cherish0925/IOP`，再执行 `claud
 ## 第一次使用
 
 读取 `lab_context`，再用 `describe_instrument` 查询所选设备的操作、参数和单位。接线、样品或校准条件无法从机器读出时，由了解现场的人补齐。提交前选定 `request_id`，保存实验室名和返回的实验 ID；重连后以 `experiment(run_id, include_result=true)` 读取结果。只有在原提交的回复丢失时，才用相同请求 ID 重发相同内容。
+
+## 0.8.7 连接方式
+
+`iop connect --name bench` 现在还返回 `portable` 和 `deepseek` 目录。
+前者采用 Agent Plugins 的 plugin.json / mcp.json 格式；后者包含 DeepSeek
+原生 Cordis 配置与 bundle 声明。使用 `dsh web --patch <deepseek>/cordis.patch.yml`
+连接已选实验室。远程凭据通过宿主的环境变量/凭据系统提供。
+
+DeepSeek Discover 的项目索引：
+https://raw.githubusercontent.com/Cherish0925/IOP/main/docs/dsh/index.json
+该索引中的通用连接使用已安装的 `iop mcp`；指定实验室使用上面的命名连接。
+通过 MCP resource `iop://guides/operations` 按需读取操作说明。

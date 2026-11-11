@@ -1,0 +1,19 @@
+[
+  {
+    "insert": [
+      {
+        "id": "dsh-iop",
+        "name": "@deepseek-ai/dsh-mcp-client",
+        "config": {
+          "serverName": "iop",
+          "transport": "stdio",
+          "command": "iop",
+          "args": [
+            "mcp"
+          ],
+          "env": {}
+        }
+      }
+    ]
+  }
+]

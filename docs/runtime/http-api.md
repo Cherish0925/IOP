@@ -215,3 +215,20 @@ MCP `instrument_profiles` uses this paginated catalogue. The existing `/v1/instr
 If equally specific descriptions match, discovery reports `required: ["instrument_profile"]` and `profile_candidates`. Select a description and apply its missing operations through the existing versioned device configuration endpoint. Existing operations retain precedence. Matching within a source tier does not depend on file order.
 
 Shared connection groups include `device_ids`; a singular `id` is present only for one registered instrument. Modbus registration uses both the bus connection and `config.device_id` to identify a device. Operations address that configured unit. One process shares one connection per bus; different devices retain their own response timeouts. Serial bus settings must agree. Independent buses can execute concurrently.
+
+## Incremental experiment reading (0.8.7)
+
+`GET /v1/runs/{id}/updates?after=0&limit=100&wait=25` returns `run`, `changes`,
+changed `operations`, `cursor` and `has_more`. Retain cursor across reconnects.
+Read the next page immediately when has_more is true; otherwise wait for another
+change. This includes the completion of an operation that was previously read
+while queued or running. Arrays and full operation results remain at
+`GET /v1/operations/{operation_id}`. Existing operation-list pagination is unchanged.
+
+`GET /v1/runs/{id}/file-page?after=0&limit=100` returns `files`, `cursor` and
+`has_more`. It works while the experiment runs. Python uses `run.updates()` and
+`run.file_page()`; TypeScript uses `run.updates()` and `run.filePage()`.
+
+An event's `sequence` is always its global event cursor. Stream positions use
+`chunk_sequence`; episode steps use `transition_sequence`. Older stored events
+are translated when read, preserving their original data.

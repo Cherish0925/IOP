@@ -13,6 +13,7 @@ export type OperationRecord = RunRecord & { run_id: string; device: string; oper
 export type BatchRecord = { request_id: string; run_id: string; complete: boolean; operations: OperationRecord[] };
 export type ArtifactRecord = { id: string; run_id: string; name: string; size: number; media_type: string; created: string; operation_ids?: string[] };
 export type Event = { sequence: number; kind: string; run_id?: string; [key: string]: unknown };
+export type RunUpdates = { run: RunRecord; changes: Event[]; operations: OperationRecord[]; cursor: number; has_more: boolean };
 export type Submission = { name?: string; project?: string; experiment?: string; platform?: string; resources?: string[]; requirements?: Record<string, number>; parameters?: Record<string, unknown>; request_id?: string };
 export class IOPError extends Error {
   constructor(message: string, readonly status: number, readonly details: Record<string, unknown> = {}) { super(message); this.name = 'IOPError'; }
@@ -129,6 +130,8 @@ export class Run {
     return this.client.request(`/v1/runs/${encodeURIComponent(this.id)}/result`);
   }
   files() { return this.client.request<ArtifactRecord[]>(`/v1/runs/${encodeURIComponent(this.id)}/artifacts`); }
+  filePage(after = 0, limit = 100) { return this.client.request<{files: ArtifactRecord[]; cursor: number; has_more: boolean}>(`/v1/runs/${encodeURIComponent(this.id)}/file-page?` + new URLSearchParams({after:String(after),limit:String(limit)})); }
+  updates(after = 0, limit = 100, wait = 0, signal?: AbortSignal) { return this.client.request<RunUpdates>(`/v1/runs/${encodeURIComponent(this.id)}/updates?` + new URLSearchParams({after:String(after),limit:String(limit),wait:String(wait)}), undefined, signal); }
   operations(after = 0, limit = 200) { return this.client.request<{ operations: OperationRecord[]; cursor: number }>(`/v1/runs/${encodeURIComponent(this.id)}/operations?` + new URLSearchParams({after:String(after),limit:String(limit)})); }
   saveResult(result: unknown) { return this.client.request(`/v1/runs/${encodeURIComponent(this.id)}/result`, { result }); }
   async beginEpisode(id: string, definition: EpisodeDefinition) {

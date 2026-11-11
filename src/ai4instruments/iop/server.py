@@ -250,6 +250,10 @@ class Handler(BaseHTTPRequestHandler):
                         result = engine.store.wait_operation(result['id'], wait)
                 elif action == 'operations' and method == 'GET':
                     result = engine.store.operation_page(run_id, query.get('after', 0), query.get('limit', 200))
+                elif action == 'updates' and method == 'GET':
+                    result = engine.store.run_updates(run_id, query.get('after', 0), query.get('limit', 100), query.get('wait', 0))
+                elif action == 'file-page' and method == 'GET':
+                    result = engine.store.artifact_page(run_id, query.get('after', 0), query.get('limit', 100))
                 elif action == 'batches':
                     from . import batches
                     wait = float(query.get('wait', 0))

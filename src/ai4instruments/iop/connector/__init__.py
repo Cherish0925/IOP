@@ -17,7 +17,7 @@ import sys
 import tempfile
 from urllib.parse import urlsplit
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 HERE = Path(__file__).parent
 
 
@@ -287,6 +287,23 @@ def install_locked(args, name, root):
     if "env_vars" in codex:
         toml += "env_vars = " + quote(codex["env_vars"]) + "\n"
     files["codex.toml"] = toml.encode()
+    files["native/" + name + "/plugin.json"] = encoded({
+        "$schema":"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+        "name":name,"version":VERSION,"description":"Operate the selected IOP laboratory","license":"MIT"})
+    files["native/" + name + "/mcp.json"] = encoded({
+        "$schema":"https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+        "mcpServers":{name:{"type":"stdio",**descriptor,**({"env":{key:"${"+key+"}"}} if profile["mode"] == "remote" else {})}}})
+    files["deepseek/" + name + "/package.json"] = encoded({
+        "name":"dsh-"+name,"version":VERSION,"type":"module","main":"index.js","license":"MIT",
+        "description":"IOP laboratory connection", "dsh":{"bundle":{"patch":"./cordis.patch.yml"}},
+        "peerDependencies":{"@deepseek-ai/dsh-mcp-client":"*"}})
+    files["deepseek/" + name + "/index.js"] = b"export {}\n"
+    files["deepseek/" + name + "/cordis.patch.yml"] = encoded([{"insert":[{
+        "id":name,"name":"@deepseek-ai/dsh-mcp-client","config":{
+            "serverName":name,"transport":"stdio",**descriptor,
+            "env":({key:"${credential:"+key+"}"} if profile["mode"] == "remote" else {}),
+            "expandTemplates":profile["mode"] == "remote","cwd":str(revision)}}]}])
+
     # Web workspaces can upload the same Qiushi package with its executable bit intact.
     packed = io.BytesIO()
     with zipfile.ZipFile(packed, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -353,6 +370,8 @@ def install_locked(args, name, root):
         marketplace=str(root),
         mcp=str(revision / "mcp.json"),
         codex_toml=str(revision / "codex.toml"),
+        portable=str(revision / "native" / name),
+        deepseek=str(revision / "deepseek" / name),
         research_os=str(revision / "aros" / name),
         qiushi=str(revision / "qiushi" / name),
         qiushi_zip=str(revision / "qiushi" / (name + ".zip")),

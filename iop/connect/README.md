@@ -9,7 +9,7 @@ IOP Runtime runs on the computer that operates the instruments. An agent host co
 In Agentic Research OS, open **Extensions → Plugins → Add from link** and enter
 `https://github.com/Cherish0925/IOP`. Select **iop-lab**, install it and
 activate the installed revision. Its Skill and MCP server connect to the IOP
-Runtime selected on the tool host. Install the [Runtime release](https://github.com/Cherish0925/IOP/releases/tag/iop-v0.8.6)
+Runtime selected on the tool host. Install the [Runtime release](https://github.com/Cherish0925/IOP/releases/tag/iop-v0.8.7)
 on the instrument computer first. The direct GitHub plugin requires `iop` on the
 tool host's PATH. For an absolute executable path or a remote laboratory, use the
 named connection below and import the returned `research_os` directory.
@@ -57,3 +57,17 @@ The connector writes a receipt with paths, without contacting an instrument. Its
 ## First experiment
 
 Read `lab_context` and `describe_instrument`. Submit once with a stable `request_id`; keep the laboratory name and returned run ID. Read `experiment(run_id, include_result=true)` after reconnecting. Repeat a submission with its original request ID only for the identical experiment. A successful installation does not identify cables, samples, or an unknown instrument's command set.
+
+## Connections in 0.8.7
+
+`iop connect --name bench` also returns `portable` and `deepseek` directories.
+Portable packages use Agent Plugins plugin.json / mcp.json. DeepSeek packages
+include its Cordis patch and bundle declaration. Run
+`dsh web --patch <deepseek>/cordis.patch.yml` for the selected laboratory.
+Remote credentials are resolved through the host credential/environment system.
+
+The project index for DeepSeek Discover is
+https://raw.githubusercontent.com/Cherish0925/IOP/main/docs/dsh/index.json.
+Its general connection runs the installed `iop mcp`; use a named connection above
+for a specific laboratory. Read `iop://guides/operations` through MCP resources
+when operating instructions are needed.

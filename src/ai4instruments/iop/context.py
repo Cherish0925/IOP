@@ -129,11 +129,12 @@ def device_page(engine, offset=0, limit=100):
 
 def changes(engine, after=0, limit=100, wait=0):
     """Summarize a bounded event page; arrays and operation results stay at their URLs."""
-    events = engine.store.events(after, limit=limit, wait=wait)
+    events = engine.store.events(after, limit=limit, wait=wait, summary=True)
     records = []
     for event in events:
         row = {k: event[k] for k in ('sequence', 'time', 'kind', 'run_id', 'device_id', 'devices',
-                                    'connection', 'revision', 'operation_id', 'stream', 'artifact_id', 'size') if event.get(k) is not None}
+                                    'connection', 'revision', 'operation_id', 'stream', 'artifact_id', 'size',
+                                    'chunk_sequence', 'transition_sequence') if event.get(k) is not None}
         if event.get('run_id'):
             row['details'] = '/v1/runs/' + event['run_id'] + '?details=false'
         elif event.get('device_id'):

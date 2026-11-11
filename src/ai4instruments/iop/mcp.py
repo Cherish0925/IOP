@@ -203,6 +203,21 @@ def create_server(client, *, http=False):
         """Request cancellation. In-flight instrument operations finish or report their actual cancellation before their resources are released."""
         return client.run(run_id).cancel()
 
+    @server.tool(annotations=read_only)
+    def experiment_updates(run_id: str, after: int = 0, limit: int = 100, wait: float = 0) -> dict:
+        """Read changes and operation states since cursor, including completion of previously queued work. Pass wait up to 25 seconds to wait for a change. Arrays stay at operation/result URLs. Continue immediately while has_more is true; retain cursor across reconnects."""
+        return client.run(run_id).updates(after, limit, wait)
+
+    @server.tool(annotations=read_only)
+    def experiment_files(run_id: str, after: int = 0, limit: int = 100) -> dict:
+        """Read one page of saved output files; retain cursor for the next page. Works while experiments are running."""
+        return client.run(run_id).file_page(after, limit)
+
+    @server.tool(annotations=read_only)
+    def operation_result(operation_id: str) -> dict:
+        """Read one recorded operation and its result without repeating an instrument action."""
+        return client.request('/v1/operations/' + quote(operation_id, safe=''))
+
     @server.tool()
     def continue_program(run_id: str, request_id: str | None = None) -> dict:
         """Read saved program progress, or pass request_id to continue a stopped program that declares resume:true. The program reads its progress and reuses completed operation IDs."""
@@ -238,6 +253,11 @@ def create_server(client, *, http=False):
     if not http:
         server.tool()(submit_program)
         server.tool()(download_file)
+
+    @server.resource('iop://guides/operations')
+    def operating_guide() -> str:
+        from .connector import skill
+        return skill().decode('utf-8')
 
     @server.resource('iop://laboratory')
     def laboratory_resource() -> str:

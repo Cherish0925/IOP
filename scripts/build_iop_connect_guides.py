@@ -79,8 +79,9 @@ def render(zh):
         + "</figcaption></figure>"
     )
     ids = ["overview", "marketplace", "connection", "installation", "experiment"]
+    ids.extend(f"section-{i}" for i in range(len(ids), len(names)))
     sections = [
-        f'<section id="overview"><span class="eyebrow">IOP RUNTIME · 0.8.6</span><h1>{title}</h1>{html(intro)}{diagram}<h3>{("首次接入" if zh else "First connection")}</h3><p>{role}</p></section>'
+        f'<section id="overview"><span class="eyebrow">IOP RUNTIME · 0.8.7</span><h1>{title}</h1>{html(intro)}{diagram}<h3>{("首次接入" if zh else "First connection")}</h3><p>{role}</p></section>'
     ]
     for i, chunk in enumerate(chunks, 1):
         first, body = chunk.split("\n", 1)

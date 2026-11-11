@@ -366,6 +366,13 @@ class Run:
     def files(self):
         return self.client.request('/v1/runs/'+self.id+'/artifacts')
 
+    def file_page(self, after=0, limit=100):
+        return self.client.request('/v1/runs/'+self.id+'/file-page?' + urlencode({'after':after, 'limit':limit}))
+
+    def updates(self, after=0, limit=100, wait=0):
+        """Read new events and changed operation states without measurement arrays."""
+        return self.client.request('/v1/runs/'+self.id+'/updates?' + urlencode({'after':after, 'limit':limit, 'wait':wait}))
+
     def operations(self, after=0, limit=200):
         return self.client.request('/v1/runs/' + self.id + '/operations?' + urlencode({'after':after,'limit':limit}))
 

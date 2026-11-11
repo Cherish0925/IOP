@@ -83,7 +83,7 @@ def append(engine, run_id, name, sequence, source, length):
             db.execute('INSERT INTO artifacts(id,run_id,body,name) VALUES(?,?,?,?)', (record['id'], run_id, dumps(record), record['name']))
             db.execute('INSERT INTO stream_chunks VALUES(?,?,?,?,?)', (run_id, name, sequence, length, dumps(record)))
             db.execute('UPDATE streams SET chunks=chunks+1,bytes=bytes+? WHERE run_id=? AND name=?', (length, run_id, name))
-            engine.store.event('stream.chunk', run_id, stream=name, sequence=sequence, artifact_id=record['id'], size=length)
+            engine.store.event('stream.chunk', run_id, stream=name, chunk_sequence=sequence, artifact_id=record['id'], size=length)
         committed = True
         return record
     finally:
