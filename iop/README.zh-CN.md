@@ -58,7 +58,7 @@ iop open
 | 常驻服务 | Python HTTP API、调度、实验进程与命令行。 |
 | 原生执行组件 | Rust `iop-execd` 管理 SDK、命令程序和实验程序的进程树、进度、取消与退出。 |
 | 调度与资源 | 依赖就绪队列、跨实验轮流安排、结果到参数的传递、设备并发数与可计数资源。 |
-| 驱动 | SCPI TCP / 串口 / VISA、Modbus TCP / RTU、同步与异步 HTTP、OPC UA、QCoDeS 驱动、命令程序、Python 包与独立 SDK 进程；由人完成的人工步骤。 |
+| 驱动 | SCPI TCP / 串口 / VISA、Modbus TCP / RTU、同步与异步 HTTP、OPC UA、EPICS Channel Access、QCoDeS 驱动、命令程序、Python 包与独立 SDK 进程；由人完成的人工步骤。 |
 | 客户端 | Python、TypeScript、HTTP、MCP、命令行、桌面窗口与浏览器界面。 |
 | 实验记录 | SQLite、配置版本、事件、实验包、输出文件与原始数据关联。 |
 

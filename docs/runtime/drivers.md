@@ -134,6 +134,32 @@ Use `driver: "opcua"` for controllers, process equipment and instruments with an
 
 Each readable variable becomes `get.<path>` (observe), each writable variable `set.<path>` with one `value` argument, and each method `call.<path>` with its input arguments; `snapshot` reads every scalar variable together. Paths are browse names joined with dots, starting at the node. Types come from the data type, `minimum` and `maximum` from EURange, `unit` from EngineeringUnits and `enum` from EnumStrings or EnumValues, so out-of-range values are refused before a request is sent. Numeric arrays return the shared array description and are saved as files. A Bad status fails the read; an Uncertain status is returned in `status`, and `time` is the server's source timestamp. `identity` comes from the Device Integration properties Manufacturer, Model and SerialNumber of a single node, otherwise from the server's build information. Structures and other values IOP cannot write stay readable; their set and call operations are listed in `unsupported`. A device holds at most 2000 variables and methods; choose narrower nodes on larger servers and use `allowed_operations` to expose a subset. / 可读变量生成 `get.<路径>`，可写变量生成 `set.<路径>`，方法生成 `call.<路径>`；`snapshot` 一次读取全部标量变量。类型、范围、单位和枚举取自服务的地址空间，超出范围的值在发送前即被拒绝。数值数组使用统一的数组说明并保存为文件。状态为 Bad 时读取失败，Uncertain 记在 `status` 中；`time` 是服务给出的采样时间。
 
+## EPICS Channel Access
+
+Use `driver: "epics"` for process variables served by EPICS IOCs: motors, detectors, shutters, vacuum and power supplies at beamlines, accelerators, laser facilities and laboratories. Install the `epics` extra. / EPICS IOC 提供的过程变量（电机、探测器、快门、真空、电源等）以 `driver: "epics"` 登记，需安装 `epics` 扩展。
+
+```json
+{
+  "id": "sample-stage",
+  "driver": "epics",
+  "config": {
+    "prefix": "BL7:SMP:",
+    "pvs": ["X.VAL", "X.RBV", "Y.VAL", "Y.RBV", {"name": "Acquire", "wait": false}],
+    "unconfirmed_change": "hold"
+  }
+}
+```
+
+| Field / 字段 | Meaning / 含义 |
+| --- | --- |
+| `pvs` | PV names, or objects with `name`, `wait` and `put_timeout` / PV 名称或带选项的对象 |
+| `prefix` | Prepended to each name; operation names omit it / 名称前缀，操作名不含前缀 |
+| `timeout` | Connection and read timeout in seconds, default 5 / 连接与读取超时 |
+| `put_timeout` | Longest wait for put completion in seconds, default 300 / 等待写入完成的最长时间 |
+| `unconfirmed_change` | `hold`: a put that does not complete in time, or whose wait is cancelled, holds the device / 写入未在时限内完成或等待被取消时挂起设备 |
+
+Each PV becomes `get.<name>` (observe) and, with write access, `set.<name>`; `snapshot` reads every scalar PV together. Units, control limits and enumeration strings come from the IOC, so values outside the control limits are refused before a put. A put waits for put-completion, so moving a motor record returns when the move has finished; `"wait": false` sends without waiting. Reads return the IOC timestamp in `time`, the enumeration `label`, and `alarm` with severity and status when not NO_ALARM; an INVALID value fails the read. Waveforms return the shared array description and are saved as files. Cancelling stops waiting; the record keeps processing, so stop a motor through its stop field. The service finds IOCs through the usual `EPICS_CA_ADDR_LIST` and related environment variables. / 每个 PV 生成 `get.<名称>`，可写的再生成 `set.<名称>`；单位、控制限和枚举取自 IOC，超出控制限的值在写入前即被拒绝。写入等待 put-completion，电机运动结束后才返回。读取结果带 IOC 时间戳、枚举名称和报警状态，INVALID 时读取失败。取消只停止等待，记录仍在处理，停止电机需写其停止字段。
+
 ## QCoDeS drivers / QCoDeS 驱动
 
 [QCoDeS](https://microsoft.github.io/Qcodes/) provides drivers for many source-measure units, multimeters, network and spectrum analyzers, waveform generators, lock-in amplifiers, magnet supplies and temperature controllers. Install the `qcodes` extra and register a driver class with `driver: "qcodes"`. / QCoDeS 已有大量源表、万用表、网络与频谱分析仪、波形发生器、锁相、磁体电源和温控驱动；安装 `qcodes` 扩展后以 `driver: "qcodes"` 登记。

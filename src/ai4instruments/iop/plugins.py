@@ -8,6 +8,7 @@ def adapters():
         ('modbus', 'Modbus TCP and RTU'),
         ('http', 'HTTP JSON operations'),
         ('opcua', 'OPC UA servers, with operations, ranges and units from their address space'),
+        ('epics', 'EPICS Channel Access process variables, with units, limits and put completion'),
         ('command', 'Executable programs and command-line solvers'),
         ('qcodes', 'QCoDeS instrument drivers, with operations from their parameter metadata'),
         ('manual', 'Steps a person performs, with instructions and reported readings'),

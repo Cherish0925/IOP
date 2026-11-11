@@ -442,6 +442,9 @@ def make_driver(record, registry):
     elif name == 'opcua':
         from .opcua_driver import OPCUA
         cls = OPCUA
+    elif name == 'epics':
+        from .epics_driver import EPICS
+        cls = EPICS
     else:
         module, separator, class_name = name.partition(":")
         if not separator:

@@ -100,7 +100,7 @@ for file in run.files():
 
 | 层次 | 已实现的内容 |
 | --- | --- |
-| 通信与驱动 | SCPI TCP / 串口 / VISA、Modbus TCP / RTU、HTTP JSON、OPC UA、QCoDeS 驱动、自定义 Python 驱动、由人完成的人工步骤 |
+| 通信与驱动 | SCPI TCP / 串口 / VISA、Modbus TCP / RTU、HTTP JSON、OPC UA、EPICS Channel Access、QCoDeS 驱动、自定义 Python 驱动、由人完成的人工步骤 |
 | 仪器说明 | 操作名称、参数、单位、范围、资源与驱动定义的完成条件 |
 | 常驻服务 | 设备登记、发现、依赖调度、程序进程、数据保存与读取 |
 | 实验程序 | 任意 Python 逻辑、循环、反馈、拟合和分析；其他语言也可通过 HTTP 调用 |
@@ -135,6 +135,7 @@ iop devices
 | Modbus 仪器 | TCP / RTU；寄存器与线圈读取和写入、具名操作、数值缩放、共用总线排序 |
 | HTTP 仪器 | 按说明调用 JSON 端点，传递参数并提取返回值 |
 | OPC UA 服务 | 变量与方法，类型、范围、单位和枚举取自地址空间 |
+| EPICS IOC | Channel Access 过程变量，带单位、控制限、枚举、报警与写入完成 |
 | QCoDeS 驱动 | 已安装 QCoDeS 仪器驱动的参数，带校验范围与单位 |
 | 厂商 SDK、相机、运动控制、已有平台 | 安装 `module:Class` 形式的 Python 驱动 |
 | 自动登记 | 已配置的发现规则匹配连接信息，生成设备记录 |

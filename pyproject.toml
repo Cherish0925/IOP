@@ -21,6 +21,7 @@ devices = ["pyserial>=3.5", "pyvisa>=1.14", "pyvisa-py>=0.7", "pyusb>=1.2", "zer
 desktop = ["pywebview>=6.2,<7; sys_platform != 'linux'", "pywebview[pyside6]>=6.2,<7; sys_platform == 'linux'"]
 qcodes = ["qcodes>=0.50"]
 opcua = ["asyncua>=1.1"]
+epics = ["caproto>=1.1"]
 agent = ["mcp>=1.30,<2; python_version < '3.11'", "mcp>=2.3,<3; python_version >= '3.11'"]
 
 [tool.setuptools.package-data]
