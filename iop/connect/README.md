@@ -9,7 +9,7 @@ IOP Runtime runs on the computer that operates the instruments. An agent host co
 In Agentic Research OS, open **Extensions → Plugins → Add from link** and enter
 `https://github.com/Cherish0925/IOP`. Select **iop-lab**, install it and
 activate the installed revision. Its Skill and MCP server connect to the IOP
-Runtime selected on the tool host. Install the [Runtime release](https://github.com/Cherish0925/IOP/releases/tag/iop-v0.8.7)
+Runtime selected on the tool host. Install the [Runtime release](https://github.com/Cherish0925/IOP/releases/latest)
 on the instrument computer first. The direct GitHub plugin requires `iop` on the
 tool host's PATH. For an absolute executable path or a remote laboratory, use the
 named connection below and import the returned `research_os` directory.
