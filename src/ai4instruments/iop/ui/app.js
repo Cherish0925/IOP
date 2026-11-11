@@ -165,7 +165,7 @@ function operationsPanel() {
       saved(layer)
         .map(
           (o) =>
-            `<li><button class="button ghost small" data-operation="${esc(o.id)}">${esc(o.id)}</button><small>${esc(o.description)}</small><span class="count" title="${t("完成 / 调用", "completed / calls")}">${o.uses.completed}/${o.uses.calls}</span></li>`,
+            `<li><button class="button ghost small" data-operation="${esc(o.id)}">${esc(o.id)}</button><small>${esc(o.description)}${o.unavailable ? ` <span class="error-text">${esc(o.unavailable.join("; "))}</span>` : ""}</small><span class="count" title="${t("完成 / 调用", "completed / calls")}">${o.uses.completed}/${o.uses.calls}</span></li>`,
         )
         .join("");
   return `<section class="panel"><div class="panel-header"><h2>${t("操作", "Operations")}</h2><span class="count">${basic + state.library.length}</span></div><div class="panel-body"><div class="settings-row"><span>Basic Operations</span><code>${basic} · ${state.devices.length} ${t("台设备", "devices")}</code></div><div class="settings-row"><span>Standard Operations</span><code>${saved("standard").length}</code></div><ul class="mini-list">${rows("standard")}</ul><div class="settings-row"><span>Workflow Operations</span><code>${saved("workflow").length}</code></div><ul class="mini-list">${rows("workflow")}</ul></div></section>`;
@@ -174,7 +174,7 @@ async function inspectOperation(id) {
   const o = await api("library/" + encodeURIComponent(id));
   modal(
     o.id,
-    `<div class="form-stack"><p class="inline-note">${esc(o.description)}${o.conditions ? " · " + esc(o.conditions) : ""}</p><div class="identity-grid"><div><small>${t("版本", "Revision")}</small><strong>${o.revision}</strong></div><div><small>${t("调用", "Calls")}</small><strong>${o.uses.calls}</strong></div><div><small>${t("完成", "Completed")}</small><strong>${o.uses.completed}</strong></div><div><small>${t("失败", "Failed")}</small><strong>${o.uses.failed}</strong></div></div><pre class="response-text">${esc(JSON.stringify({ parameters: o.parameters || {}, steps: o.steps, result: o.result || {} }, null, 2))}</pre></div>`,
+    `<div class="form-stack"><p class="inline-note">${esc(o.description)}${o.conditions ? " · " + esc(o.conditions) : ""}</p>${o.unavailable ? `<p class="error-text">${t("实验室缺少", "The laboratory lacks")}: ${esc(o.unavailable.join("; "))}</p>` : ""}<div class="identity-grid"><div><small>${t("版本", "Revision")}</small><strong>${o.revision}</strong></div><div><small>${t("调用", "Calls")}</small><strong>${o.uses.calls}</strong></div><div><small>${t("完成", "Completed")}</small><strong>${o.uses.completed}</strong></div><div><small>${t("失败", "Failed")}</small><strong>${o.uses.failed}</strong></div></div><pre class="response-text">${esc(JSON.stringify({ parameters: o.parameters || {}, steps: o.steps, result: o.result || {} }, null, 2))}</pre></div>`,
     o.layer === "workflow" ? "WORKFLOW OPERATION" : "STANDARD OPERATION",
   );
 }

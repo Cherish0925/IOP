@@ -442,6 +442,7 @@ sys.stdout.buffer.write(b.getvalue())`,
           operation: "wait",
           arguments: { duration: 0.01 },
         },
+        { id: "shutter", device: "shutter", operation: "close" },
       ],
     },
   });
@@ -449,7 +450,9 @@ sys.stdout.buffer.write(b.getvalue())`,
   await page.click("#refresh-button");
   await page.click('[data-operation="axis.settle"]');
   await page.waitForSelector("#modal[open]");
-  assert.match(await page.locator("#modal-body").innerText(), /sim-axis/);
+  const settle = await page.locator("#modal-body").innerText();
+  assert.match(settle, /sim-axis/);
+  assert.match(settle, /shutter: not registered/);
   await page.click("#modal-close");
   const lasting = await api("runs", {
     name: "Continues after browser closes",

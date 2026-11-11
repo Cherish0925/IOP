@@ -131,6 +131,11 @@ def laboratory(engine, refresh=False, detail='summary'):
         result['operations'][layer] = names[:SAVED_OPERATIONS]
         if len(names) > SAVED_OPERATIONS:
             result['operations'][layer + '_omitted'] = len(names) - SAVED_OPERATIONS
+    unavailable = {o['id']: o['unavailable'] for o in saved if o.get('unavailable')}
+    if unavailable:
+        result['setup']['unavailable_operations'] = unavailable
+        result['next_steps'].append({'action': 'repair_saved_operations', 'operations': sorted(unavailable),
+                                     'details': '/v1/library/{id}'})
     if detail == 'summary':
         states = engine.device_states()
         result['devices'] = [{k: v for k, v in d.items() if k in

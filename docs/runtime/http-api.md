@@ -47,7 +47,7 @@ Base URL: `http://127.0.0.1:8765`. API bodies are JSON objects. Requests to `/v1
 | GET | `/v1/runs/{run_id}/artifacts` | — | File records |
 | POST | `/v1/runs/{run_id}/files?name=raw/data.bin` | Binary body and `Content-Length`; optional URL-encoded `operation_ids` JSON array | Stream a file without base64 encoding |
 | GET | `/v1/artifacts/{artifact_id}` | — | File bytes, streamed |
-| GET | `/v1/library` | — | Saved Standard and Workflow Operations: layer, description, parameters and use counts |
+| GET | `/v1/library` | — | Saved Standard and Workflow Operations: layer, description, parameters, use counts and, when a device or operation they name is gone, `unavailable` |
 | POST | `/v1/library` | `{"definition": {...}, "expected_revision": 1, "archive": "<base64 ZIP>"}`; revision and archive optional | Saved operation as a new revision; the archive holds the program of a Workflow Operation that decides from results. See [operations](operations.md) |
 | GET | `/v1/library/{id}/files/{name}` | `revision=n` optional | Text of one file of a saved program |
 | GET | `/v1/library/{id}` | — | One saved operation with its steps, result and record of use; `/history` lists revisions |

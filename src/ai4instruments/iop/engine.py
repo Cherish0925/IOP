@@ -510,19 +510,52 @@ class Engine:
                 seen.add(current)
                 pending.extend(step['operation'] for step in self.library[current]['steps'] if 'device' not in step)
 
+    def _unavailable(self, operation_id, found=None):
+        """What a saved operation names that the laboratory no longer has: devices, their operations
+        or parameters. A device given by a parameter, and the devices a program uses, are known only
+        when it runs."""
+        found = {} if found is None else found
+        if operation_id in found:
+            return found[operation_id]
+        found[operation_id] = problems = []
+        for step in self.library[operation_id].get('steps', []):
+            if 'device' not in step:
+                problems += [f"{step['operation']}: {p}" for p in self._unavailable(step['operation'], found)]
+                continue
+            if library.placeholders(step['device']):
+                continue
+            if step['device'] not in self.descriptions:
+                problems.append(f"{step['device']}: not registered")
+                continue
+            operation = self.descriptions[step['device']]['operations'].get(step['operation'])
+            if operation is None:
+                problems.append(f"{step['device']}.{step['operation']}: no such operation")
+                continue
+            extra = (step.get('arguments', {}).keys() | step.get('bindings', {}).keys()) - operation.get('parameters', {}).keys()
+            if extra:
+                problems.append(f"{step['device']}.{step['operation']}: no parameter " + ', '.join(sorted(extra)))
+        found[operation_id] = list(dict.fromkeys(problems))
+        return found[operation_id]
+
     def saved_operation(self, operation_id):
         with self.lock:
             record = self.library[operation_id]
-            return {**record, 'uses': self.uses.get(operation_id, {'calls': 0, 'completed': 0, 'failed': 0})}
+            unavailable = self._unavailable(operation_id)
+            return {**record, 'uses': self.uses.get(operation_id, {'calls': 0, 'completed': 0, 'failed': 0}),
+                    **({'unavailable': unavailable} if unavailable else {})}
 
     def saved_operations(self):
         """One line per saved operation: enough to choose one; saved_operation gives its steps."""
         with self.lock:
-            return [{'id': record['id'], 'layer': record['layer'], 'description': record['description'],
-                     'parameters': list(record.get('parameters', {})), 'revision': record['revision'],
-                     **({'program': True} if 'program' in record else {}),
-                     'uses': self.uses.get(record['id'], {'calls': 0, 'completed': 0, 'failed': 0})}
-                    for record in sorted(self.library.values(), key=lambda r: (r['layer'], r['id']))]
+            found, rows = {}, []
+            for record in sorted(self.library.values(), key=lambda r: (r['layer'], r['id'])):
+                unavailable = self._unavailable(record['id'], found)
+                rows.append({'id': record['id'], 'layer': record['layer'], 'description': record['description'],
+                             'parameters': list(record.get('parameters', {})), 'revision': record['revision'],
+                             **({'program': True} if 'program' in record else {}),
+                             'uses': self.uses.get(record['id'], {'calls': 0, 'completed': 0, 'failed': 0}),
+                             **({'unavailable': unavailable} if unavailable else {})})
+            return rows
 
     def apply_platform(self, definition, expected_revision=0):
         with self.lock:

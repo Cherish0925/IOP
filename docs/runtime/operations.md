@@ -85,3 +85,7 @@ The same form works in workflows, batches of a continuous experiment and platfor
 ## Record of use / 使用记录
 
 Every use is recorded when its last step ends: `uses` counts `calls`, `completed` and `failed`, and `last` names the experiment, state, time and revision. Each Basic Operation run for a use carries `calls`, the chain of uses it belongs to, so the evidence of a method is the set of experiments in which it ran. A failed or cancelled step ends the use as failed or cancelled; operations already executed are not undone. / 每次使用在其最后一步结束时记录：次数、完成数、失败数，以及最近一次的实验、状态、时间和版本。为某次使用执行的每个基础操作都带有所属的调用链，方法的证据就是它运行过的那些实验。
+
+## When the laboratory changes / 实验室变化之后
+
+A saved operation keeps the device names, operations and parameters it was written with. When one of them is no longer there (the device is not registered, its description no longer has the operation, or the operation lost a parameter), the listing and `GET /v1/library/{id}` carry `unavailable`, for example `["lamp: not registered", "meter.configure: no such operation"]`, and `lab_context` adds `setup.unavailable_operations` and the next step `repair_saved_operations`. Register the device again or save a revision. A device given by a parameter, and the devices a program uses, are known only when the operation runs. / 已保存的操作沿用保存时的设备名、操作和参数。其中任何一项不在了（设备未登记、设备描述中已无该操作、操作少了某个参数），列表和 `GET /v1/library/{id}` 会带 `unavailable`，`lab_context` 增加 `setup.unavailable_operations` 和下一步 `repair_saved_operations`。重新登记设备或保存新版本即可。由参数给出的设备、程序内部使用的设备，只有在运行时才能确定。

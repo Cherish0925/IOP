@@ -145,6 +145,29 @@ class LibraryCase(unittest.TestCase):
                 self.client.submit(steps)
         self.assertEqual(self.client.request('/v1/runs'), [])
 
+    def test_operations_that_name_what_the_laboratory_lacks_are_marked(self):
+        self.save_all()
+        self.assertNotIn('unavailable', self.client.saved_operation('bench.measure_at'))
+        self.assertNotIn('unavailable_operations', self.client.context()['setup'])
+        illuminate = {'id': 'lamp.flash', 'layer': 'standard', 'description': 'Flash the lamp',
+                      'steps': [{'id': 'on', 'device': 'lamp', 'operation': 'wait', 'arguments': {'duration': 0.01}}]}
+        self.client.save_operation(illuminate)
+        self.client.save_operation({**MEASURE_AT, 'steps': MEASURE_AT['steps'] + [{'id': 'flash', 'operation': 'lamp.flash'}]})
+        listed = {item['id']: item.get('unavailable') for item in self.client.saved_operations()}
+        self.assertEqual((listed['lamp.flash'], listed['bench.measure_at'], listed['meter.capture']),
+                         (['lamp: not registered'], ['lamp.flash: lamp: not registered'], None))
+        # A device given by a parameter is known only when the operation is used.
+        self.assertIsNone(listed['axis.position'])
+        context = self.client.context()
+        self.assertEqual(context['setup']['unavailable_operations']['lamp.flash'], ['lamp: not registered'])
+        self.assertIn({'action': 'repair_saved_operations', 'operations': ['bench.measure_at', 'lamp.flash'],
+                       'details': '/v1/library/{id}'}, context['next_steps'])
+        self.client.register({'id': 'lamp', 'driver': 'simulated', 'config': {'kind': 'stage'}})
+        self.assertNotIn('unavailable', self.client.saved_operation('bench.measure_at'))
+        current = self.client.device_history('meter')[0]
+        self.client.configure_device('meter', {**current['definition'], 'allowed_operations': ['measure']}, current['revision'])
+        self.assertEqual(self.client.saved_operation('meter.capture')['unavailable'], ['meter.configure: no such operation'])
+
     def test_the_example_operations_run_on_the_demonstration_devices(self):
         import json
         from pathlib import Path
