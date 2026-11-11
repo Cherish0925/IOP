@@ -84,6 +84,51 @@ A write with `data` sends one block after its command. `data.parameter` names an
 
 `max_block_bytes` (default 256 MiB) limits a received block. `block_terminated: false` is for instruments that send no terminator after a block. Indefinite-length blocks (`#0`) are refused; select a definite-length format. A block read ends with an error after `timeout` seconds without new bytes, so long transfers continue while data arrives. / `max_block_bytes` 限制单个接收块大小；块后不发终止符的仪器设 `block_terminated: false`；不支持 `#0` 不定长块。读取块时，`timeout` 指连续无新数据的时长。
 
+### Other text command protocols / 其他文本指令协议
+
+Many motion controllers, lasers, pumps, flow controllers and gauges exchange text lines without following SCPI. The same driver reads them from a description; no code is needed. `config.protocol` states how the command language differs, and an operation's `result` takes its value out of the reply. / 许多位移台控制器、激光器、泵、流量计和真空计用文本行通信但不遵循 SCPI。同一驱动按说明即可接入，不需要写代码：`config.protocol` 说明指令语言的差异，操作的 `result` 说明如何从回复中取值。
+
+```json
+{
+  "id": "delay-stage",
+  "driver": "scpi",
+  "config": {
+    "transport": "serial", "port": "COM5", "baudrate": 57600,
+    "protocol": {"write_termination": "\r\n", "read_termination": "\r\n", "identify": false, "error_reply": "^ERR"},
+    "operations": {
+      "move": {
+        "write": "1PA{mm}",
+        "parameters": {"mm": {"type": "number", "minimum": 0, "maximum": 25, "unit": "mm"}},
+        "completion": {"query": "1TS", "match": "(32|33|34)$", "timeout": 60}
+      },
+      "position": {"query": "1TP", "effect": "observe", "result": {"type": "number", "match": "^1TP(.+)$", "unit": "mm"}},
+      "shutter_open": {"query": "s?", "effect": "observe", "result": {"map": {"ON": true, "OFF": false}}},
+      "set_power": {"write": "p {mw}", "parameters": {"mw": {"type": "number", "unit": "mW"}}, "reply": {"match": "^OK$"}}
+    }
+  }
+}
+```
+
+| `protocol` field / 字段 | Meaning / 含义 |
+| --- | --- |
+| `write_termination`, `read_termination` | Line endings of commands and replies when they differ; default `termination` / 命令与回复的结束符不同时分别指定 |
+| `identify` | `false` when the instrument has no `*IDN?`; the `identify` operation is then absent / 仪器没有 `*IDN?` 时设为 `false` |
+| `error_reply` | Pattern of replies that report an error. Such a reply fails the operation with its text; the instrument did not act, so nothing is held / 表示出错的回复模式；匹配时操作失败并给出回复原文，仪器并未执行，不挂起 |
+| `write_reply` | `true` or `{"match": pattern}` when every write is answered with one line / 每条写入都有一行应答时设置 |
+| `echo` | `true` when the instrument repeats each command before its reply / 仪器先回显命令时设为 `true` |
+| `min_interval` | Shortest time between commands in seconds / 两条命令之间的最短间隔 |
+
+| Operation field / 操作字段 | Meaning / 含义 |
+| --- | --- |
+| `result.match` | Pattern applied to the reply; the value is its first group, or the whole match / 作用于回复的模式，取第一个分组或整个匹配 |
+| `result.type` | `number`, `integer`, `boolean` or `string` / 数值、整数、布尔或文本 |
+| `result.scale`, `result.offset` | The value is reply × scale + offset, for counts and raw units / 换算：回复 × scale + offset |
+| `result.map` | Value for each reply text, such as `{"ON": true, "OFF": false}` / 回复文本到取值的对应 |
+| `reply` | On a write: `true`, `false` or `{"match": pattern}`, overriding `write_reply`; the line is returned as `reply` / 写入操作的应答，覆盖 `write_reply` |
+| `completion.match` | Pattern the completion reply must match, in place of `equals` / 完成状态回复需匹配的模式，可替代 `equals` |
+
+Patterns are Python regular expressions, searched within the reply. A model description can carry `protocol` beside its operations, so one description serves every unit of a model. Checksummed or binary framing needs a Python driver. / 模式为 Python 正则表达式，在回复中查找。型号说明可同时携带 `protocol`，同一型号的每台设备共用一份说明。带校验和或二进制帧的协议仍需 Python 驱动。
+
 ## Modbus TCP and RTU
 
 Use `driver: "modbus"`. TCP configuration specifies `host`, `port` (default 502) and `device_id` (default 1). RTU specifies `transport: "serial"`, `port`, `baudrate`, `parity` and `stopbits`. Logical devices on the same bus share a connection and an automatically named scheduling resource. Install the `devices` extra for PyModbus.

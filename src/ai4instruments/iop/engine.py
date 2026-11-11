@@ -525,6 +525,8 @@ class Engine:
         with self.lock:
             if self.device_records[device_id]['driver'] != 'scpi':
                 raise ValueError('Use this instrument SDK to read its identity.')
+            if 'identify' not in self.descriptions[device_id]['operations']:
+                raise ValueError('This instrument has no identification query.')
             return self.submit({'name':'Instrument identity', 'request_id':request_id,
                                 'steps':[{'id':'identity', 'device':device_id, 'operation':'identify'}]})
 
@@ -548,6 +550,8 @@ class Engine:
             record['documentation'] = enriched.get('documentation', [])
             record['config']['operations'] = {**enriched['config'].get('operations', {}),
                                               **record['config'].get('operations', {})}
+            if 'protocol' in enriched['config']:
+                record['config']['protocol'] = {**enriched['config']['protocol'], **record['config'].get('protocol', {})}
             if not record.get('execution'):
                 self.devices[device_id].config.update(record['config'])
         elif enriched.get('profile_candidates') and not record['config'].get('operations'):

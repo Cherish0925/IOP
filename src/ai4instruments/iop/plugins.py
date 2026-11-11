@@ -25,7 +25,11 @@ def adapters():
                    'max_block_bytes': {'type':'integer', 'default':268435456, 'unit':'byte',
                        'description':'Largest IEEE 488.2 binary block accepted from the instrument'},
                    'block_terminated': {'type':'boolean', 'default':True,
-                       'description':'The instrument sends the response terminator after a binary block'}},
+                       'description':'The instrument sends the response terminator after a binary block'},
+                   'protocol': {'type':'object',
+                       'description':'For text command languages that are not SCPI: read_termination, write_termination, '
+                                     'identify (false without *IDN?), error_reply (pattern), write_reply (true or {"match": pattern}), '
+                                     'echo, min_interval (s)'}},
         'tcp': {'host': {'type':'string', 'required':True}, 'port': {'type':'integer', 'default':5025},
                 'source_address': {'type':'string', 'description':'Local IPv4 or IPv6 address of the instrument-facing network interface; omit to use system routing'}},
         'serial': {'port': {'type':'string', 'required':True}, 'baudrate': {'type':'integer', 'default':9600},

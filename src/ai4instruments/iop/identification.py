@@ -43,8 +43,14 @@ def validate_profile(profile):
         raise ValueError('Model descriptions hold scpi, modbus or http operations. SDK drivers describe their own '
                          'operations; register them with a discovery profile.')
     config = profile.get('config', {})
-    if not isinstance(config, dict) or set(config) - {'name', 'operations'}:
-        raise ValueError('A model description contains a name and operations; connection settings belong to the instrument.')
+    if not isinstance(config, dict) or set(config) - {'name', 'operations', 'protocol'}:
+        raise ValueError('A model description contains a name, operations and protocol traits; connection settings '
+                         'belong to the instrument.')
+    if 'protocol' in config:
+        if driver != 'scpi':
+            raise ValueError('protocol describes a text command language; it belongs to the scpi driver')
+        from .text_protocol import protocol
+        protocol(config['protocol'])
     operations = config.get('operations', {})
     if not isinstance(operations, dict) or not operations:
         raise ValueError('Provide named instrument operations.')
@@ -63,6 +69,11 @@ def validate_profile(profile):
             if ('query' in spec) == ('write' in spec):
                 raise ValueError('Each operation needs exactly one query or write command.')
             template = spec.get('query', spec.get('write'))
+            from .text_protocol import operation as replies
+            try:
+                replies(spec)
+            except ValueError as error:
+                raise ValueError(f'Operation {operation}: {error}') from None
         elif driver == 'modbus':
             if spec.get('function') not in MODBUS_FUNCTIONS:
                 raise ValueError(f'Operation {operation}: function must be one of ' + ', '.join(MODBUS_FUNCTIONS))
@@ -106,6 +117,8 @@ def apply_profile(record, profiles):
         raise ValueError(f'Model description {wanted} is for the {driver} driver')
     config = record.setdefault('config', {})
     config['operations'] = {**copy.deepcopy(profile['config']['operations']), **config.get('operations', {})}
+    if 'protocol' in profile['config']:
+        config['protocol'] = {**profile['config']['protocol'], **config.get('protocol', {})}
     if 'name' in profile['config']:
         config.setdefault('name', profile['config']['name'])
     record.setdefault('documentation', list(profile.get('documentation', [])))

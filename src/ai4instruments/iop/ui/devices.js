@@ -563,7 +563,7 @@ export function registerDevice(candidate) {
       candidate.status = "registered";
       candidate.id = saved.id;
     }
-    if (saved.driver === "scpi")
+    if (saved.driver === "scpi" && saved.operations?.identify)
       await api("devices/" + encodeURIComponent(saved.id) + "/identify", {});
     closeModal();
     emit("refresh");

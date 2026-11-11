@@ -94,7 +94,7 @@ The service works with devices, named operations, experiment programs, dependenc
 
 | Layer | Implemented support |
 | --- | --- |
-| Communication and drivers | SCPI TCP / serial / VISA, Modbus TCP / RTU, HTTP JSON, OPC UA, EPICS Channel Access, QCoDeS drivers, custom Python drivers, manual steps performed by people |
+| Communication and drivers | SCPI and other text command protocols over TCP / serial / VISA, Modbus TCP / RTU, HTTP JSON, OPC UA, EPICS Channel Access, QCoDeS drivers, custom Python drivers, manual steps performed by people |
 | Instrument descriptions | Named operations, parameter types, units, ranges, resources and driver-defined completion |
 | Persistent service | Registration, discovery, dependency scheduling, program processes, data storage and retrieval |
 | Experiment programs | Python logic, loops, feedback, fitting and analysis; other languages can use HTTP |
@@ -126,6 +126,7 @@ Before registering the example, replace its address, commands, units and complet
 | Serial ports | pySerial discovery, including available USB IDs and serial numbers |
 | VISA resources | PyVISA enumeration through the installed backend |
 | SCPI instruments | Persistent TCP, serial or VISA connection; text queries, writes, named operations and completion queries |
+| Other text command instruments | The same connection with described terminators, echo, acknowledgments, error replies and reply patterns |
 | Modbus instruments | TCP / RTU; register and coil access, named operations, scaling and shared-bus serialization |
 | HTTP instruments | Description-driven JSON requests and response selection |
 | OPC UA servers | Variables and methods with types, ranges, units and enumerations from the address space |

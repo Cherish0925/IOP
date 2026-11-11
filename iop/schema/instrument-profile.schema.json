@@ -132,7 +132,8 @@
                 "minLength": 1
               },
               "result": {
-                "type": "object"
+                "type": "object",
+                "description": "scpi: type (number, integer, boolean, string or array), unit, match, scale, offset, map"
               },
               "data": {
                 "type": "object",
@@ -174,7 +175,8 @@
                 ]
               },
               "completion": {
-                "type": "object"
+                "type": "object",
+                "description": "scpi: query with equals or match, interval and timeout"
               },
               "function": {
                 "enum": [
@@ -221,10 +223,47 @@
               "body": {},
               "result_path": {
                 "type": "array"
+              },
+              "reply": {
+                "description": "scpi write: true, false or {\"match\": pattern} for its acknowledgment line"
               }
             },
             "description": "scpi: exactly one of query or write. modbus: function, with fixed arguments, scale, offset, signed, unit and value_parameter. http: path, method, query, body, result_path and unit."
           }
+        },
+        "protocol": {
+          "type": "object",
+          "description": "scpi: traits of a text command language that is not SCPI; see docs/runtime/drivers.md",
+          "properties": {
+            "read_termination": {
+              "type": "string",
+              "minLength": 1
+            },
+            "write_termination": {
+              "type": "string",
+              "minLength": 1
+            },
+            "identify": {
+              "type": "boolean",
+              "description": "false: the instrument has no *IDN? query"
+            },
+            "error_reply": {
+              "type": "string",
+              "description": "Pattern of replies that report an error"
+            },
+            "write_reply": {
+              "description": "true or {\"match\": pattern}: every write is answered with one line"
+            },
+            "echo": {
+              "type": "boolean"
+            },
+            "min_interval": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 60
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

@@ -149,6 +149,15 @@ class TCPCase(TransportMixin, unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'definite-length'):
             self.scope.invoke('open', {}, threading.Event())
 
+    def test_array_operations_added_by_a_model_description_are_read_as_arrays(self):
+        scope = SCPI('late', {'host': '127.0.0.1', 'port': self.server.server_address[1], 'timeout': 1}, {})
+        try:
+            # An identity query adds a model's operations to a driver that is already connected.
+            scope.config.update({'operations': operations()})
+            self.assertEqual(scope.invoke('trace', {}, threading.Event())['data']['count'], len(TRACE))
+        finally:
+            scope.close()
+
     def test_saved_file_and_inline_limit(self):
         with tempfile.TemporaryDirectory() as folder:
             from ai4instruments.iop.execution import Context

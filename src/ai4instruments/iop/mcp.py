@@ -180,7 +180,7 @@ def create_server(client, *, http=False):
 
     @tool()
     def save_instrument_profile(definition: dict) -> dict:
-        """Save a reusable model description: id, exact manufacturer/model match, driver, config.operations and source documentation. Use commands from that model's programming manual."""
+        """Save a reusable model description: id, exact manufacturer/model match, driver, config.operations and source documentation. Use commands from that model's programming manual. For text commands that are not SCPI, add config.protocol (terminators, error_reply, write_reply, echo) and result.match, scale or map; read configuration_schema("instrument-profile")."""
         return client.save_instrument_profile(definition)
 
     @tool()
