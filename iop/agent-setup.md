@@ -52,6 +52,7 @@ An individual instrument can operate without a platform. A platform records rela
 | `configure_platform` | Save or preview platform configuration |
 | `configure_resources` | Set named resource capacities |
 | `run_procedure` | Execute initialization or another saved procedure |
+| `saved_operations` | List, read or save Standard and Workflow Operations; a step without `device` uses one |
 | `submit_experiment` | Submit a graph of instrument operations and dependencies |
 | `submit_program` | Upload a directory or ZIP from the MCP host for service execution |
 | `experiment` | Status, paged operations, output files and optional result |

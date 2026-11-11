@@ -1,4 +1,4 @@
-export type Step = { id: string; device: string; operation: string; arguments?: Record<string, unknown>; after?: string[]; resources?: string[]; requirements?: Record<string, number>; bindings?: Record<string, { step: string; path?: (string | number)[] }> };
+export type Step = { id: string; device?: string; operation: string; arguments?: Record<string, unknown>; after?: string[]; resources?: string[]; requirements?: Record<string, number>; bindings?: Record<string, { step: string; path?: (string | number)[] }> };
 export type Endpoint = { device: string; port: string };
 export type Procedure = { steps: Step[]; resources?: string[] };
 export type PlatformDefinition = {
@@ -46,7 +46,7 @@ export class IOP {
   devicePage(offset = 0, limit = 100) { return this.request('/v1/context/devices?' + new URLSearchParams({offset:String(offset),limit:String(limit)})); }
   deviceHistory(device: string) { return this.request<{id: string; revision: number; definition: Record<string, unknown>}[]>(`/v1/devices/${encodeURIComponent(device)}/history`); }
   configureDevice(device: string, definition: Record<string, unknown>, expectedRevision: number) { return this.request(`/v1/devices/${encodeURIComponent(device)}/configuration`, { definition, expected_revision: expectedRevision }); }
-  schema(name: 'device' | 'platform' | 'workflow' | 'instrument-profile') { return this.request<Record<string, unknown>>('/v1/schemas/' + name); }
+  schema(name: 'device' | 'platform' | 'workflow' | 'instrument-profile' | 'operation') { return this.request<Record<string, unknown>>('/v1/schemas/' + name); }
   discover() { return this.request<Record<string, unknown>>('/v1/discovery'); }
   startDiscovery() { return this.request<Record<string, unknown>>('/v1/discovery', {}); }
   inventory() { return this.request<Record<string, unknown>>('/v1/discovery?cached=true'); }
@@ -73,6 +73,11 @@ export class IOP {
   manualTasks() { return this.request<ManualTask[]>('/v1/manual-tasks'); }
   reportManual(operationId: string, status: 'done' | 'failed' | 'unsure', readings: Record<string, unknown> = {}, note = '', by = '') {
     return this.request<{operation_id: string; status: string}>('/v1/manual-tasks/' + encodeURIComponent(operationId), { status, readings, note, by });
+  }
+  savedOperations() { return this.request<Record<string, unknown>[]>('/v1/library'); }
+  savedOperation(id: string) { return this.request<Record<string, unknown>>('/v1/library/' + encodeURIComponent(id)); }
+  saveOperation(definition: Record<string, unknown>, expectedRevision?: number) {
+    return this.request<Record<string, unknown>>('/v1/library', { definition, expected_revision: expectedRevision ?? null });
   }
   platforms() { return this.request<Platform[]>('/v1/platforms'); }
   platform(id: string) { return this.request<Platform>('/v1/platforms/' + encodeURIComponent(id)); }

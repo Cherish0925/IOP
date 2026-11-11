@@ -91,6 +91,9 @@ def parser():
         sub.add_parser(name)
     p = sub.add_parser('adapters', help='List adapters, or show the device record fields of one')
     p.add_argument('name', nargs='?')
+    p = sub.add_parser('operations', help='List saved Standard and Workflow Operations, show one, or save definitions')
+    p.add_argument('name', nargs='?')
+    p.add_argument('--save', metavar='FILE', help='JSON file with one definition or a list of them')
     p = sub.add_parser('desktop', help='Open the native desktop window'); p.add_argument('--view', default='overview')
     sub.add_parser('shortcuts', help='Install desktop and browser application entries')
     p = sub.add_parser('context', help='Read the laboratory configuration for an agent or program')
@@ -199,6 +202,12 @@ def main():
             output(client.discover())
         elif args.command == 'adapters':
             output(client.adapters(args.name))
+        elif args.command == 'operations':
+            if args.save:
+                definitions = json.loads(Path(args.save).read_text(encoding='utf-8'))
+                output([client.save_operation(d) for d in (definitions if isinstance(definitions, list) else [definitions])])
+            else:
+                output(client.saved_operation(args.name) if args.name else client.saved_operations())
         elif args.command == 'reconnect':
             output(client.reconnect(args.device))
         elif args.command == 'release':

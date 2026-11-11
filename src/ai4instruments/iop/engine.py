@@ -24,6 +24,7 @@ from .config import save_json
 from .device_configuration import METADATA, allowed
 from .drivers import make_driver, parameters
 from .store import Store, dumps, finite, now
+from . import library
 from . import platforms as platform_model
 from .resources import Allocator, QueueFull, capacities, quantities
 from .execution import Context
@@ -85,6 +86,10 @@ class Engine:
         self.enrollment = Enrollment(self)
         self.discovery['instruments'] = [dict(r, present=None) for r in self.enrollment.records.values()]
         self.platforms = {p['id']: p for p in self.store.platforms()}
+        # Standard and Workflow Operations saved in this laboratory, and how often each was used.
+        self.library = {record['id']: record for record in self.store.saved_operations()}
+        self.uses = self.store.operation_uses()
+        self.call_progress = {}
         self.platform_resources = platform_model.resource_index(self.platforms)
         self.resource_holds = self.store.resource_holds()
         self.worker_count = max(1, int(config.get("workers", 8)))
@@ -344,6 +349,8 @@ class Engine:
         self.minimum_capacities[run['id']] = minimum
         self.remaining[run['id']] = sum(o['state'] not in TERMINAL for o in ops)
         for op in ops:
+            self._follow_calls(op, run.get('calls', {}))
+        for op in ops:
             if op['state'] != 'queued':
                 continue
             parents = ([self.operations[oid] for oid in op['after_ids'] if self.operations[oid]['state'] != 'completed']
@@ -354,7 +361,40 @@ class Engine:
             if not parents:
                 self.ready[run['id']][op['id']] = None
 
+    def _follow_calls(self, op, calls):
+        """Count the steps still open in each use of a saved operation that this step belongs to."""
+        for call in op.get('calls', ()):
+            if call not in calls:
+                continue
+            progress = self.call_progress.setdefault(op['run_id'], {}).setdefault((op.get('batch'), call), {
+                'remaining': 0, 'state': 'completed', 'operation': calls[call]['operation'], 'revision': calls[call]['revision']})
+            if op['state'] not in TERMINAL:
+                progress['remaining'] += 1
+            elif op['state'] != 'completed' and progress['state'] != 'failed':
+                progress['state'] = 'failed' if op['state'] == 'failed' else 'cancelled'
+
+    def _calls_ended(self, op):
+        """Record a use of a saved operation when its last step ends: this is its evidence."""
+        for call in op.get('calls', ()):
+            progress = self.call_progress.get(op['run_id'], {}).get((op.get('batch'), call))
+            if progress is None:
+                continue
+            if op['state'] != 'completed' and progress['state'] != 'failed':
+                progress['state'] = 'failed' if op['state'] == 'failed' else 'cancelled'
+            progress['remaining'] -= 1
+            if progress['remaining'] > 0:
+                continue
+            del self.call_progress[op['run_id']][(op.get('batch'), call)]
+            uses = self.uses.setdefault(progress['operation'], {'calls': 0, 'completed': 0, 'failed': 0})
+            uses['calls'] += 1
+            if progress['state'] in ('completed', 'failed'):
+                uses[progress['state']] += 1
+            uses['last'] = {'run_id': op['run_id'], 'call': call, 'state': progress['state'], 'time': now(),
+                            'revision': progress['revision']}
+            self.store.record_use(progress['operation'], uses, op['run_id'], call, progress['state'])
+
     def _operation_ended(self, op):
+        self._calls_ended(op)
         self.ready[op['run_id']].pop(op['id'], None)
         self.remaining_dependencies.pop(op['id'], None)
         self.remaining[op['run_id']] -= 1
@@ -370,9 +410,66 @@ class Engine:
     def prepare_platform(self, definition):
         definition = platform_model.description(definition, self.devices)
         for procedure in definition['procedures'].values():
-            for step in procedure['steps']:
+            for step in library.expand(procedure['steps'], self.library.get)[0]:
+                if step['device'] not in definition['devices']:
+                    raise ValueError('Procedure device must belong to the platform')
                 self._operation('prepare', step)
         return definition
+
+    def save_operation(self, definition, expected_revision=None):
+        """Save a Standard or Workflow Operation as a new revision."""
+        with self.lock:
+            definition = library.check(json.loads(dumps(definition)), self.library.get)
+            self._constituents(definition)
+            old = self.library.get(definition['id'])
+            revision = old['revision'] if old else 0
+            if expected_revision is not None and expected_revision != revision:
+                raise ValueError('Operation revision changed; current revision is ' + str(revision))
+            if old and all(old.get(key) == value for key, value in definition.items()) and set(definition) | {'revision', 'updated'} == set(old):
+                return self.saved_operation(definition['id'])
+            record = {**definition, 'revision': revision + 1, 'updated': now()}
+            self.store.save_operation(record)
+            self.library[record['id']] = record
+            return self.saved_operation(record['id'])
+
+    def _constituents(self, definition):
+        """Check the steps against registered devices and saved operations, and that no operation uses itself."""
+        for step in definition['steps']:
+            supplied = step.get('arguments', {}).keys() | step.get('bindings', {}).keys()
+            if 'device' not in step:
+                inner = self.library[step['operation']]
+                if supplied - inner.get('parameters', {}).keys():
+                    raise ValueError(f"Step {step['id']}: {inner['id']} has no parameter " +
+                                     ', '.join(sorted(supplied - inner.get('parameters', {}).keys())))
+            elif step['device'] in self.descriptions:
+                # A device named by a parameter or not yet registered is checked when the operation is used.
+                operations = self.descriptions[step['device']]['operations']
+                if step['operation'] not in operations:
+                    raise ValueError(f"Step {step['id']}: unknown operation {step['device']}.{step['operation']}")
+                if supplied - operations[step['operation']].get('parameters', {}).keys():
+                    raise ValueError(f"Step {step['id']}: {step['device']}.{step['operation']} has no parameter " +
+                                     ', '.join(sorted(supplied - operations[step['operation']].get('parameters', {}).keys())))
+        pending, seen = [step['operation'] for step in definition['steps'] if 'device' not in step], set()
+        while pending:
+            current = pending.pop()
+            if current == definition['id']:
+                raise ValueError('An operation cannot use itself, directly or through another operation')
+            if current not in seen:
+                seen.add(current)
+                pending.extend(step['operation'] for step in self.library[current]['steps'] if 'device' not in step)
+
+    def saved_operation(self, operation_id):
+        with self.lock:
+            record = self.library[operation_id]
+            return {**record, 'uses': self.uses.get(operation_id, {'calls': 0, 'completed': 0, 'failed': 0})}
+
+    def saved_operations(self):
+        """One line per saved operation: enough to choose one; saved_operation gives its steps."""
+        with self.lock:
+            return [{'id': record['id'], 'layer': record['layer'], 'description': record['description'],
+                     'parameters': list(record.get('parameters', {})), 'revision': record['revision'],
+                     'uses': self.uses.get(record['id'], {'calls': 0, 'completed': 0, 'failed': 0})}
+                    for record in sorted(self.library.values(), key=lambda r: (r['layer'], r['id']))]
 
     def apply_platform(self, definition, expected_revision=0):
         with self.lock:
@@ -696,9 +793,15 @@ class Engine:
                     raise ValueError('Reserved devices must belong to the selected platform')
             operations = []
             if kind == 'workflow':
-                steps = spec.get("steps", [])
+                # A step without device uses a saved Standard or Workflow Operation.
+                steps, calls = library.expand(spec.get("steps", []), self.library.get)
                 platform_model.steps(steps)
                 operations = [self._operation(run_id, s) for s in steps]
+                if calls:
+                    run['calls'] = calls
+                    for op, step in zip(operations, steps):
+                        if 'calls' in step:
+                            op['calls'] = step['calls']
                 if platform and any(op['device'] not in platform['definition']['devices'] for op in operations):
                     raise ValueError('Workflow devices must belong to the selected platform')
                 if run["resources"] or run['requirements']:
@@ -923,6 +1026,7 @@ class Engine:
         self.ready.pop(run['id'], None)
         self.remaining.pop(run['id'], None)
         self.step_ids.pop(run['id'], None)
+        self.call_progress.pop(run['id'], None)
         self.minimum_capacities.pop(run['id'], None)
         process = self.processes.get(run['id'])
         if process and hasattr(process, 'close'):
@@ -1205,6 +1309,9 @@ class Engine:
                 elif run['kind'] == 'workflow' or process is not None:
                     if run['kind'] == 'workflow':
                         run['result'] = {self.operations[oid]['step']: self.operations[oid].get('result') for oid in run['operations']}
+                        if run.get('calls'):
+                            # Each saved operation used as a step returns its named result under that step.
+                            run['result'].update(library.results(run['calls'], run['result']))
                     self._finish(run, 'completed')
         if self.stopping:
             return

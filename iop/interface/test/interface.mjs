@@ -430,6 +430,27 @@ sys.stdout.buffer.write(b.getvalue())`,
   await page.click("#hold-save");
   await page.waitForSelector("#attention", { state: "hidden" });
   assert.deepEqual((await api("status")).resource_holds, []);
+  await api("library", {
+    definition: {
+      id: "axis.settle",
+      layer: "standard",
+      description: "Wait for the axis to settle",
+      steps: [
+        {
+          id: "wait",
+          device: "sim-axis",
+          operation: "wait",
+          arguments: { duration: 0.01 },
+        },
+      ],
+    },
+  });
+  await page.click("[data-view=overview]");
+  await page.click("#refresh-button");
+  await page.click('[data-operation="axis.settle"]');
+  await page.waitForSelector("#modal[open]");
+  assert.match(await page.locator("#modal-body").innerText(), /sim-axis/);
+  await page.click("#modal-close");
   const lasting = await api("runs", {
     name: "Continues after browser closes",
     steps: [
@@ -449,7 +470,7 @@ sys.stdout.buffer.write(b.getvalue())`,
   );
   assert.deepEqual(errors, []);
   console.log(
-    "Interface passed: discovery, registration, topology, workflow, results, resources, search, language, themes, mobile, program ZIP, file download, manual steps, held resources and service continuity.",
+    "Interface passed: discovery, registration, topology, workflow, results, resources, search, language, themes, mobile, program ZIP, file download, manual steps, held resources, saved operations and service continuity.",
   );
 } finally {
   if (browser) await browser.close();

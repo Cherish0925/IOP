@@ -178,7 +178,6 @@
               "type": "object",
               "required": [
                 "id",
-                "device",
                 "operation"
               ],
               "properties": {
@@ -188,7 +187,8 @@
                 },
                 "device": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "description": "Device whose operation is called (a Basic Operation). Omit it to use a saved Standard or Workflow Operation named by operation."
                 },
                 "operation": {
                   "type": "string",

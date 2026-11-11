@@ -52,6 +52,7 @@ iop context --start
 | `configure_platform` | 保存或预览平台说明 |
 | `configure_resources` | 设置资源可用数量 |
 | `run_procedure` | 执行已保存的初始化或其他过程 |
+| `saved_operations` | 列出、查看或保存 Standard 与 Workflow Operations；不带 `device` 的步骤按名称使用它们 |
 | `submit_experiment` | 提交具有串并行依赖的仪器操作 |
 | `submit_program` | 将 Agent 所在计算机上的目录或 ZIP 上传给服务运行 |
 | `experiment` | 读取状态、分页操作记录、文件和结果 |

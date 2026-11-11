@@ -216,6 +216,18 @@ class MCPCase(unittest.TestCase):
                 call('report_manual_step', {'operation_id':waiting[0]['operation_id'], 'status':'done',
                                             'readings':{'seated':True}, 'by':'operator'})
                 self.assertEqual(step.result(5)['mount']['readings'], {'seated':True})
+                method = {'id':'axis.position', 'layer':'standard', 'description':'Move the stage and read where it arrived',
+                    'parameters':{'angle':{'type':'number', 'minimum':-90, 'maximum':90}},
+                    'steps':[{'id':'move', 'device':'stage', 'operation':'move_to', 'arguments':{'angle_deg':'${angle}'}},
+                             {'id':'read', 'device':'stage', 'operation':'position'}],
+                    'result':{'angle':{'step':'read', 'path':['angle_actual']}}}
+                self.assertEqual(call('saved_operations', {'definition':method})['revision'], 1)
+                self.assertEqual([item['id'] for item in call('saved_operations', {})], ['axis.position'])
+                self.assertEqual(call('lab_context', {})['operations']['standard'], ['axis.position'])
+                used = call('submit_experiment', {'steps':[{'id':'p', 'operation':'axis.position', 'arguments':{'angle':3}}],
+                                                  'request_id':'mcp-saved-operation'})
+                self.assertEqual(self.client.run(used['id']).result(5)['p'], {'angle':3})
+                self.assertEqual(call('saved_operations', {'operation':'axis.position'})['uses']['completed'], 1)
                 accepted = call('submit_experiment', {'steps':[{'id':'wait', 'device':'aux', 'operation':'wait',
                                  'arguments':{'duration':0.5}}], 'request_id':'continue-after-agent'})
                 process.stdin.close()

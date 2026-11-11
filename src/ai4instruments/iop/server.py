@@ -174,6 +174,13 @@ class Handler(BaseHTTPRequestHandler):
                     match={k: query[k] for k in ('manufacturer', 'model', 'serial_number', 'firmware') if k in query},
                     profile_id=query.get('id'), offset=query.get('offset', 0),
                     limit=query.get('limit', 50), details=query.get('details') == 'true')
+            elif parts == ['v1', 'library']:
+                result = (engine.save_operation(body['definition'], body.get('expected_revision')) if method == 'POST'
+                          else engine.saved_operations())
+            elif len(parts) == 3 and parts[:2] == ['v1', 'library'] and method == 'GET':
+                result = engine.saved_operation(parts[2])
+            elif len(parts) == 4 and parts[:2] == ['v1', 'library'] and parts[3] == 'history' and method == 'GET':
+                result = engine.store.saved_operation_history(parts[2])
             elif parts == ['v1','platforms']:
                 result = engine.apply_platform(body['definition'], body.get('expected_revision', 0)) if method == 'POST' else engine.list_platforms()
             elif parts == ['v1','resources','resolve'] and method == 'POST':

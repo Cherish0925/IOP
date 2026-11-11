@@ -195,6 +195,18 @@ class Client:
     def configure_resources(self, capacities):
         return self.request('/v1/resources', {'capacities': capacities})
 
+    def saved_operations(self):
+        """Standard and Workflow Operations saved in the laboratory, one line each."""
+        return self.request('/v1/library')
+
+    def saved_operation(self, operation_id):
+        """One saved operation with its parameters, steps, result and use record."""
+        return self.request('/v1/library/' + quote(operation_id, safe=''))
+
+    def save_operation(self, definition, expected_revision=None):
+        """Save a Standard or Workflow Operation as a new revision."""
+        return self.request('/v1/library', {'definition': definition, 'expected_revision': expected_revision})
+
     def platforms(self):
         return self.request('/v1/platforms')
 

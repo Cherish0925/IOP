@@ -9,7 +9,7 @@ from .plugins import adapters
 from .store import dumps, now
 
 
-SCHEMAS = ('device', 'platform', 'workflow', 'instrument-profile')
+SCHEMAS = ('device', 'platform', 'workflow', 'instrument-profile', 'operation')
 
 
 def schema_document(name):
@@ -23,6 +23,8 @@ def schema_document(name):
 
 # Overviews list this many operation names per device; describe_instrument returns all of them.
 SUMMARY_OPERATIONS = 24
+# Names of saved Standard and Workflow Operations listed per layer; saved_operations returns all of them.
+SAVED_OPERATIONS = 50
 
 
 def operation_names(names):
@@ -119,7 +121,16 @@ def laboratory(engine, refresh=False, detail='summary'):
         'request_id': 'Reuse the same request_id when retrying the same experiment submission.',
         'changes': '/v1/context/changes?after={cursor}',
         'instrument_catalog': '/v1/instrument-catalog',
+        'saved_operations': '/v1/library; a step without device uses one by name',
     }
+    # The three roles of operations: device operations are Basic; saved methods are Standard and Workflow.
+    saved = engine.saved_operations()
+    result['operations'] = {'basic': sum(len(d['operations']) for d in devices)}
+    for layer in ('standard', 'workflow'):
+        names = [o['id'] for o in saved if o['layer'] == layer]
+        result['operations'][layer] = names[:SAVED_OPERATIONS]
+        if len(names) > SAVED_OPERATIONS:
+            result['operations'][layer + '_omitted'] = len(names) - SAVED_OPERATIONS
     if detail == 'summary':
         states = engine.device_states()
         result['devices'] = [{k: v for k, v in d.items() if k in

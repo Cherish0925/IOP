@@ -120,7 +120,8 @@ def description(value, devices):
         if not isinstance(procedure, dict):
             raise ValueError('Procedure must be an object')
         for step in steps(procedure.get('steps')):
-            if step.get('device') not in members:
+            # A step without device uses a saved operation; its devices are checked when it is expanded.
+            if 'device' in step and step['device'] not in members:
                 raise ValueError('Procedure device must belong to the platform')
         strings(procedure.get('resources', []), 'Procedure resources')
     value.setdefault('name', value['id'])

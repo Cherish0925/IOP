@@ -92,6 +92,8 @@ def create_server(client, *, http=False):
         'Continuous experiments, batches and acquisitions require service version 0.8.5; use workflows or packages on older services. '
         'Ask for physical wiring and sample details only when missing. '
         'Read describe_instrument before choosing operations and arguments. '
+        'Device operations are Basic Operations; lab_context lists the Standard and Workflow Operations saved here. '
+        'Use a saved one as a step instead of recomposing it, and save a method that worked with saved_operations. '
         'Saving platform configuration does not execute initialization. '
         'Submit experiments or programs once, retain the returned ID and inspect them later. '
         'For adaptive work, start_experiment, submit_operations within that run, then finish_experiment. '
@@ -141,8 +143,8 @@ def create_server(client, *, http=False):
         return client.platform(platform)
 
     @tool(annotations=read_only)
-    def configuration_schema(name: Literal['device', 'platform', 'workflow', 'instrument-profile']) -> dict:
-        """Read the JSON schema before preparing a device, platform or workflow definition."""
+    def configuration_schema(name: Literal['device', 'platform', 'workflow', 'instrument-profile', 'operation']) -> dict:
+        """Read the JSON schema before preparing a device, platform, workflow or saved operation definition."""
         return client.schema(name)
 
     @tool()
@@ -187,6 +189,13 @@ def create_server(client, *, http=False):
     def retry_instrument_discovery(connection_key: str | None = None) -> dict:
         """Retry discovery after correcting a connection or installing a driver. Existing experiments keep their instruments."""
         return client.retry_discovery(connection_key)
+
+    @tool()
+    def saved_operations(operation: str | None = None, definition: dict | None = None) -> dict | list:
+        """Standard and Workflow Operations saved in this laboratory: reusable methods built from device (Basic) operations. Without arguments, list them. operation returns one with its parameters, steps, result and use record. definition saves a new revision: id, layer (standard | workflow), description, parameters, steps, result. Use one as a step without device: {"id": "s", "operation": name, "arguments": {...}}."""
+        if definition is not None:
+            return client.save_operation(definition)
+        return client.saved_operation(operation) if operation else client.saved_operations()
 
     @tool()
     def configure_platform(definition: dict, expected_revision: int = 0, preview: bool = False) -> dict:
@@ -240,7 +249,8 @@ def create_server(client, *, http=False):
         """Submit a batch within an existing experiment. Steps run in order by default. after=[] starts an independent branch; after=[IDs] joins branches. All steps are accepted together. With wait up to 25 seconds, the reply includes results of steps that finish in that time; complete tells whether all did."""
         batch = client.request('/v1/runs/' + quote(run_id, safe='') + '/batches' + waiting(wait),
                                {'steps':steps, 'request_id':request_id})
-        return {**batch, 'operations': [summary(op) for op in compact(batch.get('operations', []))]}
+        batch = compact(batch)
+        return {**batch, 'operations': [summary(op) for op in batch.get('operations', [])]}
 
     @tool()
     def save_acquisition(run_id: str, name: str, operation_ids: list[str],
