@@ -82,7 +82,6 @@ def laboratory(engine, refresh=False, detail='summary'):
     if result['setup']['offline_devices']:
         result['next_steps'].append({'action': 'reconnect', 'devices': sorted(result['setup']['offline_devices'])})
     monitors = engine.monitors.summary()
-    result['monitors'] = monitors
     alerts = [{'device': m['device'], 'monitor': m['id'], 'state': m['state']} for m in monitors if m['state'] in ('violation', 'error')]
     if alerts:
         result['next_steps'].append({'action': 'inspect_monitors', 'monitors': alerts,

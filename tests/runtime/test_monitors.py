@@ -18,7 +18,7 @@ class MonitorCase(unittest.TestCase):
     def state(self, wanted, timeout=3):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            rows = [m for m in self.client.context()['monitors'] if m['device'] == 'arm']
+            rows = self.client.request('/v1/devices/arm').get('monitors', [])
             if rows and rows[0]['state'] == wanted:
                 return rows[0]
             time.sleep(0.05)

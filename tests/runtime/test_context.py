@@ -156,7 +156,9 @@ class MCPCase(unittest.TestCase):
                 run = call('submit_experiment', parameters)
                 self.assertEqual(call('submit_experiment', parameters)['id'], run['id'])
                 self.client.run(run['id']).result(5)
-                self.assertIn('read', call('experiment', {'run_id':run['id'], 'include_result':True})['result'])
+                inspected = call('experiment', {'run_id':run['id'], 'include_result':True, 'limit':1})
+                self.assertIn('read', inspected['result'])
+                self.assertEqual((len(inspected['operations']['operations']), inspected['more_files']), (1, False))
                 external = call('start_experiment', {'request_id':'adaptive-scan', 'resources':['stage']})
                 operation = {'run_id':external['id'], 'device':'stage', 'operation':'position', 'request_id':'adaptive-read'}
                 accepted_op = call('invoke_operation', operation)

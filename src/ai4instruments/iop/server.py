@@ -188,6 +188,9 @@ class Handler(BaseHTTPRequestHandler):
             elif len(parts) == 3 and parts[:2] == ['v1','devices'] and method == 'GET':
                 with engine.lock:
                     result = dict(engine.descriptions[parts[2]], status=engine.device_states()[parts[2]])
+                    monitors = engine.monitors.summary(parts[2])
+                    if monitors:
+                        result['monitors'] = monitors
             elif len(parts) == 4 and parts[:2] == ['v1', 'devices'] and parts[3] == 'history' and method == 'GET':
                 result = engine.store.device_history(parts[2], query.get('limit', 100))
             elif len(parts) == 4 and parts[:2] == ['v1', 'devices'] and parts[3] == 'configuration' and method == 'POST':

@@ -77,6 +77,7 @@ class Monitors:
         self.definitions = {}
         self.state = {}
         self.stopping = threading.Event()
+        self.changed = threading.Event()
         self.thread = None
 
     def configure(self, device_id, monitors):
@@ -87,6 +88,7 @@ class Monitors:
             del self.state[key]
         for monitor in monitors:
             self.state.setdefault((device_id, monitor['id']), {'state': 'pending', 'due': 0.0, 'reading': False})
+        self.changed.set()
 
     def start(self):
         if self.thread is None:
@@ -95,13 +97,15 @@ class Monitors:
 
     def stop(self):
         self.stopping.set()
+        self.changed.set()
         if self.thread is not None and self.thread.is_alive():
             self.thread.join()
 
-    def summary(self):
+    def summary(self, only=None):
         with self.engine.lock:
+            selected = sorted(self.definitions.items()) if only is None else [(only, self.definitions.get(only, []))]
             rows = []
-            for device, monitors in sorted(self.definitions.items()):
+            for device, monitors in selected:
                 for monitor in monitors:
                     state = self.state[(device, monitor['id'])]
                     rows.append({'device': device, 'id': monitor['id'], 'operation': monitor['operation'],
@@ -110,14 +114,20 @@ class Monitors:
             return rows
 
     def _loop(self):
-        while not self.stopping.wait(0.05):
+        # Sleep until the next reading is due, a definition changes or a reading ends.
+        while not self.stopping.is_set():
+            # Clear before reading the state, so a change after this point ends the next wait.
+            self.changed.clear()
             with self.engine.lock:
                 if self.engine.stopping:
                     return
-                due = [(device, m) for device, monitors in self.definitions.items() for m in monitors
-                       if not self.state[(device, m['id'])]['reading'] and self.state[(device, m['id'])]['due'] <= time.monotonic()]
-                for device, monitor in due:
-                    self._start(device, monitor)
+                waiting = [(device, m) for device, monitors in self.definitions.items() for m in monitors
+                           if not self.state[(device, m['id'])]['reading']]
+                for device, monitor in waiting:
+                    if self.state[(device, monitor['id'])]['due'] <= time.monotonic():
+                        self._start(device, monitor)
+                due = [self.state[(d, m['id'])]['due'] for d, m in waiting if not self.state[(d, m['id'])]['reading']]
+            self.changed.wait(max(0.01, min(due) - time.monotonic()) if due else None)
 
     def _start(self, device, monitor):
         engine, state = self.engine, self.state[(device, monitor['id'])]
@@ -153,6 +163,7 @@ class Monitors:
                 return
             state['reading'] = False
             state['time'] = now()
+            self.changed.set()
             try:
                 if failure is not None:
                     raise failure

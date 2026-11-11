@@ -180,9 +180,12 @@ def result(payload, spec, context=None, name='data'):
     ``spec`` is a checked result description. ``context`` is the operation context; without an
     output directory, as when a driver is called directly, every value is returned inline.
     """
-    values = decode(payload, spec['dtype'], spec['byte_order'])
-    shape = resolve_shape(len(values), spec.get('shape'))
-    data = {'dtype': spec['dtype'], 'byte_order': spec['byte_order'], 'shape': shape, 'count': len(values),
+    size = DTYPES[spec['dtype']]
+    if len(payload) % size:
+        raise ValueError(f"{len(payload)} bytes do not form whole {spec['dtype']} elements")
+    count = len(payload) // size
+    shape = resolve_shape(count, spec.get('shape'))
+    data = {'dtype': spec['dtype'], 'byte_order': spec['byte_order'], 'shape': shape, 'count': count,
             'bytes': len(payload), 'sha256': hashlib.sha256(payload).hexdigest()}
     for key in ('unit', 'axes'):
         if key in spec:
@@ -194,6 +197,7 @@ def result(payload, spec, context=None, name='data'):
         data['file'] = filename
         saved = True
     fields = {'data': data}
-    if not saved or len(values) <= spec['inline_limit']:
-        fields['values'] = nest(values, shape)
+    # Large arrays stay in their file; decoding them only to count would cost time and memory.
+    if not saved or count <= spec['inline_limit']:
+        fields['values'] = nest(decode(payload, spec['dtype'], spec['byte_order']), shape)
     return fields

@@ -1,11 +1,52 @@
 """MCP tools forward to the same IOP service used by the desktop and SDKs."""
 from __future__ import annotations
+import functools
 import json
 import importlib.util
 import sys
 from pathlib import Path
 from typing import Literal, Any
 from urllib.parse import quote
+
+# Arrays longer than this reach an agent as their description; the values stay in the operation's file.
+AGENT_VALUES = 64
+
+
+def compact(value, values=False):
+    """Replace long inline arrays in operation results with a count; programs read them through the SDK."""
+    if isinstance(value, list):
+        return [compact(item, values) for item in value]
+    if not isinstance(value, dict):
+        return value
+    result = {key: compact(item, values) for key, item in value.items()}
+    data = value.get('data')
+    if (not values and 'values' in result and isinstance(data, dict) and isinstance(data.get('count'), int)
+            and 'dtype' in data and data['count'] > AGENT_VALUES):
+        del result['values']
+        result['values_omitted'] = data['count']
+    return result
+
+
+# Fields of an operation that an experiment overview needs; operation_result returns the full record.
+OVERVIEW_FIELDS = ('id', 'step', 'device', 'operation', 'arguments', 'state', 'ended', 'error', 'outcome_unknown',
+                   'calibration_expired', 'result', 'files')
+
+
+def drop_titles(schema):
+    """Remove generated titles such as "Run Id" for run_id; property names themselves are kept."""
+    if isinstance(schema, list):
+        for item in schema:
+            drop_titles(item)
+    elif isinstance(schema, dict):
+        schema.pop('title', None)
+        for key, value in schema.items():
+            for item in (value.values() if key in ('properties', '$defs', 'definitions') and isinstance(value, dict) else [value]):
+                drop_titles(item)
+
+
+def overview(page):
+    return {**page, 'operations': [{key: op[key] for key in OVERVIEW_FIELDS if key in op}
+                                   for op in compact(page['operations'])]}
 
 
 def create_server(client, *, http=False):
@@ -31,89 +72,102 @@ def create_server(client, *, http=False):
         'Batch known sequences and parallel branches. Save acquired results by operation ID without reading the instruments again. '
         'Reuse request_id after a connection failure; the runtime schedules devices and retains results.'))
 
-    @server.tool()
+    def tool(**options):
+        """Register a tool whose result reaches the agent as compact JSON rather than indented JSON."""
+        register = server.tool(structured_output=False, **options)
+
+        def decorate(function):
+            @functools.wraps(function)
+            def call(*args, **kwargs):
+                value = function(*args, **kwargs)
+                return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, separators=(',', ':'),
+                                                                        default=str)
+            return register(call)
+        return decorate
+
+    @tool()
     def lab_context(refresh: bool = False, after: int | None = None, device_offset: int | None = None) -> dict:
         """Read a compact laboratory overview. Pass its cursor as after on subsequent reads to receive only changes. Device and platform descriptions are fetched when needed."""
         if device_offset is not None:
             return client.device_page(device_offset)
         return client.changes(after) if after is not None else client.context(refresh)
 
-    @server.tool(annotations=read_only)
+    @tool(annotations=read_only)
     def describe_instrument(device: str) -> dict:
         """Read a registered instrument's operations, parameters and units."""
         return client.request('/v1/devices/' + quote(device, safe=''))
 
-    @server.tool(annotations=read_only)
+    @tool(annotations=read_only)
     def describe_platform(platform: str) -> dict:
         """Read a platform's devices, connections, shared resources, procedures and revision. Trigger and clock wiring appears under timing, with arm_order listing receivers before their sources."""
         return client.platform(platform)
 
-    @server.tool(annotations=read_only)
+    @tool(annotations=read_only)
     def configuration_schema(name: Literal['device', 'platform', 'workflow', 'instrument-profile']) -> dict:
         """Read the JSON schema before preparing a device, platform or workflow definition."""
         return client.schema(name)
 
-    @server.tool()
+    @tool()
     def register_instrument(definition: dict) -> dict:
         """Register an installed driver and connection configuration. Repeating the identical definition reuses the device."""
         return client.register(definition)
 
-    @server.tool()
+    @tool()
     def instrument_configuration(device: str, definition: dict | None = None, expected_revision: int | None = None) -> dict:
         """Read current and previous instrument settings, or save a replacement definition at the current revision while idle. Reapply a previous definition to restore it."""
         if definition is None:
             return {'versions': client.device_history(device)}
         return client.configure_device(device, definition, expected_revision)
 
-    @server.tool()
+    @tool()
     def register_instruments(definitions: list[dict]) -> dict:
         """Register multiple instrument descriptions. IDs may be omitted. Each result names its input index and device or error; successful items remain saved."""
         return client.register_many(definitions)
 
-    @server.tool()
+    @tool()
     def discover_instruments(refresh: bool = True) -> dict:
         """Start a shared background scan, or read its cached results with refresh=false. While scanning=true, other laboratory work can continue. Interfaces and USB inventory are separate collections in the summary."""
         return client.start_discovery() if refresh else client.inventory()
 
-    @server.tool()
+    @tool()
     def identify_instrument(device: str, request_id: str | None = None) -> dict:
         """Query a configured SCPI instrument through the experiment scheduler. Identity is saved and matching model operations are added. Returns a run ID immediately."""
         return client.identify(device, request_id).info(details=False)
 
-    @server.tool(annotations=read_only)
+    @tool(annotations=read_only)
     def instrument_profiles(manufacturer: str | None = None, model: str | None = None,
                             id: str | None = None, offset: int = 0, details: bool = False) -> dict:
         """Find model descriptions by manufacturer/model or ID. Returns a short page with package versions and manuals; use details=true for operation definitions and next_offset for more results."""
         return client.instrument_catalog(manufacturer=manufacturer, model=model, id=id, offset=offset, details=details)
 
-    @server.tool()
+    @tool()
     def save_instrument_profile(definition: dict) -> dict:
         """Save a reusable model description: id, exact manufacturer/model match, driver, config.operations and source documentation. Use commands from that model's programming manual."""
         return client.save_instrument_profile(definition)
 
-    @server.tool()
+    @tool()
     def retry_instrument_discovery(connection_key: str | None = None) -> dict:
         """Retry discovery after correcting a connection or installing a driver. Existing experiments keep their instruments."""
         return client.retry_discovery(connection_key)
 
-    @server.tool()
+    @tool()
     def configure_platform(definition: dict, expected_revision: int = 0, preview: bool = False) -> dict:
         """Save devices, physical connections, shared resources and procedures. Use the current revision, or 0 for a new platform. Preview checks the definition without saving; neither option executes a procedure."""
         if preview:
             return client.request('/v1/platforms/preview', {'definition': definition})
         return client.configure_platform(definition, expected_revision)
 
-    @server.tool()
+    @tool()
     def configure_resources(capacities: dict[str, int]) -> dict:
         """Set the full collection of named CPU, GPU, software-license or other resource capacities. Read lab_context for current values first."""
         return client.configure_resources(capacities)
 
-    @server.tool()
+    @tool()
     def run_procedure(platform: str, request_id: str, procedure: str = 'initialize') -> dict:
         """Execute a saved platform procedure. Returns immediately with its run ID."""
         return client.procedure(platform, procedure, request_id).info(details=False)
 
-    @server.tool()
+    @tool()
     def submit_experiment(steps: list[dict], request_id: str, name: str = 'Experiment',
                           platform: str | None = None, resources: list[str] | None = None,
                           requirements: dict[str, int] | None = None) -> dict:
@@ -121,7 +175,7 @@ def create_server(client, *, http=False):
         return client.submit(steps, name=name, platform=platform, resources=resources or [],
                              requirements=requirements, request_id=request_id).info(details=False)
 
-    @server.tool()
+    @tool()
     def start_experiment(request_id: str, name: str = 'Experiment', platform: str | None = None,
                          resources: list[str] | None = None, parameters: dict | None = None,
                          requirements: dict[str, int] | None = None) -> dict:
@@ -130,7 +184,7 @@ def create_server(client, *, http=False):
                                        resources=resources or [], parameters=parameters,
                                        requirements=requirements).info(details=False)
 
-    @server.tool()
+    @tool()
     def invoke_operation(run_id: str, device: str, operation: str, request_id: str,
                          arguments: dict | None = None) -> dict:
         """Submit one operation in an external experiment or running program. Returns its operation ID immediately; read experiment for the result before dependent actions. Reuse request_id for an identical retry."""
@@ -138,36 +192,36 @@ def create_server(client, *, http=False):
                               {'device':device, 'operation':operation, 'arguments':arguments or {},
                                'request_id':request_id})
 
-    @server.tool()
+    @tool()
     def finish_experiment(run_id: str) -> dict:
         """Finish an external experiment after its operations and file transfers complete. Retains records and releases its reserved resources."""
         return client.run(run_id).finish()
 
-    @server.tool()
+    @tool()
     def submit_operations(run_id: str, steps: list[dict], request_id: str) -> dict:
         """Submit a batch within an existing experiment. Steps run in order by default. after=[] starts an independent branch; after=[IDs] joins branches. All steps are accepted together. Returns immediately; read experiment for results."""
-        return client.request('/v1/runs/' + quote(run_id, safe='') + '/batches',
-                              {'steps':steps, 'request_id':request_id})
+        return compact(client.request('/v1/runs/' + quote(run_id, safe='') + '/batches',
+                                      {'steps':steps, 'request_id':request_id}))
 
-    @server.tool()
+    @tool()
     def save_acquisition(run_id: str, name: str, operation_ids: list[str],
                          conditions: dict | None = None, analysis: dict | None = None) -> dict:
         """Save completed operation results and their device configurations as JSON. Conditions are caller-supplied; include actual setting readbacks among operation_ids. Analysis must refer to these same acquired results. No instrument commands are sent."""
         return client.run(run_id).save_acquisition(name, operation_ids, conditions=conditions, analysis=analysis)
 
-    @server.tool()
+    @tool()
     def begin_episode(run_id: str, episode_id: str, task: dict, observation: Any,
                       policy: dict | None = None, seed: int | None = None, info: dict | None = None) -> dict:
         """Save a task's initial observation inside an experiment. task and optional policy need id/version. Does not reset instruments. Requires IOP 0.8.6."""
         return client.run(run_id).begin_episode(episode_id, task=task, observation=observation,
                                                 policy=policy, seed=seed, info=info).info()
 
-    @server.tool()
+    @tool()
     def record_transition(run_id: str, episode_id: str, transition: dict) -> dict:
         """Save sequence, action, observation, reward (or null), terminated, truncated, operation_ids and optional info. IDs must name completed operations in this run. Repeating an identical sequence returns its saved record. Requires IOP 0.8.6."""
         return client.request('/v1/runs/' + quote(run_id, safe='') + '/episodes/' + quote(episode_id, safe='') + '/transitions', transition)
 
-    @server.tool(annotations=read_only)
+    @tool(annotations=read_only)
     def research_episodes(run_id: str, episode_id: str | None = None, after: int = -1, offset: int = 0) -> dict:
         """List research episodes, or read one episode and a page of transitions. Continue from the returned cursor. Requires IOP 0.8.6."""
         run = client.run(run_id)
@@ -176,12 +230,12 @@ def create_server(client, *, http=False):
         episode = run.episode(episode_id)
         return {'episode': episode.info(), **episode.transitions(after=after)}
 
-    @server.tool(annotations=read_only)
+    @tool(annotations=read_only)
     def available_adapters() -> dict:
         """Read installed adapters and connection parameters before configuring an instrument."""
         return {'adapters':client.adapters()}
 
-    @server.tool()
+    @tool()
     def save_experiment_file(run_id: str, name: str, text: str, operation_ids: list[str] | None = None) -> dict:
         """Save a UTF-8 result or analysis file, optionally linked to completed operations in this experiment. Use the SDK's binary upload for large measurement arrays."""
         return client.run(run_id).save_file(name, text, operation_ids=operation_ids or [])
@@ -194,36 +248,38 @@ def create_server(client, *, http=False):
                                      resources=resources or [], parameters=parameters,
                                      requirements=requirements).info(details=False)
 
-    @server.tool(annotations=read_only)
-    def experiment(run_id: str, after: int = 0, include_result: bool = False) -> dict:
-        """Read experiment status, the next 100 operation records and output file descriptions. Pass the returned cursor as after; request the result when needed."""
+    @tool(annotations=read_only)
+    def experiment(run_id: str, after: int = 0, limit: int = 20, include_result: bool = False) -> dict:
+        """Read experiment status, a summary of the next operations (limit up to 100) and the first 20 output files. Pass the returned cursor as after; page files with experiment_files. operation_result returns a full record; arrays longer than 64 values show their description unless values is true."""
         run = client.run(run_id)
-        result = {'run': run.info(details=False), 'operations': run.operations(after, 100), 'files': run.files()}
+        files = run.file_page(0, 20)
+        result = {'run': run.info(details=False), 'operations': overview(run.operations(after, max(1, min(int(limit), 100)))),
+                  'files': files['files'], 'files_cursor': files['cursor'], 'more_files': files['has_more']}
         if include_result:
-            result['result'] = client.request('/v1/runs/' + quote(run_id, safe='') + '/result')
+            result['result'] = compact(client.request('/v1/runs/' + quote(run_id, safe='') + '/result'))
         return result
 
-    @server.tool()
+    @tool()
     def cancel_experiment(run_id: str) -> dict:
         """Request cancellation. In-flight instrument operations finish or report their actual cancellation before their resources are released."""
         return client.run(run_id).cancel()
 
-    @server.tool(annotations=read_only)
+    @tool(annotations=read_only)
     def experiment_updates(run_id: str, after: int = 0, limit: int = 100, wait: float = 0) -> dict:
         """Read changes and operation states since cursor, including completion of previously queued work. Pass wait up to 25 seconds to wait for a change. Arrays stay at operation/result URLs. Continue immediately while has_more is true; retain cursor across reconnects."""
         return client.run(run_id).updates(after, limit, wait)
 
-    @server.tool(annotations=read_only)
+    @tool(annotations=read_only)
     def experiment_files(run_id: str, after: int = 0, limit: int = 100) -> dict:
         """Read one page of saved output files; retain cursor for the next page. Works while experiments are running."""
         return client.run(run_id).file_page(after, limit)
 
-    @server.tool(annotations=read_only)
-    def operation_result(operation_id: str) -> dict:
-        """Read one recorded operation and its result without repeating an instrument action."""
-        return client.request('/v1/operations/' + quote(operation_id, safe=''))
+    @tool(annotations=read_only)
+    def operation_result(operation_id: str, values: bool = False) -> dict:
+        """Read one recorded operation and its result without repeating an instrument action. Arrays longer than 64 values show their description unless values is true."""
+        return compact(client.request('/v1/operations/' + quote(operation_id, safe='')), values)
 
-    @server.tool()
+    @tool()
     def continue_program(run_id: str, request_id: str | None = None) -> dict:
         """Read saved program progress, or pass request_id to continue a stopped program that declares resume:true. The program reads its progress and reuses completed operation IDs."""
         run = client.run(run_id)
@@ -232,17 +288,17 @@ def create_server(client, *, http=False):
         run.resume(request_id)
         return run.info(details=False)
 
-    @server.tool()
+    @tool()
     def reconnect_instrument(device: str) -> dict:
         """Reconnect a registered instrument or SDK worker after its accepted operations have ended."""
         return client.reconnect(device)
 
-    @server.tool()
+    @tool()
     def release_instrument(device: str) -> dict:
         """Close an idle device connection for use by another application. Shared SDK workers release their devices together. Discovery leaves them released until reconnect_instrument."""
         return client.release(device)
 
-    @server.tool()
+    @tool()
     def resolve_resources(resources: list[str], observation: str) -> dict:
         """Return interrupted resources to use after recording the observed instrument state. Read resource_holds in lab_context for the exact resource names."""
         return client.request('/v1/resources/resolve', {'resources': resources, 'observation': observation})
@@ -256,8 +312,13 @@ def create_server(client, *, http=False):
         return {'path': str(path), 'size': path.stat().st_size}
 
     if not http:
-        server.tool()(submit_program)
-        server.tool()(download_file)
+        tool()(submit_program)
+        tool()(download_file)
+
+    # Tool listings are read on every agent turn. Use the SDK's registered schemas when it exposes them.
+    manager = getattr(server, '_tool_manager', None)
+    for registered in (manager.list_tools() if hasattr(manager, 'list_tools') else []):
+        drop_titles(getattr(registered, 'parameters', None))
 
     @server.resource('iop://guides/operations')
     def operating_guide() -> str:
