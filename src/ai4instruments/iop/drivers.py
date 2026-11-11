@@ -431,6 +431,9 @@ def make_driver(record, registry):
     builtins = {"simulated":Simulated, "simulated-lab":Laboratory, "scpi":SCPI, "modbus":Modbus, "http":HTTP, "command":Command}
     if name in builtins:
         cls = builtins[name]
+    elif name == 'qcodes':
+        from .qcodes_driver import QCoDeS
+        cls = QCoDeS
     else:
         module, separator, class_name = name.partition(":")
         if not separator:

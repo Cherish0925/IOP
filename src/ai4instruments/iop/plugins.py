@@ -8,6 +8,7 @@ def adapters():
         ('modbus', 'Modbus TCP and RTU'),
         ('http', 'HTTP JSON operations'),
         ('command', 'Executable programs and command-line solvers'),
+        ('qcodes', 'QCoDeS instrument drivers, with operations from their parameter metadata'),
         ('process', 'Independent SDK workers using JSON lines'),
         ('simulated', 'In-process demonstration instruments'),
         ('simulated-lab', 'Simulated laboratory components'),

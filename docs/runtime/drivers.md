@@ -104,6 +104,35 @@ Use `driver: "http"` with `config.base_url`, optional `headers` and `timeout`. E
 
 HTTP 驱动适用于已有 JSON 接口的仪器和设备服务器。参数、路径和返回字段写在仪器说明中。设备返回异步任务时，由实验程序继续查询其状态。
 
+## QCoDeS drivers / QCoDeS 驱动
+
+[QCoDeS](https://microsoft.github.io/Qcodes/) provides drivers for many source-measure units, multimeters, network and spectrum analyzers, waveform generators, lock-in amplifiers, magnet supplies and temperature controllers. Install the `qcodes` extra and register a driver class with `driver: "qcodes"`. / QCoDeS 已有大量源表、万用表、网络与频谱分析仪、波形发生器、锁相、磁体电源和温控驱动；安装 `qcodes` 扩展后以 `driver: "qcodes"` 登记。
+
+```json
+{
+  "id": "source",
+  "driver": "qcodes",
+  "execution": {"mode": "process"},
+  "config": {
+    "instrument": "qcodes.instrument_drivers.yokogawa:YokogawaGS200",
+    "address": "TCPIP0::192.168.1.80::inst0::INSTR",
+    "parameters": ["voltage", "current", "output", "source_mode", "*_range"],
+    "exclude": ["*_register"]
+  }
+}
+```
+
+| Field / 字段 | Meaning / 含义 |
+| --- | --- |
+| `instrument` | Driver class as `module:Class` / 驱动类 |
+| `address` | VISA address passed to the driver / 传给驱动的 VISA 地址 |
+| `arguments` | Other keyword arguments of the driver class / 驱动类的其他关键字参数 |
+| `parameters`, `exclude` | Patterns over dotted parameter paths such as `ch1.voltage`; default all / 按参数路径筛选，默认全部 |
+
+Each gettable parameter becomes `get.<path>` with `effect: "observe"`; each settable parameter becomes `set.<path>` with one `value` argument. Types, `minimum`, `maximum`, `enum` and `unit` come from the parameter's QCoDeS validator, so the Runtime rejects out-of-range values before calling the driver. Parameters without a validator accept any JSON value. Array parameters return the shared array description; setpoints of a `ParameterWithSetpoints` become axes and are saved as their own arrays. Complex values are returned as `re` and `im`. `snapshot` returns the driver's cached snapshot without querying the instrument. The identity read by VISA drivers at connection appears in the description. / 可读参数生成 `get.<路径>`（观测），可设参数生成 `set.<路径>`；类型、范围、枚举和单位取自 QCoDeS 校验器，超出范围的值在调用驱动前即被拒绝。数组参数使用统一的数组说明，setpoints 作为坐标轴另存。`snapshot` 读取缓存的状态快照。
+
+`execution.mode: "process"` runs the driver in its own process, so a stalled VISA session affects only that instrument. Driver methods and `Function` objects are not exposed as operations; write a Python driver or an experiment program for them. A `set` result reports the requested value; read the parameter for the instrument's value. / 建议以独立进程运行。驱动的方法和 `Function` 不生成操作；`set` 返回的是请求值，实际值以读回为准。
+
 ## Automatic registration / 自动登记
 
 `config.json` can contain discovery `profiles`. Each profile requires a transport and exact metadata matches. Placeholders in its device record are filled from the discovered connection. / 发现规则按连接类型及字段精确匹配，用发现的地址与序列号生成设备记录。
