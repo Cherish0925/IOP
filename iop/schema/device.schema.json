@@ -63,6 +63,48 @@
           "description": "Time to finish cancellation before the SDK process ends; default 2."
         }
       }
+    },
+    "calibration": {
+      "type": "object",
+      "required": [
+        "id"
+      ],
+      "description": "Calibration of this instrument. Operations record its id and any uncertainty listed for them.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Certificate or calibration record identifier"
+        },
+        "date": {
+          "type": "string",
+          "description": "ISO date or time with offset"
+        },
+        "valid_until": {
+          "type": "string",
+          "description": "ISO date (ends 23:59:59 UTC) or time with offset"
+        },
+        "certificate": {
+          "type": "string"
+        },
+        "by": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "enforce": {
+          "type": "boolean",
+          "description": "Refuse new operations after valid_until"
+        },
+        "uncertainty": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object"
+          },
+          "description": "Operation name to uncertainty, for example {\"value\": 0.02, \"unit\": \"V\", \"coverage_factor\": 2}"
+        }
+      }
     }
   }
 }

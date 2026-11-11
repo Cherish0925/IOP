@@ -19,8 +19,9 @@ import re
 from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor, CancelledError
 from pathlib import Path, PurePosixPath
+from .calibration import operation_fields
 from .config import save_json
-from .device_configuration import allowed
+from .device_configuration import METADATA, allowed
 from .drivers import make_driver, parameters
 from .store import Store, dumps, now
 from . import platforms as platform_model
@@ -412,6 +413,9 @@ class Engine:
         with self.registration_lock:
             from .identification import same_registration
             record = json.loads(dumps(record))
+            if 'calibration' in record:
+                from .calibration import check
+                check(record['calibration'])
             device_id = record.get("id", "")
             if not device_id:
                 config = record.get('config', {})
@@ -464,7 +468,7 @@ class Engine:
                         raise ValueError("Service is stopping")
                     self.devices[device_id] = driver
                     self.device_records[device_id] = record
-                    metadata = {k:record[k] for k in ('identity', 'identity_source', 'instrument_profile', 'documentation') if k in record}
+                    metadata = {k:record[k] for k in METADATA if k in record}
                     self.descriptions[device_id] = json.loads(dumps({"id":device_id, "driver":record["driver"], **description, **metadata}))
                     self.descriptions[device_id]['revision'] = self.store.save_device(record)['revision']
                     self.allocation.limits['device:' + device_id] = concurrency
@@ -540,7 +544,7 @@ class Engine:
             driver.description = driver.worker.call('instrument_description',
                 {'device': device_id, 'identity': identity, 'config': record['config']}, timeout=driver.worker.startup_timeout)
             driver.description.setdefault('resources', []).append('worker:' + driver.worker_id)
-        metadata = {k:record[k] for k in ('identity', 'identity_source', 'instrument_profile', 'documentation') if k in record}
+        metadata = {k:record[k] for k in METADATA if k in record}
         if before == record:
             return
         self.descriptions[device_id] = {'id':device_id, 'driver':record['driver'], **allowed(record, self.devices[device_id].describe()), **metadata}
@@ -583,7 +587,7 @@ class Engine:
                     self.devices[device_id].close()
                     self.devices[device_id] = new
                     self.device_records[device_id] = record
-                    metadata = {k:record[k] for k in ('identity', 'identity_source', 'instrument_profile', 'documentation') if k in record}
+                    metadata = {k:record[k] for k in METADATA if k in record}
                     self.descriptions[device_id] = {'id':device_id, 'driver':record['driver'], **allowed(record, new.describe()), **metadata}
                     self.descriptions[device_id]['revision'] = self.store.save_device(record)['revision']
                     self.config['devices'] = [record if d['id'] == device_id else d for d in self.config['devices']]
@@ -622,13 +626,18 @@ class Engine:
         for source in (self.descriptions[device_id], specs[name], step):
             for key, count in quantities(source.get('requirements', {}), self.capacities).items():
                 requirements[key] = max(requirements.get(key, 0), count)
+        calibration = self.descriptions[device_id].get('calibration')
+        recorded = operation_fields(calibration, name)
+        if recorded.get('calibration_expired') and calibration.get('enforce'):
+            raise RequestError('calibration_expired', 'Renew this instrument’s calibration before using it.',
+                               device_id=device_id, calibration=calibration['id'], valid_until=calibration['valid_until'])
         return {"id":identifier("op"), "run_id":run_id, "step":step.get("id"), "device":device_id,
                 "operation":name, "arguments":args, "bindings": bindings, "requirements": requirements,
                 "effect":specs[name].get('effect', 'change'),
                 "after":platform_model.dependencies(step), "state":"queued", "created":now(),
                 "resources":sorted(set(self._resources([device_id], name) + self._resources(step.get("resources", [])))),
                 "request_id":step.get("request_id"),
-                "device_revision":self.descriptions[device_id].get('revision')}
+                "device_revision":self.descriptions[device_id].get('revision'), **recorded}
 
     def submit(self, spec, package=None):
         with self.lock:
@@ -1003,7 +1012,7 @@ class Engine:
                 for name in sorted(affected):
                     created[name] = make_driver(self.device_records[name], registry)
                     registry[name] = created[name]
-                    if allowed(self.device_records[name], created[name].describe()) != {k: v for k, v in self.descriptions[name].items() if k not in {'id', 'driver', 'identity', 'identity_source', 'instrument_profile', 'documentation', 'revision'}}:
+                    if allowed(self.device_records[name], created[name].describe()) != {k: v for k, v in self.descriptions[name].items() if k not in {'id', 'driver', 'revision', *METADATA}}:
                         raise ValueError('Driver description changed; update the device configuration before reuse')
                 with self.lock:
                     self.devices.update(created)

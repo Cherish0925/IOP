@@ -6,7 +6,7 @@ from .drivers import make_driver
 from .errors import RequestError
 
 
-METADATA = ('identity', 'identity_source', 'instrument_profile', 'documentation')
+METADATA = ('identity', 'identity_source', 'instrument_profile', 'documentation', 'calibration')
 
 
 def allowed(record, description):
@@ -41,6 +41,9 @@ def configure(engine, device_id, definition, expected_revision):
     from .engine import TERMINAL
     from .discovery import connection_conflict
     definition = copy.deepcopy(definition)
+    if 'calibration' in definition:
+        from .calibration import check
+        check(definition['calibration'])
     if definition.get('id') != device_id:
         raise ValueError('Keep the instrument ID when editing its configuration')
     with engine.registration_lock:

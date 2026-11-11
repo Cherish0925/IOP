@@ -81,6 +81,10 @@ def laboratory(engine, refresh=False, detail='summary'):
         result['next_steps'].append({'action': 'discover', 'reason': 'The first connection inventory is not available yet.'})
     if result['setup']['offline_devices']:
         result['next_steps'].append({'action': 'reconnect', 'devices': sorted(result['setup']['offline_devices'])})
+    from .calibration import expired
+    stale = sorted(d['id'] for d in devices if expired(d.get('calibration')))
+    if stale:
+        result['next_steps'].append({'action': 'renew_calibration', 'devices': stale})
     for platform_id, missing in result['setup']['missing_platform_devices'].items():
         result['next_steps'].append({'action': 'restore_platform_devices', 'platform': platform_id, 'devices': missing})
     result['operation'] = {
@@ -100,7 +104,9 @@ def laboratory(engine, refresh=False, detail='summary'):
         states = engine.device_states()
         result['devices'] = [{k: v for k, v in d.items() if k in
             ('id', 'name', 'driver', 'mode', 'identity', 'revision', 'operations')} |
-            {'status': states.get(d['id'], {}), 'description': '/v1/devices/' + d['id']}
+            {'status': states.get(d['id'], {}), 'description': '/v1/devices/' + d['id']} |
+            ({'calibration': {k: d['calibration'][k] for k in ('id', 'valid_until') if k in d['calibration']}}
+             if d.get('calibration') else {})
             for d in devices[:100]]
         if len(devices) > 100:
             result['devices_page'] = {'total': len(devices), 'next': '/v1/context/devices?offset=100'}

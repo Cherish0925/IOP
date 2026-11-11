@@ -156,6 +156,10 @@ Use values actually returned by `iop discover`; the numbers above are placeholde
 
 A device record can list `allowed_operations`: name patterns such as `["read_*", "set_voltage"]` or `["get.*", "set.ch1.*"]`. Other operations disappear from the description and are refused on submission, for every driver and entry point. Use it to remove the generic SCPI `query` and `write` or Modbus register writes from production instruments, so the ranges of named operations cannot be bypassed. `identify` stays available for discovery. Patterns that match no operation are refused when the device is saved. / 设备记录可用 `allowed_operations` 列出允许的操作名模式；其余操作从说明中移除，提交时被拒绝，对所有驱动和入口一致生效。可用来去掉通用 `query`、`write` 等底层命令，使具名操作的参数范围不被绕过。`identify` 保留用于识别。
 
+## Calibration / 标定
+
+A device record can carry `calibration`: `id` (required), `date`, `valid_until`, `certificate`, `by`, `notes`, `uncertainty` and `enforce`. Every operation records the calibration `id`; operations listed in `uncertainty` also record their entry, for example `{"value": 0.02, "unit": "V", "coverage_factor": 2}`. Acquisitions keep the full record through the device configuration version. After `valid_until`, operations are marked `calibration_expired` and the laboratory overview lists `renew_calibration`; with `enforce: true` new operations are refused with `calibration_expired`. Validity is evaluated when an operation is submitted. A date without a time ends at 23:59:59 UTC. Update the record through the device configuration; earlier operations keep the version they used. / 设备记录可附 `calibration`：证书编号、日期、有效期、不确定度等。每次操作记录所依据的标定编号及该操作的不确定度，采集记录通过设备配置版本保留完整标定信息。过期后操作被标记，实验室概况提示更新标定；设 `enforce: true` 则拒绝新的操作。有效期在提交操作时判断。
+
 ## Python driver / Python 驱动
 
 Implement these methods in an installed Python module:
