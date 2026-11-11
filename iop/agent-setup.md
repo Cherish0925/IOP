@@ -65,6 +65,19 @@ An individual instrument can operate without a platform. A platform records rela
 
 `iop://laboratory` exposes the same context as an MCP resource. Submissions return immediately. `experiment` returns at most 100 operations per page; pass the returned cursor as `after`. Retrieve large data through output files.
 
+### Toolsets
+
+Hosts that cap the number of tools, or carry every tool description in each request, can load part of them: `iop mcp --toolsets experiments,attention`, or `IOP_MCP_TOOLSETS=experiments,attention` in the host's environment (an SSH connection passes it on as the argument). `lab_context`, `describe_instrument` and `describe_platform` are always offered. When a next step needs a tool that is left out, the server instructions tell the agent to ask for its toolset. `iop mcp-config --toolsets ...` prints the launcher with the choice.
+
+| Toolset | Tools | For |
+| --- | --- | --- |
+| `setup` | 12 | Registering instruments, model descriptions, platforms and resources |
+| `experiments` | 17 | Saved operations, experiments, batches, acquisitions, programs, results and files |
+| `attention` | 5 | Reconnecting and releasing instruments, held resources and manual steps |
+| `episodes` | 3 | Research episodes and transitions |
+
+All four (40 tools, about 20 kB of descriptions) are the default. `experiments,attention` offers 25 tools in about 13 kB for a laboratory that is already set up.
+
 ## Remote service
 
 ```sh

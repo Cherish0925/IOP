@@ -185,9 +185,12 @@ def changes(engine, after=0, limit=100, wait=0):
     return {'changes': records, 'cursor': events[-1]['sequence'] if events else int(after)}
 
 
-def agent_configuration(home, endpoint=None):
+def agent_configuration(home, endpoint=None, toolsets=None):
     args = ['-m', 'ai4instruments.iop', '--home', str(home)]
     if endpoint:
         args += ['--endpoint', endpoint]
     args += ['mcp']
+    if toolsets:
+        from .mcp import toolsets as chosen
+        args += ['--toolsets', ','.join(chosen(toolsets))]
     return {'mcpServers': {'iop': {'command': sys.executable, 'args': args}}}

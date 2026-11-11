@@ -5,12 +5,12 @@ import os
 import sys
 
 
-def application(client, token):
+def application(client, token, selection=None):
     if not token or not token.isascii() or any(c.isspace() for c in token):
         raise ValueError("Set IOP_MCP_TOKEN to a nonempty ASCII bearer token without spaces.")
     from .mcp import create_server
 
-    server = create_server(client, http=True)
+    server = create_server(client, http=True, selection=selection)
     options = dict(stateless_http=True, json_response=True) if sys.version_info >= (3, 11) else {}
     app = server.streamable_http_app(**options)
     expected = ("Bearer " + token).encode("ascii")
@@ -33,12 +33,14 @@ def application(client, token):
     return authenticated
 
 
-def run(home, endpoint, port):
+def run(home, endpoint, port, selection=None):
     token = os.environ.get("IOP_MCP_TOKEN")
     if not token:
         raise ValueError("Set IOP_MCP_TOKEN in the gateway environment before starting it.")
     import uvicorn
     from .desktop import ensure_service
+    from .mcp import toolsets
 
-    app = application(ensure_service(home, endpoint), token)
+    toolsets(selection)
+    app = application(ensure_service(home, endpoint), token, selection)
     uvicorn.run(app, host="127.0.0.1", port=port, proxy_headers=False, access_log=False)

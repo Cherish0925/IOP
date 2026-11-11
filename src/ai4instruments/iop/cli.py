@@ -99,12 +99,15 @@ def parser():
     p = sub.add_parser('context', help='Read the laboratory configuration for an agent or program')
     p.add_argument('--refresh', action='store_true'); p.add_argument('--start', action='store_true')
     p.add_argument('--full', action='store_true'); p.add_argument('--after', type=int)
-    sub.add_parser('mcp', help='Expose the shared service to an agent over MCP stdio')
+    toolset_help = 'Comma-separated MCP toolsets: setup, experiments, attention, episodes or all (default)'
+    p = sub.add_parser('mcp', help='Expose the shared service to an agent over MCP stdio')
+    p.add_argument('--toolsets', help=toolset_help)
     from .connector import options as connection_options
     connection_options(sub.add_parser('connect', help='Install or update a laboratory connector for an agent host'))
     p = sub.add_parser('mcp-http', help='Serve authenticated MCP over HTTP on loopback')
-    p.add_argument('--port', type=int, default=8766)
-    sub.add_parser('mcp-config', help='Print the MCP launcher configuration for this installation')
+    p.add_argument('--port', type=int, default=8766); p.add_argument('--toolsets', help=toolset_help)
+    p = sub.add_parser('mcp-config', help='Print the MCP launcher configuration for this installation')
+    p.add_argument('--toolsets', help=toolset_help)
     p = sub.add_parser('register'); p.add_argument('file')
     p = sub.add_parser('reconnect'); p.add_argument('device')
     p = sub.add_parser('release', help='Release an idle instrument connection'); p.add_argument('device')
@@ -180,13 +183,13 @@ def main():
             output(client.changes(args.after) if args.after is not None else client.context(args.refresh, 'full' if args.full else 'summary'))
         elif args.command == 'mcp-config':
             from .context import agent_configuration
-            output(agent_configuration(home, args.endpoint or os.environ.get('IOP_ENDPOINT')))
+            output(agent_configuration(home, args.endpoint or os.environ.get('IOP_ENDPOINT'), args.toolsets))
         elif args.command == 'mcp-http':
             from .mcp_http import run
-            run(home, args.endpoint, args.port)
+            run(home, args.endpoint, args.port, args.toolsets)
         elif args.command == 'mcp':
             from .mcp import run
-            run(home, args.endpoint)
+            run(home, args.endpoint, args.toolsets)
         elif args.command == 'open':
             from .desktop import open_browser
             open_browser(home, args.endpoint)

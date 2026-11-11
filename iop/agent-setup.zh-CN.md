@@ -65,6 +65,19 @@ iop context --start
 
 MCP 资源 `iop://laboratory` 提供相同的实验室说明。提交工具立即返回，不需要等待整个实验结束。操作记录每页最多 100 条，下一次查询使用返回的 cursor；大型数据通过文件获取。
 
+### 工具集
+
+对工具数量有上限、或每次请求都携带全部工具说明的宿主，可以只加载一部分：`iop mcp --toolsets experiments,attention`，或在宿主环境中设置 `IOP_MCP_TOOLSETS=experiments,attention`（SSH 连接会把它作为参数传过去）。`lab_context`、`describe_instrument`、`describe_platform` 始终提供。下一步需要未加载的工具时，服务说明会让 Agent 请用户加上对应工具集。`iop mcp-config --toolsets ...` 输出带该选择的启动配置。
+
+| 工具集 | 工具数 | 用途 |
+| --- | --- | --- |
+| `setup` | 12 | 登记仪器、型号描述、平台和资源 |
+| `experiments` | 17 | 已保存的操作、实验、批次、采集、程序、结果和文件 |
+| `attention` | 5 | 重连和释放仪器、挂起的资源、人工步骤 |
+| `episodes` | 3 | 研究回合与转移记录 |
+
+默认四个全部加载（40 个工具，说明约 20 kB）。已完成配置的实验室用 `experiments,attention`：25 个工具，约 13 kB。
+
 ## 连接远端实验室
 
 ```sh

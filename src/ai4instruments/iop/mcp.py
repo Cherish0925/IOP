@@ -4,6 +4,7 @@ import fnmatch
 import functools
 import json
 import importlib.util
+import os
 import sys
 from pathlib import Path
 from typing import Literal, Any
@@ -11,6 +12,33 @@ from urllib.parse import quote, urlencode
 
 # Arrays longer than this reach an agent as their description; the values stay in the operation's file.
 AGENT_VALUES = 64
+
+# Hosts that cap or pay for every tool can load only the toolsets a laboratory needs; the three
+# descriptions are always offered. Every tool belongs to exactly one toolset.
+ALWAYS = ('lab_context', 'describe_instrument', 'describe_platform')
+TOOLSETS = {
+    'setup': ('configuration_schema', 'register_instrument', 'instrument_configuration', 'register_instruments',
+              'discover_instruments', 'identify_instrument', 'instrument_profiles', 'save_instrument_profile',
+              'retry_instrument_discovery', 'available_adapters', 'configure_platform', 'configure_resources'),
+    'experiments': ('saved_operations', 'run_procedure', 'submit_experiment', 'start_experiment', 'invoke_operation',
+                    'finish_experiment', 'submit_operations', 'save_acquisition', 'submit_program', 'continue_program',
+                    'experiment', 'cancel_experiment', 'experiment_updates', 'experiment_files', 'operation_result',
+                    'save_experiment_file', 'download_file'),
+    'attention': ('reconnect_instrument', 'release_instrument', 'resolve_resources', 'manual_tasks', 'report_manual_step'),
+    'episodes': ('begin_episode', 'record_transition', 'research_episodes'),
+}
+
+
+def toolsets(selection=None):
+    """The toolsets named by ``selection`` or IOP_MCP_TOOLSETS, comma separated; all when neither is set."""
+    selection = selection or os.environ.get('IOP_MCP_TOOLSETS') or 'all'
+    names = [name.strip() for name in selection.split(',') if name.strip()]
+    if 'all' in names:
+        return list(TOOLSETS)
+    unknown = sorted(set(names) - TOOLSETS.keys())
+    if unknown or not names:
+        raise ValueError('Unknown toolsets: ' + ', '.join(unknown) + '; choose from all, ' + ', '.join(TOOLSETS))
+    return [name for name in TOOLSETS if name in names]
 
 
 def compact(value, values=False):
@@ -70,7 +98,9 @@ def failure(error):
     return f'{type(error).__name__}: {error}'
 
 
-def create_server(client, *, http=False):
+def create_server(client, *, http=False, selection=None):
+    chosen = toolsets(selection)
+    offered = set(ALWAYS).union(*(TOOLSETS[name] for name in chosen))
     try:
         if sys.version_info >= (3, 11):
             from mcp.server import MCPServer as Server
@@ -101,13 +131,18 @@ def create_server(client, *, http=False):
         'Save acquired results by operation ID without reading the instruments again. '
         'Reuse request_id after a connection failure; the runtime schedules devices and retains results. '
         'Follow next_steps in lab_context. A held resource returns to use only through resolve_resources with what was observed. '
-        'Report a manual step with report_manual_step only from what the person stated.'))
+        'Report a manual step with report_manual_step only from what the person stated.' +
+        ('' if len(chosen) == len(TOOLSETS) else
+         f" This connection offers the toolsets {', '.join(chosen)}. When a next step needs a tool of "
+         f"{', '.join(name for name in TOOLSETS if name not in chosen)}, ask the person to add that toolset to this connection (--toolsets or IOP_MCP_TOOLSETS).")))
 
     def tool(**options):
         """Register a tool whose result reaches the agent as compact JSON rather than indented JSON."""
         register = server.tool(structured_output=False, **options)
 
         def decorate(function):
+            if function.__name__ not in offered:
+                return function
             @functools.wraps(function)
             def call(*args, **kwargs):
                 try:
@@ -395,9 +430,10 @@ def create_server(client, *, http=False):
     return server
 
 
-def run(home, endpoint=None):
+def run(home, endpoint=None, selection=None):
     if importlib.util.find_spec('mcp') is None:
         raise RuntimeError('Install the Agent component: python -m pip install "ai4instruments[agent]"')
+    toolsets(selection)
     from .desktop import ensure_service
     client = ensure_service(home, endpoint)
-    create_server(client).run(transport='stdio')
+    create_server(client, selection=selection).run(transport='stdio')

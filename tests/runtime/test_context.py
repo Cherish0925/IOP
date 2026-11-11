@@ -101,6 +101,30 @@ class MCPCase(unittest.TestCase):
     setUp = fixture.ServiceCase.setUp
     tearDown = fixture.ServiceCase.tearDown
 
+    def test_toolsets_offer_part_of_the_tools(self):
+        import asyncio
+        from ai4instruments.iop import mcp
+
+        def names(selection):
+            server = mcp.create_server(self.client, selection=selection)
+            return {tool.name for tool in asyncio.run(server.list_tools())}, server.instructions
+        every, instructions = names(None)
+        grouped = [name for tools in mcp.TOOLSETS.values() for name in tools] + list(mcp.ALWAYS)
+        # A new tool must be placed in one toolset.
+        self.assertEqual(sorted(grouped), sorted(every))
+        self.assertNotIn('toolsets', instructions)
+        chosen, instructions = names('experiments, attention')
+        self.assertEqual(chosen, set(mcp.ALWAYS) | set(mcp.TOOLSETS['experiments']) | set(mcp.TOOLSETS['attention']))
+        self.assertIn('toolsets experiments, attention', instructions)
+        self.assertIn('setup, episodes', instructions)
+        with patch.dict(os.environ, {'IOP_MCP_TOOLSETS': 'episodes'}):
+            self.assertEqual(names(None)[0], set(mcp.ALWAYS) | set(mcp.TOOLSETS['episodes']))
+            self.assertEqual(names('all')[0], every)
+        with self.assertRaisesRegex(ValueError, 'Unknown toolsets: experiment; choose from all, setup'):
+            mcp.toolsets('experiment')
+        args = agent_configuration(Path('/lab'), toolsets='attention,experiments')['mcpServers']['iop']['args']
+        self.assertEqual(args[-3:], ['mcp', '--toolsets', 'experiments,attention'])
+
     def test_real_stdio_tools_configure_execute_and_retain_the_service(self):
         environment = dict(os.environ, IOP_TOKEN=self.config['token'])
         responses = queue.Queue()
