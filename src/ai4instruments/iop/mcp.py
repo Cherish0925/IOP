@@ -60,6 +60,16 @@ def waiting(wait):
     return '?' + urlencode({'wait': wait}) if wait else ''
 
 
+def failure(error):
+    """The text an agent reads for a failed call: the service's code first, then its reason."""
+    from .client import IOPError
+    if isinstance(error, IOPError):
+        text = f'{error.code}: {error}' if error.code else str(error)
+        retry = error.details.get('retry_after')
+        return text + (f' Retry after {retry} s.' if retry else '')
+    return f'{type(error).__name__}: {error}'
+
+
 def create_server(client, *, http=False):
     try:
         if sys.version_info >= (3, 11):
@@ -69,6 +79,11 @@ def create_server(client, *, http=False):
     except ImportError as error:
         raise RuntimeError('Run the IOP release installer with IOP_AGENT=1, or install ".[agent]" from the source directory.') from error
     from mcp.types import ToolAnnotations
+    try:
+        from mcp.server.mcpserver.exceptions import ToolError
+    except ImportError:
+        from mcp.server.fastmcp.exceptions import ToolError
+    from .client import IOPError
     read_only = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
 
     options = {'stateless_http': True, 'json_response': True} if http and sys.version_info < (3, 11) else {}
@@ -80,8 +95,11 @@ def create_server(client, *, http=False):
         'Saving platform configuration does not execute initialization. '
         'Submit experiments or programs once, retain the returned ID and inspect them later. '
         'For adaptive work, start_experiment, submit_operations within that run, then finish_experiment. '
-        'Batch known sequences and parallel branches. Save acquired results by operation ID without reading the instruments again. '
-        'Reuse request_id after a connection failure; the runtime schedules devices and retains results.'))
+        'Batch known sequences and parallel branches; pass wait=25 to receive results in the same reply. '
+        'Save acquired results by operation ID without reading the instruments again. '
+        'Reuse request_id after a connection failure; the runtime schedules devices and retains results. '
+        'Follow next_steps in lab_context. A held resource returns to use only through resolve_resources with what was observed. '
+        'Report a manual step with report_manual_step only from what the person stated.'))
 
     def tool(**options):
         """Register a tool whose result reaches the agent as compact JSON rather than indented JSON."""
@@ -90,13 +108,18 @@ def create_server(client, *, http=False):
         def decorate(function):
             @functools.wraps(function)
             def call(*args, **kwargs):
-                value = function(*args, **kwargs)
+                try:
+                    value = function(*args, **kwargs)
+                except (IOPError, OSError, ValueError) as error:
+                    # Raised as ToolError so the agent reads the reason; other exceptions reach it as the tool name only.
+                    raise ToolError(failure(error)) from error
                 return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, separators=(',', ':'),
                                                                         default=str)
             return register(call)
         return decorate
 
-    @tool()
+    # A refresh lists connections without opening them, so the overview stays a read.
+    @tool(annotations=read_only)
     def lab_context(refresh: bool = False, after: int | None = None, device_offset: int | None = None) -> dict:
         """Read a compact laboratory overview. Pass its cursor as after on subsequent reads to receive only changes. Device and platform descriptions are fetched when needed."""
         if device_offset is not None:
