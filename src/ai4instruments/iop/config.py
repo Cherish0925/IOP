@@ -6,7 +6,7 @@ import secrets
 import sys
 from pathlib import Path
 
-VERSION = "0.8.7"
+VERSION = "0.8.8"
 
 
 def home_path(value=None):
