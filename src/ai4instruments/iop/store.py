@@ -9,7 +9,7 @@ from contextlib import contextmanager
 
 
 def now():
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 def dumps(value):

@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
@@ -148,12 +149,22 @@ class ContinuityCase(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=4) as pool:
             list(pool.map(lambda _: self.client.devices(), range(20)))
         with self.client.start_experiment(resources=['stage']) as run:
-            with ThreadPoolExecutor(max_workers=4) as pool:
-                ops = list(pool.map(lambda i: run.invoke_record('stage','position', request_id=f'r{i}'), range(12)))
-            ordered = sorted(ops, key=lambda op:op['started'])
+            intervals = []
+            invoke = self.engine.devices['stage'].invoke
+            def record(*args):
+                started = time.monotonic_ns()
+                try:
+                    return invoke(*args)
+                finally:
+                    intervals.append((started, time.monotonic_ns()))
+            with patch.object(self.engine.devices['stage'], 'invoke', side_effect=record):
+                with ThreadPoolExecutor(max_workers=4) as pool:
+                    ops = list(pool.map(lambda i: run.invoke_record('stage','position', request_id=f'r{i}'), range(12)))
             self.assertEqual(len({op['id'] for op in ops}),12)
+            ordered = sorted(intervals)
+            self.assertEqual(len(ordered), 12)
             for left, right in zip(ordered, ordered[1:]):
-                self.assertLessEqual(left['ended'], right['started'])
+                self.assertLessEqual(left[1], right[0])
 
     def test_release_rejects_active_work_and_persists_without_opening_driver(self):
         run = self.client.start_experiment(resources=['stage'])

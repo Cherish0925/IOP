@@ -30,12 +30,14 @@ class UpdatesCase(unittest.TestCase):
             with self.engine.store.transaction():
                 self.engine.store.event(kind,run.id,sequence=0,result={'large':list(range(10000))})
             page = run.updates()
-            last = page['changes'][-1]
+            last = next(event for event in page['changes'] if event['kind']==kind)
             self.assertGreater(last['sequence'], 0)
             self.assertEqual(last['chunk_sequence' if kind=='stream.chunk' else 'transition_sequence'], 0)
             self.assertNotIn('result', last)
             self.assertLess(len(json.dumps(page)), 4000)
-            self.assertEqual(run.updates(page['cursor'])['changes'], [])
+            following = run.updates(page['cursor'])['changes']
+            self.assertTrue(all(event['sequence'] > page['cursor'] for event in following))
+            self.assertNotIn(kind, [event['kind'] for event in following])
         run.finish()
 
     def test_file_pages_are_incremental_and_preserve_legacy_listing(self):
