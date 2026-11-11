@@ -314,10 +314,21 @@ def create_server(client, *, http=False):
         """Close an idle device connection for use by another application. Shared SDK workers release their devices together. Discovery leaves them released until reconnect_instrument."""
         return client.release(device)
 
+    @tool(annotations=read_only)
+    def manual_tasks() -> list:
+        """List steps waiting for a person: instruction, arguments and the readings to report."""
+        return client.manual_tasks()
+
+    @tool()
+    def report_manual_step(operation_id: str, status: Literal['done', 'failed', 'unsure'], readings: dict | None = None,
+                           note: str = '', by: str = '') -> dict:
+        """Report what a person did for a waiting step: done with its readings, failed, or unsure. Report only what the person stated; unsure holds the step's resources until an observation is recorded."""
+        return client.report_manual(operation_id, status, readings, note, by)
+
     @tool()
     def resolve_resources(resources: list[str], observation: str) -> dict:
         """Return interrupted resources to use after recording the observed instrument state. Read resource_holds in lab_context for the exact resource names."""
-        return client.request('/v1/resources/resolve', {'resources': resources, 'observation': observation})
+        return client.resolve_resources(resources, observation)
 
     def download_file(artifact_id: str, destination: str) -> dict:
         """Download an experiment output to a new file on this MCP host. Use artifact IDs returned by experiment."""

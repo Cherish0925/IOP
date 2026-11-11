@@ -13,6 +13,7 @@ export type OperationRecord = RunRecord & { run_id: string; device: string; oper
 export type BatchRecord = { request_id: string; run_id: string; complete: boolean; operations: OperationRecord[] };
 export type ArtifactRecord = { id: string; run_id: string; name: string; size: number; media_type: string; created: string; operation_ids?: string[] };
 export type Event = { sequence: number; kind: string; run_id?: string; [key: string]: unknown };
+export type ManualTask = { operation_id: string; run_id: string | null; device: string; operation: string; instruction: string; arguments: Record<string, unknown>; readings: Record<string, Record<string, unknown>>; created: string };
 export type RunUpdates = { run: RunRecord; changes: Event[]; operations: OperationRecord[]; cursor: number; has_more: boolean };
 export type Submission = { name?: string; project?: string; experiment?: string; platform?: string; resources?: string[]; requirements?: Record<string, number>; parameters?: Record<string, unknown>; request_id?: string };
 export class IOPError extends Error {
@@ -67,6 +68,11 @@ export class IOP {
   configureResources(capacities: Record<string, number>) { return this.request('/v1/resources', { capacities }); }
   reconnect(device: string) { return this.request('/v1/devices/' + encodeURIComponent(device) + '/reconnect', {}); }
   release(device: string) { return this.request('/v1/devices/' + encodeURIComponent(device) + '/release', {}); }
+  resolveResources(resources: string[], observation: string) { return this.request<{released: string[]}>('/v1/resources/resolve', { resources, observation }); }
+  manualTasks() { return this.request<ManualTask[]>('/v1/manual-tasks'); }
+  reportManual(operationId: string, status: 'done' | 'failed' | 'unsure', readings: Record<string, unknown> = {}, note = '', by = '') {
+    return this.request<{operation_id: string; status: string}>('/v1/manual-tasks/' + encodeURIComponent(operationId), { status, readings, note, by });
+  }
   platforms() { return this.request<Platform[]>('/v1/platforms'); }
   platform(id: string) { return this.request<Platform>('/v1/platforms/' + encodeURIComponent(id)); }
   configurePlatform(definition: PlatformDefinition, expectedRevision = 0) {

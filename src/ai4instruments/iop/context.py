@@ -97,6 +97,10 @@ def laboratory(engine, refresh=False, detail='summary'):
     if alerts:
         result['next_steps'].append({'action': 'inspect_monitors', 'monitors': alerts,
                                      'resolve': '/v1/resources/resolve' if engine.resource_holds else None})
+    from .manual import tasks
+    waiting = tasks(engine)
+    if waiting:
+        result['next_steps'].append({'action': 'manual_tasks', 'count': len(waiting)})
     from .calibration import expired
     stale = sorted(d['id'] for d in devices if expired(d.get('calibration')))
     if stale:

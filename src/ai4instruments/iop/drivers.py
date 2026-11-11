@@ -414,6 +414,8 @@ class SCPI(Driver):
 
 def make_driver(record, registry):
     execution = record.get('execution', {})
+    if execution and record.get('driver') == 'manual':
+        raise ValueError('Manual steps wait in the service; remove execution')
     if execution:
         if execution.get('mode') != 'process' or record.get('driver') == 'process':
             raise ValueError('Use execution.mode=process for an installed instrument driver')
@@ -434,6 +436,9 @@ def make_driver(record, registry):
     elif name == 'qcodes':
         from .qcodes_driver import QCoDeS
         cls = QCoDeS
+    elif name == 'manual':
+        from .manual import Manual
+        cls = Manual
     else:
         module, separator, class_name = name.partition(":")
         if not separator:

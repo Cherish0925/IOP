@@ -43,6 +43,7 @@ import {
   inspectRun,
 } from "./runs.js";
 import { renderResources, bindResources } from "./resources.js";
+import { updateAttention } from "./attention.js";
 const titles = {
   overview: () => t("概览", "Overview"),
   devices: () => t("仪器与软件", "Instruments & software"),
@@ -179,6 +180,7 @@ function bindSettings() {
     translate();
     updateConnection(state.connected);
     updateServiceLabels();
+    updateAttention();
     updateMode();
     render(true);
   };
@@ -290,7 +292,11 @@ export async function refresh(force = false) {
   clearTimeout(scheduled);
   try {
     const full = force || Date.now() - lastInventory > 15000;
-    const tasks = [api("status"), api("runs?limit=200&details=false")];
+    const tasks = [
+      api("status"),
+      api("runs?limit=200&details=false"),
+      api("manual-tasks"),
+    ];
     if (full)
       tasks.push(
         api("devices"),
@@ -301,11 +307,12 @@ export async function refresh(force = false) {
     state.status = values[0];
     state.resources = values[0].resources;
     state.runs = values[1];
+    state.manual = values[2];
     if (full) {
-      state.devices = values[2];
-      state.platforms = values[3];
+      state.devices = values[3];
+      state.platforms = values[4];
       state.inventory =
-        values[4].updated || values[4].scanning ? values[4] : state.inventory;
+        values[5].updated || values[5].scanning ? values[5] : state.inventory;
       lastInventory = Date.now();
     }
     if (!state.ui) {
@@ -325,6 +332,7 @@ export async function refresh(force = false) {
     $("#sidebar-version").textContent = state.status.version;
     $("#host-label").textContent = state.status.hostname;
     updateServiceLabels();
+    updateAttention();
     render(force);
   } catch (error) {
     updateConnection(

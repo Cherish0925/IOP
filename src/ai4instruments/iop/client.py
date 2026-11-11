@@ -11,7 +11,7 @@ import zipfile
 from pathlib import Path
 from urllib.request import Request, build_opener, ProxyHandler, HTTPRedirectHandler, getproxies, proxy_bypass
 from urllib.error import HTTPError
-from urllib.parse import urlencode, urlparse, urljoin
+from urllib.parse import quote, urlencode, urlparse, urljoin
 from .config import home_path
 from .engine import TERMINAL
 
@@ -171,6 +171,19 @@ class Client:
 
     def release(self, device):
         return self.request('/v1/devices/' + device + '/release', {})
+
+    def resolve_resources(self, resources, observation):
+        """Return held resources to use after recording the observed state of the equipment."""
+        return self.request('/v1/resources/resolve', {'resources': list(resources), 'observation': observation})
+
+    def manual_tasks(self):
+        """Steps waiting for a person, with their instructions and requested readings."""
+        return self.request('/v1/manual-tasks')
+
+    def report_manual(self, operation_id, status, readings=None, note='', by=''):
+        """Report a manual step done (with its readings), failed or unsure."""
+        return self.request('/v1/manual-tasks/' + quote(operation_id, safe=''),
+                            {'status': status, 'readings': readings or {}, 'note': note, 'by': by})
 
     def adapters(self):
         return self.request('/v1/adapters')

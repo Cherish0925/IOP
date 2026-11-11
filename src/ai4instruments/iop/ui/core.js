@@ -15,6 +15,7 @@ export const state = {
   devices: [],
   platforms: [],
   runs: [],
+  manual: [],
   resources: { capacities: {}, allocation: [] },
   inventory: null,
   ui: null,

@@ -58,6 +58,8 @@ iop context --start
 | `cancel_experiment` | 请求取消实验 |
 | `reconnect_instrument` | 重新连接设备或此前无法加载的 SDK |
 | `resolve_resources` | 记录设备当前状态，恢复使用被中断操作占用的资源 |
+| `manual_tasks` | 等待人完成的步骤：说明和需要报告的读数 |
+| `report_manual_step` | 按人的陈述报告步骤完成（附读数）、未完成或不确定 |
 | `download_file` | 将实验文件保存到 Agent 所在计算机 |
 
 MCP 资源 `iop://laboratory` 提供相同的实验室说明。提交工具立即返回，不需要等待整个实验结束。操作记录每页最多 100 条，下一次查询使用返回的 cursor；大型数据通过文件获取。

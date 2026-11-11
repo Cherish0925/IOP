@@ -57,6 +57,8 @@ class Engine:
         self.released = set(config.get('released_devices', []))
         self.communication = {}
         self.runs, self.operations, self.futures, self.processes = {}, {}, {}, {}
+        # Operations waiting on their own thread (manual steps) do not count against the worker pool.
+        self.waiting_steps = set()
         self.allocation = Allocator()
         self.monitors = Monitors(self)
         self.capacities = capacities(config.get('resource_pools', {}))
@@ -1159,6 +1161,7 @@ class Engine:
             self._operation_ended(op)
             self.allocation.release(op_id)
             del self.futures[op_id]
+            self.waiting_steps.discard(op_id)
             self.cancellations.pop(op_id, None)
             self.progress_times.pop(op_id, None)
             if run['kind'] in {'package', 'external'}:
@@ -1235,7 +1238,8 @@ class Engine:
         candidates = deque((rid, iter(self.ready[rid])) for rid in run_ids)
         blocked = set()
         dispatch = []
-        while candidates and len(self.futures) + len(dispatch) < self.worker_count:
+        pooled = len(self.futures) - len(self.waiting_steps)
+        while candidates and pooled < self.worker_count:
             rid, items = candidates.popleft()
             try:
                 op_id = next(items)
@@ -1253,6 +1257,8 @@ class Engine:
             output = self.home / 'runs' / rid / 'output' / 'operations' / op_id
             context = Context(rid, op_id, output, lambda value, oid=op_id: self._progress(oid, value))
             self.cancellations[op_id] = context
+            if not getattr(self.devices[op['device']], 'dedicated_thread', False):
+                pooled += 1
             try:
                 if op.get('bindings'):
                     args = dict(op['arguments'])
@@ -1289,6 +1295,9 @@ class Engine:
             if error is not None:
                 from concurrent.futures import Future
                 future = Future(); future.set_exception(error)
+            elif getattr(self.devices[op['device']], 'dedicated_thread', False):
+                future = self._own_thread(self.devices[op['device']].invoke, op['operation'], op['arguments'], context)
+                self.waiting_steps.add(op_id)
             else:
                 future = self.pool.submit(self.devices[op['device']].invoke, op['operation'], op['arguments'], context)
             self.futures[op_id] = future
@@ -1296,6 +1305,21 @@ class Engine:
                 self.completed.put(oid)
                 self.wake.set()
             future.add_done_callback(completed)
+
+    @staticmethod
+    def _own_thread(function, *args):
+        """Run a call that may wait a long time, such as a manual step, outside the instrument worker pool."""
+        from concurrent.futures import Future
+        future = Future()
+
+        def run():
+            if future.set_running_or_notify_cancel():
+                try:
+                    future.set_result(function(*args))
+                except BaseException as error:
+                    future.set_exception(error)
+        threading.Thread(target=run, name='iop-waiting-step', daemon=True).start()
+        return future
 
     def _loop(self):
         while True:

@@ -19,3 +19,5 @@ console.log(await run.result());
 The integration test uploads a Node.js experiment package to an actual IOP service, calls an instrument operation, uploads a binary file and reads its result and events.
 
 For adaptive experiments, use `startExperiment`, `run.batch`, `run.saveAcquisition`, then `run.finish`. See [continuous experiments](../../../docs/runtime/external-experiments.md). `lab.release(device)` hands an idle connection to another application; `lab.reconnect(device)` restores it.
+
+`lab.manualTasks()` lists steps of `manual` devices waiting for a person; `lab.reportManual(operationId, 'done', readings)` records one (`failed` and `unsure` also). `lab.resolveResources(resources, observation)` returns held resources to use after recording what was observed. See [manual steps](../../../docs/runtime/drivers.md#manual-steps--人工步骤).

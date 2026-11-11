@@ -101,7 +101,7 @@ class Handler(BaseHTTPRequestHandler):
             if method == 'GET' and url.path == '/':
                 return self._send(Path(__file__).with_name('reader.html').read_bytes(), media_type='text/html; charset=utf-8')
             if method == 'GET' and len(parts) == 2 and parts[0] == 'ui' and parts[1] in {
-                'app.css', 'app.js', 'core.js', 'devices.js', 'platforms.js', 'runs.js', 'resources.js', 'mark.svg'
+                'app.css', 'app.js', 'attention.js', 'core.js', 'devices.js', 'platforms.js', 'runs.js', 'resources.js', 'mark.svg'
             }:
                 file = Path(__file__).with_name('ui') / parts[1]
                 media = {'.js':'text/javascript; charset=utf-8', '.css':'text/css; charset=utf-8', '.svg':'image/svg+xml'}
@@ -154,6 +154,12 @@ class Handler(BaseHTTPRequestHandler):
                 result = spawn(engine.home, body.get('view', 'overview'))
             elif parts == ['v1', 'resources']:
                 result = engine.configure_resources(body['capacities']) if method == 'POST' else engine.resource_info()
+            elif parts == ['v1', 'manual-tasks'] and method == 'GET':
+                from .manual import tasks
+                result = tasks(engine)
+            elif len(parts) == 3 and parts[:2] == ['v1', 'manual-tasks'] and method == 'POST':
+                from .manual import report
+                result = report(engine, parts[2], body)
             elif parts == ['v1', 'adapters'] and method == 'GET':
                 from .plugins import adapters
                 result = adapters()

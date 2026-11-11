@@ -175,6 +175,42 @@ State changes are recorded as `monitor.ok`, `monitor.violation` and `monitor.err
 
 A monitor reads a device only while no operation or experiment reservation uses it; an experiment that reserves the device reads it itself. Monitors run in the service and are a software stop. Laser shutters, door interlocks and other protective functions remain in hardware. / 监测只在设备空闲、未被实验预留时读取；预留设备的实验自行读取。这是服务中的软件停止，激光快门、门联锁等保护仍由硬件执行。
 
+## Manual steps / 人工步骤
+
+Steps a person performs, such as mounting a sample, aligning by eye, reading an analog gauge or refilling a dewar, are operations of a `manual` device. They are scheduled, reserved and recorded with instrument operations, so an experiment waits for the person and then continues. / 由人完成的步骤（装样、目视对准、读指针表、补液氮等）是 `manual` 设备的操作，与仪器操作一起排程、预留和记录；实验在此等待，人完成后继续。
+
+```json
+{
+  "id": "bench",
+  "driver": "manual",
+  "config": {
+    "name": "Bench operator",
+    "operations": {
+      "load_sample": {
+        "instruction": "Mount sample {sample} in holder A and close the lid",
+        "parameters": {"sample": {"type": "string"}},
+        "readings": {"mass_g": {"type": "number", "minimum": 0, "unit": "g"}}
+      },
+      "beam_on_target": {
+        "instruction": "Is the beam centred on target T2?",
+        "effect": "observe",
+        "readings": {"centred": {"type": "boolean"}}
+      }
+    }
+  }
+}
+```
+
+`instruction` is what the person sees; `{name}` takes the step's argument of that name, described in `parameters`. `readings` describe the values to report, with the same fields as operation parameters. A running step appears in `GET /v1/manual-tasks`, MCP `manual_tasks`, Python `manual_tasks()` and the desktop and browser interface. Report it with `POST /v1/manual-tasks/{operation_id}` and `{"status": "done", "readings": {...}, "note": "", "by": ""}`, MCP `report_manual_step` or Python `report_manual`. / `instruction` 是给人看的说明，`{名称}` 取同名参数；`readings` 描述需要报告的读数，字段与操作参数相同。步骤运行时出现在待办列表中（HTTP、MCP、Python 和桌面与网页界面），由人报告结果。
+
+| Status / 状态 | Recorded / 记录 |
+| --- | --- |
+| `done` | Readings are validated; the result holds `instruction`, `readings`, `note`, `by`, `time` and `source: "person"` / 读数按 `readings` 校验后写入结果 |
+| `failed` | The operation and its experiment fail / 操作和实验失败 |
+| `unsure` | A change step is treated like an unconfirmed instrument action: the device and the experiment's reserved resources are held until the observed state is recorded through `/v1/resources/resolve`. An `effect: "observe"` step only fails. / 改变状态的步骤与仪器动作未确认相同，挂起设备和实验预留的资源，登记观测结果后恢复；观测步骤只记为失败 |
+
+Waiting does not occupy instrument workers. Cancelling the experiment withdraws the task. A report records what the reporter stated; an agent relays only what the person said. Manual devices run in the service, without `execution`. / 等待不占用仪器工作线程；取消实验即撤回待办。报告内容即报告人的陈述，Agent 只转述人的原话。
+
 ## Python driver / Python 驱动
 
 Implement these methods in an installed Python module:

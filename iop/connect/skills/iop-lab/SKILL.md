@@ -15,7 +15,7 @@ For adaptive or repeated work, use `start_experiment` once and keep its run ID. 
 
 Save an acquisition with `save_acquisition` using the completed operation IDs. Analyze those same results; do not acquire again just to save. Include setting readbacks among the operation IDs and put sample or wiring information in `conditions`. Arrays above 64 values arrive as `data` (shape, unit, axes) with the file in `files`; analyze them in a program, or request `operation_result(values=true)` only when needed.
 
-Follow `next_steps` in `lab_context`, such as `inspect_monitors` or `renew_calibration`. A held resource returns to use only through `resolve_resources` with what was actually observed.
+Follow `next_steps` in `lab_context`, such as `inspect_monitors`, `renew_calibration` or `manual_tasks`. A held resource returns to use only through `resolve_resources` with what was actually observed. Report a manual step with `report_manual_step` only from what the person stated.
 
 Use `available_adapters` for connection parameters. To hand an idle instrument to other software, call `release_instrument`; call `reconnect_instrument` to use it again.
 

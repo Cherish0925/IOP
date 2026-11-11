@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -197,12 +198,26 @@ class MCPCase(unittest.TestCase):
                 self.assertEqual(call('finish_experiment', {'run_id':external['id']})['state'], 'completed')
                 self.assertEqual(call('release_instrument', {'device':'stage'})['state'], 'released')
                 self.assertEqual(call('reconnect_instrument', {'device':'stage'})['state'], 'connected')
+                self.client.register({'id':'hands', 'driver':'manual', 'config':{'operations':{'mount':{
+                    'instruction':'Mount the {part}', 'parameters':{'part':{'type':'string'}},
+                    'readings':{'seated':{'type':'boolean'}}}}}})
+                step = self.client.submit([{'id':'mount', 'device':'hands', 'operation':'mount', 'arguments':{'part':'lens'}}])
+                waiting = []
+                for _ in range(100):
+                    waiting = call('manual_tasks', {})
+                    if waiting:
+                        break
+                    time.sleep(0.05)
+                self.assertEqual(waiting[0]['instruction'], 'Mount the lens')
+                call('report_manual_step', {'operation_id':waiting[0]['operation_id'], 'status':'done',
+                                            'readings':{'seated':True}, 'by':'operator'})
+                self.assertEqual(step.result(5)['mount']['readings'], {'seated':True})
                 accepted = call('submit_experiment', {'steps':[{'id':'wait', 'device':'aux', 'operation':'wait',
                                  'arguments':{'duration':0.5}}], 'request_id':'continue-after-agent'})
                 process.stdin.close()
                 process.wait(timeout=10)
                 self.assertEqual(self.client.run(accepted['id']).wait(5)['state'], 'completed')
-                self.assertEqual(self.client.request('/v1/status')['devices'], 3)
+                self.assertEqual(self.client.request('/v1/status')['devices'], 4)
                 self.assertEqual(process.returncode, 0)
             finally:
                 if process.poll() is None:

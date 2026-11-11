@@ -58,6 +58,8 @@ An individual instrument can operate without a platform. A platform records rela
 | `cancel_experiment` | Request cancellation |
 | `reconnect_instrument` | Reconnect a device or a previously unavailable SDK |
 | `resolve_resources` | Record observed instrument state and return interrupted resources to use |
+| `manual_tasks` | Steps waiting for a person: instruction and readings to report |
+| `report_manual_step` | Report a step done with its readings, failed or unsure, as the person stated |
 | `download_file` | Save an experiment output on the MCP host |
 
 `iop://laboratory` exposes the same context as an MCP resource. Submissions return immediately. `experiment` returns at most 100 operations per page; pass the returned cursor as `after`. Retrieve large data through output files.

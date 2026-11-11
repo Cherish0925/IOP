@@ -380,6 +380,56 @@ sys.stdout.buffer.write(b.getvalue())`,
     "time,value\n0,12\n",
   );
   await page.click("#modal-close");
+  await api("devices", {
+    id: "bench",
+    driver: "manual",
+    config: {
+      operations: {
+        mount: {
+          instruction: "Mount sample {sample}",
+          parameters: { sample: { type: "string" } },
+          readings: { mass_g: { type: "number", minimum: 0, unit: "g" } },
+        },
+      },
+    },
+  });
+  const manual = (sample) =>
+    api("runs", {
+      name: "Manual step " + sample,
+      steps: [
+        {
+          id: "mount",
+          device: "bench",
+          operation: "mount",
+          arguments: { sample },
+        },
+      ],
+    });
+  const mounted = await manual("S-1");
+  await page.click("#refresh-button");
+  await page.click("#manual-open");
+  assert.equal(
+    await page.textContent(".manual-instruction"),
+    "Mount sample S-1",
+  );
+  await page.fill("#reading-mass_g", "1.5");
+  await page.click("[data-report=done]");
+  await page.waitForSelector("#attention", { state: "hidden" });
+  await pause(300);
+  assert.deepEqual((await api("runs/" + mounted.id)).result.mount.readings, {
+    mass_g: 1.5,
+  });
+  await manual("S-2");
+  await page.click("#refresh-button");
+  await page.click("#manual-open");
+  await page.click("[data-report=unsure]");
+  await pause(300);
+  await page.click("#refresh-button");
+  await page.click("#holds-open");
+  await page.fill("#hold-observation", "S-2 seated in the holder");
+  await page.click("#hold-save");
+  await page.waitForSelector("#attention", { state: "hidden" });
+  assert.deepEqual((await api("status")).resource_holds, []);
   const lasting = await api("runs", {
     name: "Continues after browser closes",
     steps: [
@@ -399,7 +449,7 @@ sys.stdout.buffer.write(b.getvalue())`,
   );
   assert.deepEqual(errors, []);
   console.log(
-    "Interface passed: discovery, registration, topology, workflow, results, resources, search, language, themes, mobile, program ZIP, file download and service continuity.",
+    "Interface passed: discovery, registration, topology, workflow, results, resources, search, language, themes, mobile, program ZIP, file download, manual steps, held resources and service continuity.",
   );
 } finally {
   if (browser) await browser.close();

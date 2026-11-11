@@ -47,6 +47,8 @@ Base URL: `http://127.0.0.1:8765`. API bodies are JSON objects. Requests to `/v1
 | GET | `/v1/runs/{run_id}/artifacts` | — | File records |
 | POST | `/v1/runs/{run_id}/files?name=raw/data.bin` | Binary body and `Content-Length`; optional URL-encoded `operation_ids` JSON array | Stream a file without base64 encoding |
 | GET | `/v1/artifacts/{artifact_id}` | — | File bytes, streamed |
+| GET | `/v1/manual-tasks` | — | Steps of `manual` devices waiting for a person: instruction, arguments and readings to report |
+| POST | `/v1/manual-tasks/{operation_id}` | `{"status":"done","readings":{},"note":"","by":""}`; status `done`, `failed` or `unsure` | `{"operation_id":"...","status":"done"}`; invalid readings leave the step waiting |
 | GET | `/v1/events` | `after=0&run_id=...&limit=200&wait=25` | `{"events":[...],"cursor":N}` |
 | POST | `/v1/shutdown` | `{}` | `{"stopping":true}` |
 
