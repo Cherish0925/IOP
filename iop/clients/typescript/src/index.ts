@@ -76,8 +76,18 @@ export class IOP {
   }
   savedOperations() { return this.request<Record<string, unknown>[]>('/v1/library'); }
   savedOperation(id: string) { return this.request<Record<string, unknown>>('/v1/library/' + encodeURIComponent(id)); }
-  saveOperation(definition: Record<string, unknown>, expectedRevision?: number) {
-    return this.request<Record<string, unknown>>('/v1/library', { definition, expected_revision: expectedRevision ?? null });
+  /** Save a Standard or Workflow Operation; `program` is the ZIP of a Workflow Operation that decides from results. */
+  saveOperation(definition: Record<string, unknown>, expectedRevision?: number, program?: Uint8Array) {
+    let archive: string | undefined;
+    if (program) {
+      let text = '';
+      for (let offset = 0; offset < program.length; offset += 8192) text += String.fromCharCode(...program.subarray(offset, offset + 8192));
+      archive = btoa(text);
+    }
+    return this.request<Record<string, unknown>>('/v1/library', { definition, expected_revision: expectedRevision ?? null, archive });
+  }
+  programFile(id: string, name: string) {
+    return this.request<{ text: string | null }>(`/v1/library/${encodeURIComponent(id)}/files/${name.split('/').map(encodeURIComponent).join('/')}`);
   }
   platforms() { return this.request<Platform[]>('/v1/platforms'); }
   platform(id: string) { return this.request<Platform>('/v1/platforms/' + encodeURIComponent(id)); }
@@ -167,6 +177,14 @@ export class Run {
     }
     if (batch.operations.some(op => op.state !== 'completed')) throw new IOPError('Operation batch did not complete', 0, batch);
     return batch.operations;
+  }
+  /** Use a saved Standard or Workflow Operation in this experiment and return its named result. */
+  async call(operation: string, args: Record<string, unknown> = {}, options: { requestId?: string; signal?: AbortSignal } = {}) {
+    const requestId = options.requestId ?? crypto.randomUUID();
+    await this.batch([{ id: 'call', operation, arguments: args }], { requestId, signal: options.signal });
+    const batch = await this.client.request<{ results: Record<string, Record<string, unknown>> }>(
+      `/v1/runs/${encodeURIComponent(this.id)}/batches?` + new URLSearchParams({ request_id: requestId }), undefined, options.signal);
+    return batch.results.call;
   }
   async invoke(device: string, operation: string, args: Record<string, unknown> = {}, options: { requestId?: string; signal?: AbortSignal } = {}) {
     return (await this.invokeRecord(device, operation, args, options)).result;

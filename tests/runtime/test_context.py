@@ -228,6 +228,12 @@ class MCPCase(unittest.TestCase):
                                                   'request_id':'mcp-saved-operation'})
                 self.assertEqual(self.client.run(used['id']).result(5)['p'], {'angle':3})
                 self.assertEqual(call('saved_operations', {'operation':'axis.position'})['uses']['completed'], 1)
+                with tempfile.TemporaryDirectory() as folder:
+                    Path(folder, 'experiment.py').write_bytes(b'from ai4instruments.iop import Client\n')
+                    saved = call('saved_operations', {'definition':{'id':'stage.scan', 'layer':'workflow',
+                                 'description':'Scan the stage'}, 'program':folder})
+                self.assertEqual(saved['program']['files'], [{'name':'experiment.py', 'size':38}])
+                self.assertIn('Client', call('saved_operations', {'operation':'stage.scan', 'file':'experiment.py'})['text'])
                 accepted = call('submit_experiment', {'steps':[{'id':'wait', 'device':'aux', 'operation':'wait',
                                  'arguments':{'duration':0.5}}], 'request_id':'continue-after-agent'})
                 process.stdin.close()

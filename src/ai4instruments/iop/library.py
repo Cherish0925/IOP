@@ -3,9 +3,10 @@
 Operations have three roles. **Basic Operations** are the operations of registered devices: one
 control or observation each. A **Standard Operation** combines them into a reusable method with
 parameters, stated conditions and a named result. A **Workflow Operation** organizes methods across
-devices, in sequence and in parallel. Standard and Workflow Operations are saved here, can be read
-and revised, and are used as one step of any experiment: a step without ``device`` names one. The
-Runtime replaces such a step by its Basic Operations before scheduling and records every use.
+devices, in sequence and in parallel, or, when it decides from results, as a saved program.
+Standard and Workflow Operations are saved here, can be read and revised, and are used as one step
+of any experiment: a step without ``device`` names one. The Runtime replaces such a step by its
+Basic Operations before scheduling, or runs the program, and records every use.
 """
 import copy
 import re
@@ -56,7 +57,7 @@ def check(definition, lookup):
     """Validate a Standard or Workflow Operation; ``lookup`` returns saved operations by name."""
     if not isinstance(definition, dict):
         raise ValueError('Describe the operation with an object')
-    unknown = set(definition) - {'id', 'layer', 'description', 'conditions', 'parameters', 'steps', 'result'}
+    unknown = set(definition) - {'id', 'layer', 'description', 'conditions', 'parameters', 'steps', 'result', 'program'}
     if unknown:
         raise ValueError('Unknown operation fields: ' + ', '.join(sorted(unknown)))
     name(definition.get('id'), 'Operation name')
@@ -69,6 +70,11 @@ def check(definition, lookup):
     declared = definition.get('parameters', {})
     if not isinstance(declared, dict) or any(not isinstance(spec, dict) for spec in declared.values()):
         raise ValueError('Each parameter needs a description object')
+    if 'program' in definition:
+        # A Workflow Operation that decides from results is a saved program; the Runtime runs it.
+        if definition['layer'] != 'workflow' or 'steps' in definition or 'result' in definition:
+            raise ValueError('A program is a Workflow Operation without steps; it saves its own result')
+        return definition
     steps = definition.get('steps')
     if not isinstance(steps, list) or not 1 <= len(steps) <= 1000 or any(not isinstance(step, dict) for step in steps):
         raise ValueError('An operation has between 1 and 1000 steps')
@@ -93,6 +99,8 @@ def check(definition, lookup):
                 raise ValueError(f"Step {step['id']}: a Standard Operation is built from Basic and Standard Operations")
             if inner['id'] == definition['id']:
                 raise ValueError('An operation cannot use itself')
+            if 'program' in inner:
+                raise ValueError(f"Step {step['id']}: {inner['id']} is a program; programs run as their own experiment")
     ordered = sequenced(steps)
     for step in ordered:
         if set(dependencies(step)) - set(identifiers):
@@ -149,6 +157,8 @@ def expand(steps, lookup):
         definition = lookup(step['operation'])
         if definition is None:
             raise ValueError(f"{step['operation']} is not a saved operation; a device operation needs device")
+        if 'program' in definition:
+            raise ValueError(f"{definition['id']} is a program: submit it as the only step of an experiment")
         bound = step.get('bindings', {})
         if not isinstance(bound, dict) or not isinstance(step.get('arguments', {}), dict):
             raise ValueError(f'Step {call}: arguments and bindings must be objects')
@@ -226,6 +236,28 @@ def expand(steps, lookup):
         record['result'] = {key: source(item) for key, item in record['result'].items()}
         record['steps'] = [step['id'] for step in flat if call in step.get('calls', [])]
     return flat, calls
+
+
+def program_step(steps, lookup):
+    """The step of a submission that runs a saved program, or None. A program runs alone."""
+    if not isinstance(steps, list):
+        return None
+    programs = [step for step in steps if isinstance(step, dict) and 'device' not in step
+                and isinstance(step.get('operation'), str) and 'program' in (lookup(step['operation']) or {})]
+    if not programs:
+        return None
+    step = programs[0]
+    if len(steps) != 1 or step.get('after') or step.get('bindings'):
+        raise ValueError(f"{step['operation']} is a program: submit it as the only step of an experiment")
+    if not isinstance(step.get('id'), str) or not step['id'] or not isinstance(step.get('arguments', {}), dict):
+        raise ValueError('Each step needs id, and arguments as an object')
+    definition = lookup(step['operation'])
+    try:
+        arguments = parameters({'parameters': definition.get('parameters', {})}, step.get('arguments', {}))
+    except ValueError as error:
+        raise ValueError(f"Step {step['id']} ({definition['id']}): {error}") from None
+    return {'step': step['id'], 'operation': definition['id'], 'revision': definition['revision'],
+            'layer': 'workflow', 'arguments': arguments}
 
 
 def results(calls, by_step):

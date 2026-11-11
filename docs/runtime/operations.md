@@ -8,11 +8,11 @@ IOP keeps the three roles of operations defined by AI4Instruments as three thing
 | --- | --- | --- |
 | **Basic Operations** | The operations of a registered device: one control or observation each, with parameters, units, ranges and readbacks / 已登记设备的操作：每个是一项控制或观察，带参数、单位、范围和回读 | `device` + `operation` |
 | **Standard Operations** | Saved methods built from Basic and Standard Operations, with parameters, conditions, a named result and a record of use / 由基础操作和标准操作组成并保存的方法，带参数、适用条件、具名结果和使用记录 | `operation` |
-| **Workflow Operations** | Saved organizations of methods across devices, in sequence and in parallel; they may use all three roles / 跨设备组织方法的保存流程，可串行、并行，可使用三类操作 | `operation` |
+| **Workflow Operations** | Saved organizations of methods across devices: a step graph in sequence and in parallel, or a program that decides from results / 跨设备组织方法的保存流程：串并行步骤图，或根据结果决定的程序 | `operation` |
 
 A step with `device` is a Basic Operation. A step without `device` uses a saved operation by name. The Runtime replaces it by its Basic Operations before scheduling, so reservation, calibration, monitors and holds apply to every one of them, and records each use. / 带 `device` 的步骤是基础操作；不带 `device` 的步骤按名称使用已保存的操作。运行服务在调度前把它展开为基础操作，预留、标定、监测和挂起对其中每一步照常生效，并记录每次使用。
 
-Research programs and agent-driven experiments, which decide the next step from results, remain programs; they call operations of all three roles. / 根据结果决定下一步的研究程序和 Agent 实验仍是程序，它们调用三类操作。
+A Workflow Operation that decides from results is a saved program and runs as its own experiment. Agents that decide interactively use a continuous experiment and call operations of all three roles there. / 根据结果决定的工作流操作以程序保存，作为独立实验运行；交互决策的 Agent 在连续实验中调用三类操作。
 
 ## Save an operation / 保存操作
 
@@ -43,6 +43,30 @@ Research programs and agent-driven experiments, which decide the next step from 
 | `result` | Names the values returned: a step and an optional path into its result / 为返回值命名：取自某一步结果中的路径 |
 
 Save with `POST /v1/library` `{"definition": {...}}`, Python `save_operation`, MCP `saved_operations(definition)`, or `iop operations --save file.json`. Saving the same name creates a new revision; earlier revisions stay readable at `/v1/library/{id}/history`, and each experiment records the revision it used. [operations.json](../../examples/iop/operations.json) holds the three operations of this page for the demonstration devices. / 同名保存产生新版本，旧版本仍可读取，每次实验记录所用版本。
+
+## Workflow Operations that decide / 根据结果决定的工作流操作
+
+A Workflow Operation that branches or repeats from results is saved as a program: a directory or ZIP with `experiment.py`, or `package.json` naming its command. It is described like any saved operation, without `steps` and `result`. / 根据结果分支或循环的工作流操作以程序保存：目录或 ZIP，含 `experiment.py` 或在 `package.json` 中给出启动命令；其余描述与其他已保存操作相同，不写 `steps` 和 `result`。
+
+```python
+import json, os
+from ai4instruments.iop import Client
+
+arguments = json.loads(os.environ['IOP_PARAMETERS_JSON'])
+run = Client().current_run()
+angle, best = arguments['start'], None
+while angle <= arguments['stop']:
+    run.call('axis.position', {'axis': 'stage', 'angle': angle})
+    power = run.call('meter.capture')['power']
+    if best is None or power > best['power']:
+        best = {'angle': angle, 'power': power}
+    if power >= arguments['threshold']:
+        break
+    angle += arguments['step']
+run.save_result({'best': best})
+```
+
+Save it with `save_operation(definition, program="path/to/folder")`, MCP `saved_operations(definition, program)` or `POST /v1/library` with the ZIP as base64 `archive`. The Runtime records its command and files; `GET /v1/library/{id}/files/{name}` returns the text of a file, so the method can be read before it is used or revised. A program runs as the only step of an experiment (`{"steps": [{"id": "scan", "operation": "stage.find_power", "arguments": {...}}]}`): its arguments are checked against `parameters` and passed in `IOP_PARAMETERS_JSON`, and its saved result appears under the step. Inside, `run.call(name, arguments)` uses a saved Standard or Workflow Operation and returns its named result, so every use inside the program is recorded as well. A program cannot be a step of a step graph. / 程序作为实验的唯一步骤运行：参数按 `parameters` 校验后经 `IOP_PARAMETERS_JSON` 传入，保存的结果出现在该步骤名下。程序内用 `run.call(名称, 参数)` 调用已保存的操作并取得其具名结果，这些调用同样计入使用记录。程序不能作为步骤图中的一步。
 
 ## Use and read / 使用与查看
 

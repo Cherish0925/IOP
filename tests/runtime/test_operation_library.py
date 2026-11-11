@@ -2,12 +2,20 @@
 import tempfile
 import time
 import unittest
+from pathlib import Path
 from ai4instruments.iop import IOPError
 from ai4instruments.iop.config import initialize
 from ai4instruments.iop.drivers import Driver
 from ai4instruments.iop.engine import Engine
 from ai4instruments.iop.library import check, expand
+from ai4instruments.iop.process_driver import executable
 from . import test_service as fixture
+
+try:
+    executable()
+    executor = True
+except ValueError:
+    executor = False
 
 POSITION = {
     'id': 'axis.position', 'layer': 'standard',
@@ -150,6 +158,67 @@ class LibraryCase(unittest.TestCase):
         self.client.configure_platform({'schema_version': 1, 'id': 'bench', 'devices': ['stage', 'aux', 'meter'], 'procedures': {
             'initialize': {'steps': [{'id': 'home', 'operation': 'axis.position', 'arguments': {'axis': 'stage', 'angle': 0}}]}}})
         self.assertEqual(self.client.procedure('bench').result(10)['home'], {'angle': 0})
+
+
+SCAN = """import json, os
+from ai4instruments.iop import Client
+arguments = json.loads(os.environ['IOP_PARAMETERS_JSON'])
+run = Client().current_run()
+best, angle = None, arguments['start']
+# Decide from each result: stop at the first angle whose power reaches the threshold.
+while angle <= arguments['stop']:
+    run.call('axis.position', {'axis': 'stage', 'angle': angle})
+    power = run.call('meter.capture')['power']
+    if best is None or power > best['power']:
+        best = {'angle': angle, 'power': power}
+    if power >= arguments['threshold']:
+        break
+    angle += arguments['step']
+run.save_result({'best': best, 'reached': best['power'] >= arguments['threshold']})
+"""
+PROGRAM = {'id': 'stage.find_power', 'layer': 'workflow',
+           'description': 'Step the stage until the measured power reaches a threshold',
+           'parameters': {'start': {'type': 'number', 'minimum': -90, 'maximum': 90},
+                          'stop': {'type': 'number', 'minimum': -90, 'maximum': 90},
+                          'step': {'type': 'number', 'minimum': 1, 'maximum': 90, 'default': 10},
+                          'threshold': {'type': 'number', 'minimum': 0}}}
+
+
+@unittest.skipUnless(executor, 'Build iop-execd to run programs')
+class ProgramCase(unittest.TestCase):
+    setUp = fixture.ServiceCase.setUp
+    tearDown = fixture.ServiceCase.tearDown
+
+    def test_a_workflow_that_decides_from_results_is_saved_used_and_read(self):
+        for definition in (POSITION, CAPTURE):
+            self.client.save_operation(definition)
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, 'experiment.py').write_text(SCAN)
+            saved = self.client.save_operation(PROGRAM, program=folder)
+        self.assertEqual((saved['revision'], saved['program']['command'], [f['name'] for f in saved['program']['files']]),
+                         (1, ['{python}', 'experiment.py'], ['experiment.py']))
+        self.assertIn('run.call', self.client.program_file('stage.find_power', 'experiment.py')['text'])
+        self.assertTrue(next(o for o in self.client.saved_operations() if o['id'] == 'stage.find_power')['program'])
+        run = self.client.submit([{'id': 'scan', 'operation': 'stage.find_power',
+                                   'arguments': {'start': -60, 'stop': 60, 'threshold': 0.85}}], resources=['stage', 'meter'])
+        result = run.result(30)['scan']
+        # The simulated power is cos(2 angle)^2: from -60 in steps of 10 it first reaches 0.85 at -10 (0.88).
+        self.assertEqual((result['best']['angle'], result['reached']), (-10, True))
+        self.assertEqual(run.info()['parameters']['step'], 10)
+        uses = {o['id']: o['uses'] for o in self.client.saved_operations()}
+        self.assertEqual((uses['stage.find_power']['completed'], uses['axis.position']['calls'], uses['meter.capture']['calls']), (1, 6, 6))
+        for steps, message in (([{'id': 'scan', 'operation': 'stage.find_power', 'arguments': {'start': 0, 'stop': 10}}], 'Missing parameter: threshold'),
+                               ([{'id': 'scan', 'operation': 'stage.find_power', 'arguments': {'start': 0, 'stop': 10, 'threshold': 1}},
+                                 {'id': 'p', 'device': 'stage', 'operation': 'position'}], 'only step')):
+            with self.assertRaisesRegex(IOPError, message):
+                self.client.submit(steps)
+        with self.assertRaisesRegex(IOPError, 'programs run as their own experiment'):
+            self.client.save_operation({'id': 'bench.twice', 'layer': 'workflow', 'description': 'Scan twice',
+                                        'steps': [{'id': 'a', 'operation': 'stage.find_power'}]})
+        with self.assertRaisesRegex(IOPError, 'without steps'):
+            with tempfile.TemporaryDirectory() as folder:
+                Path(folder, 'experiment.py').write_text(SCAN)
+                self.client.save_operation({**PROGRAM, 'layer': 'standard'}, program=folder)
 
 
 class DefinitionCase(unittest.TestCase):

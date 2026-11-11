@@ -191,10 +191,13 @@ def create_server(client, *, http=False):
         return client.retry_discovery(connection_key)
 
     @tool()
-    def saved_operations(operation: str | None = None, definition: dict | None = None) -> dict | list:
-        """Standard and Workflow Operations saved in this laboratory: reusable methods built from device (Basic) operations. Without arguments, list them. operation returns one with its parameters, steps, result and use record. definition saves a new revision: id, layer (standard | workflow), description, parameters, steps, result. Use one as a step without device: {"id": "s", "operation": name, "arguments": {...}}."""
+    def saved_operations(operation: str | None = None, definition: dict | None = None, program: str | None = None,
+                         file: str | None = None) -> dict | list:
+        """Standard and Workflow Operations saved in this laboratory: reusable methods built from device (Basic) operations. Without arguments, list them. operation returns one with its parameters, steps, result and use record; with file, the text of that file of a saved program. definition saves a new revision: id, layer (standard | workflow), description, parameters, and steps with result, or, for a workflow that decides from results, program: a directory or ZIP on this MCP host whose experiment.py reads IOP_PARAMETERS_JSON and saves its result. Use one as a step without device: {"id": "s", "operation": name, "arguments": {...}}; a program runs as the only step."""
         if definition is not None:
-            return client.save_operation(definition)
+            return client.save_operation(definition, program=program)
+        if operation and file:
+            return client.program_file(operation, file)
         return client.saved_operation(operation) if operation else client.saved_operations()
 
     @tool()

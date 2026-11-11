@@ -44,7 +44,7 @@ Operations keep the three roles defined by [AI4Instruments](https://github.com/C
 | --- | --- |
 | **Basic Operations** | The operations of a registered device: one control or observation each, with parameters, units, ranges and readbacks. |
 | **Standard Operations** | Saved methods built from Basic and Standard Operations, with parameters, conditions, a named result and a record of use. |
-| **Workflow Operations** | Saved organizations of methods across devices, in sequence and in parallel. Programs that decide from results call all three. |
+| **Workflow Operations** | Saved organizations of methods across devices: a step graph in sequence and in parallel, or a program that decides from results. |
 
 A step with `device` is a Basic Operation; a step without it uses a saved operation by name. The Runtime expands it into its Basic Operations and records every use, so methods that worked accumulate in the laboratory and stay open to reading and revision. See [operations](docs/runtime/operations.md).
 

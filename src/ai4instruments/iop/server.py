@@ -175,8 +175,12 @@ class Handler(BaseHTTPRequestHandler):
                     profile_id=query.get('id'), offset=query.get('offset', 0),
                     limit=query.get('limit', 50), details=query.get('details') == 'true')
             elif parts == ['v1', 'library']:
-                result = (engine.save_operation(body['definition'], body.get('expected_revision')) if method == 'POST'
+                archive = base64.b64decode(body['archive'], validate=True) if method == 'POST' and body.get('archive') else None
+                result = (engine.save_operation(body['definition'], body.get('expected_revision'), archive) if method == 'POST'
                           else engine.saved_operations())
+            elif len(parts) >= 5 and parts[:2] == ['v1', 'library'] and parts[3] == 'files' and method == 'GET':
+                from urllib.parse import unquote
+                result = engine.program_file(parts[2], unquote('/'.join(parts[4:])), query.get('revision'))
             elif len(parts) == 3 and parts[:2] == ['v1', 'library'] and method == 'GET':
                 result = engine.saved_operation(parts[2])
             elif len(parts) == 4 and parts[:2] == ['v1', 'library'] and parts[3] == 'history' and method == 'GET':

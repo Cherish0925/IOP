@@ -385,13 +385,15 @@ class Engine:
             if progress['remaining'] > 0:
                 continue
             del self.call_progress[op['run_id']][(op.get('batch'), call)]
-            uses = self.uses.setdefault(progress['operation'], {'calls': 0, 'completed': 0, 'failed': 0})
-            uses['calls'] += 1
-            if progress['state'] in ('completed', 'failed'):
-                uses[progress['state']] += 1
-            uses['last'] = {'run_id': op['run_id'], 'call': call, 'state': progress['state'], 'time': now(),
-                            'revision': progress['revision']}
-            self.store.record_use(progress['operation'], uses, op['run_id'], call, progress['state'])
+            self._record_use(progress['operation'], progress['revision'], op['run_id'], call, progress['state'])
+
+    def _record_use(self, operation, revision, run_id, call, state):
+        uses = self.uses.setdefault(operation, {'calls': 0, 'completed': 0, 'failed': 0})
+        uses['calls'] += 1
+        if state in ('completed', 'failed'):
+            uses[state] += 1
+        uses['last'] = {'run_id': run_id, 'call': call, 'state': state, 'time': now(), 'revision': revision}
+        self.store.record_use(operation, uses, run_id, call, state)
 
     def _operation_ended(self, op):
         self._calls_ended(op)
@@ -416,11 +418,17 @@ class Engine:
                 self._operation('prepare', step)
         return definition
 
-    def save_operation(self, definition, expected_revision=None):
-        """Save a Standard or Workflow Operation as a new revision."""
+    def save_operation(self, definition, expected_revision=None, archive=None):
+        """Save a Standard or Workflow Operation as a new revision; ``archive`` is the ZIP of a program."""
         with self.lock:
-            definition = library.check(json.loads(dumps(definition)), self.library.get)
-            self._constituents(definition)
+            definition = json.loads(dumps(definition))
+            if archive is not None:
+                definition['program'] = self._program(archive)
+            elif 'program' in definition:
+                raise ValueError('Send the program files with the definition')
+            definition = library.check(definition, self.library.get)
+            if 'program' not in definition:
+                self._constituents(definition)
             old = self.library.get(definition['id'])
             revision = old['revision'] if old else 0
             if expected_revision is not None and expected_revision != revision:
@@ -428,9 +436,53 @@ class Engine:
             if old and all(old.get(key) == value for key, value in definition.items()) and set(definition) | {'revision', 'updated'} == set(old):
                 return self.saved_operation(definition['id'])
             record = {**definition, 'revision': revision + 1, 'updated': now()}
+            if archive is not None:
+                path = self.home / 'library' / record['id'] / f"{record['revision']}.zip"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(archive)
             self.store.save_operation(record)
             self.library[record['id']] = record
             return self.saved_operation(record['id'])
+
+    @staticmethod
+    def _program(archive):
+        """Describe the files of a program and the command that starts it."""
+        try:
+            with zipfile.ZipFile(io.BytesIO(archive)) as package:
+                members = [m for m in package.infolist() if not m.is_dir()]
+                if sum(m.file_size for m in members) > 128 * 1024 * 1024:
+                    raise ValueError('Expanded program exceeds 128 MiB')
+                for member in members:
+                    relative_path(member.filename)
+                names = {m.filename for m in members}
+                manifest = json.loads(package.read('package.json')) if 'package.json' in names else {}
+        except zipfile.BadZipFile:
+            raise ValueError('The program must be a ZIP archive or a directory') from None
+        command = manifest.get('command', ['{python}', 'experiment.py'])
+        if not isinstance(command, list) or not command or any(not isinstance(part, str) or not part for part in command):
+            raise ValueError('package.json command must be a nonempty string array')
+        if 'package.json' not in names and 'experiment.py' not in names:
+            raise ValueError('A program needs package.json with its command, or experiment.py')
+        return {'command': command, 'files': [{'name': m.filename, 'size': m.file_size} for m in sorted(members, key=lambda m: m.filename)],
+                'sha256': hashlib.sha256(archive).hexdigest(), 'bytes': len(archive)}
+
+    def program_file(self, operation_id, name, revision=None):
+        """The text of one file of a saved program, so the method can be read before it is used or revised."""
+        with self.lock:
+            record = self.library[operation_id]
+            if 'program' not in record:
+                raise KeyError(name)
+            revision = int(revision or record['revision'])
+        path = self.home / 'library' / operation_id / f'{revision}.zip'
+        with zipfile.ZipFile(path) as package:
+            try:
+                data = package.read(name)
+            except KeyError:
+                raise KeyError(name) from None
+        try:
+            return {'operation': operation_id, 'revision': revision, 'name': name, 'text': data.decode('utf-8')}
+        except UnicodeDecodeError:
+            return {'operation': operation_id, 'revision': revision, 'name': name, 'bytes': len(data), 'text': None}
 
     def _constituents(self, definition):
         """Check the steps against registered devices and saved operations, and that no operation uses itself."""
@@ -468,6 +520,7 @@ class Engine:
         with self.lock:
             return [{'id': record['id'], 'layer': record['layer'], 'description': record['description'],
                      'parameters': list(record.get('parameters', {})), 'revision': record['revision'],
+                     **({'program': True} if 'program' in record else {}),
                      'uses': self.uses.get(record['id'], {'calls': 0, 'completed': 0, 'failed': 0})}
                     for record in sorted(self.library.values(), key=lambda r: (r['layer'], r['id']))]
 
@@ -758,6 +811,12 @@ class Engine:
             if self.stopping:
                 raise ValueError("Service is stopping")
             spec = json.loads(dumps(spec))
+            program = None
+            if package is None and spec.get('kind', 'workflow') == 'workflow':
+                # A saved Workflow Operation that is a program runs as this experiment.
+                program = library.program_step(spec.get('steps'), self.library.get)
+                if program:
+                    package = (self.home / 'library' / program['operation'] / f"{program['revision']}.zip").read_bytes()
             kind = 'package' if package is not None else spec.get('kind', 'workflow')
             if kind not in {'workflow', 'package', 'external'} or (kind == 'package' and package is None):
                 raise ValueError('Use a workflow, an external experiment or a submitted package')
@@ -768,7 +827,7 @@ class Engine:
                     raise ValueError('Provide request_id for the external experiment')
             previous = self.store.request("runs", spec.get("request_id"))
             if previous:
-                if previous['kind'] != kind or previous["spec"] != spec or (package is not None and (self.home / "runs" / previous["id"] / "package.zip").read_bytes() != package):
+                if previous['kind'] != kind or previous["spec"] != spec or (package is not None and not program and (self.home / "runs" / previous["id"] / "package.zip").read_bytes() != package):
                     raise ValueError("request_id already names a different experiment")
                 return previous
             if len(self.runs) >= int(self.config.get('max_active_runs', 10000)):
@@ -781,9 +840,10 @@ class Engine:
             if platform and spec.get('platform_revision', platform['revision']) != platform['revision']:
                 raise ValueError('Platform revision changed')
             run = {"id":run_id, "state":"queued", "created":now(), "request_id":spec.get("request_id"),
-                   "kind":kind, "name":spec.get("name", "Experiment"),
+                   "kind":kind, "name":spec.get("name", program['operation'] if program else "Experiment"),
                    "project":spec.get("project"), "experiment":spec.get("experiment"), "spec":spec,
-                   "parameters":spec.get("parameters", {}), "resources":self._resources(spec.get("resources", [])),
+                   "parameters":program['arguments'] if program else spec.get("parameters", {}),
+                   "resources":self._resources(spec.get("resources", [])),
                    "requirements":quantities(spec.get('requirements', {}), self.capacities),
                    "devices":{}, "operations":[], "operation_count":0, "result":None}
             if platform:
@@ -792,6 +852,8 @@ class Engine:
                 if outside:
                     raise ValueError('Reserved devices must belong to the selected platform')
             operations = []
+            if program:
+                run['program_call'] = program
             if kind == 'workflow':
                 # A step without device uses a saved Standard or Workflow Operation.
                 steps, calls = library.expand(spec.get("steps", []), self.library.get)
@@ -1005,6 +1067,10 @@ class Engine:
                                                           stdin=subprocess.DEVNULL, stdout=out, stderr=err, **options)
 
     def _finish(self, run, state):
+        call = run.get('program_call')
+        if call:
+            run['result'] = {call['step']: run.get('result')}
+            self._record_use(call['operation'], call['revision'], run['id'], call['step'], state)
         run.update(state=state, ended=now())
         run.pop("terminate_at", None)
         self.allocation.finish(run['id'])

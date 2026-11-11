@@ -1,13 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "IOP Standard or Workflow Operation",
-  "description": "A reusable composition of operations saved in the laboratory. Basic Operations are the operations of registered devices.",
+  "description": "A reusable composition of operations saved in the laboratory. Basic Operations are the operations of registered devices. Give steps and result, or, for a Workflow Operation that decides from results, send program files with the definition.",
   "type": "object",
   "required": [
     "id",
     "layer",
-    "description",
-    "steps"
+    "description"
   ],
   "properties": {
     "id": {
@@ -125,6 +124,11 @@
           }
         }
       }
+    },
+    "program": {
+      "type": "object",
+      "readOnly": true,
+      "description": "Set by the Runtime from the program files: command, files, sha256 and bytes. The program reads IOP_PARAMETERS_JSON and saves its result."
     }
   },
   "additionalProperties": false,
