@@ -160,6 +160,21 @@ A device record can list `allowed_operations`: name patterns such as `["read_*",
 
 A device record can carry `calibration`: `id` (required), `date`, `valid_until`, `certificate`, `by`, `notes`, `uncertainty` and `enforce`. Every operation records the calibration `id`; operations listed in `uncertainty` also record their entry, for example `{"value": 0.02, "unit": "V", "coverage_factor": 2}`. Acquisitions keep the full record through the device configuration version. After `valid_until`, operations are marked `calibration_expired` and the laboratory overview lists `renew_calibration`; with `enforce: true` new operations are refused with `calibration_expired`. Validity is evaluated when an operation is submitted. A date without a time ends at 23:59:59 UTC. Update the record through the device configuration; earlier operations keep the version they used. / 设备记录可附 `calibration`：证书编号、日期、有效期、不确定度等。每次操作记录所依据的标定编号及该操作的不确定度，采集记录通过设备配置版本保留完整标定信息。过期后操作被标记，实验室概况提示更新标定；设 `enforce: true` 则拒绝新的操作。有效期在提交操作时判断。
 
+## Monitors / 状态监测
+
+A device record can list `monitors`. Each reads one `effect: "observe"` operation every `interval_s` seconds (at least 0.1) and compares the value at `value` (a result path, default `["value"]`) with `minimum`, `maximum` or `equals`. A missing or non-numeric value under a numeric limit, or a failed read, counts as `error`. / 设备记录可列出 `monitors`：按周期读取一个观测操作，将结果中的指定值与上下限或期望值比较；读不到或类型不符视为 `error`。
+
+```json
+"monitors": [
+  {"id": "laser-power", "operation": "read_power", "interval_s": 1, "maximum": 0.05,
+   "on_violation": "hold", "hold": ["laser", "beam-path"]}
+]
+```
+
+State changes are recorded as `monitor.ok`, `monitor.violation` and `monitor.error` events, and the laboratory overview lists every monitor with its last value and `inspect_monitors` when one is not ok. With `on_violation: "hold"`, entering a violation or error holds the device and the devices or shared resources in `hold`. Experiments using them stop, as after an unconfirmed instrument action. Record what was observed through `/v1/resources/resolve`; the resources are then usable so the condition can be corrected, and a new violation after a return to ok holds again. The default `record` only records events. / 状态变化记为事件，实验室概况列出各监测的最新值；`hold` 模式下进入超限或读取失败时挂起该设备及 `hold` 中列出的设备和共享资源，使用它们的实验随即停止；登记观测结果后资源恢复可用，以便纠正；恢复正常后再次超限会再次挂起。
+
+A monitor reads a device only while no operation or experiment reservation uses it; an experiment that reserves the device reads it itself. Monitors run in the service and are a software stop. Laser shutters, door interlocks and other protective functions remain in hardware. / 监测只在设备空闲、未被实验预留时读取；预留设备的实验自行读取。这是服务中的软件停止，激光快门、门联锁等保护仍由硬件执行。
+
 ## Python driver / Python 驱动
 
 Implement these methods in an installed Python module:

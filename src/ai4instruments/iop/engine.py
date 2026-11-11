@@ -27,6 +27,7 @@ from .store import Store, dumps, now
 from . import platforms as platform_model
 from .resources import Allocator, QueueFull, capacities, quantities
 from .execution import Context
+from .monitors import Monitors, check as check_monitors
 
 TERMINAL = {"completed", "failed", "cancelled", "interrupted"}
 
@@ -57,6 +58,7 @@ class Engine:
         self.communication = {}
         self.runs, self.operations, self.futures, self.processes = {}, {}, {}, {}
         self.allocation = Allocator()
+        self.monitors = Monitors(self)
         self.capacities = capacities(config.get('resource_pools', {}))
         self.allocation.limits.update({'pool:' + k: v for k, v in self.capacities.items()})
         self.ready, self.dependents, self.remaining_dependencies, self.remaining = {}, {}, {}, {}
@@ -108,6 +110,7 @@ class Engine:
 
     def start(self):
         self.thread.start()
+        self.monitors.start()
         interval = float(self.config.get("discovery_interval", 30))
         if interval > 0:
             def inventory_loop():
@@ -463,6 +466,7 @@ class Engine:
                 concurrency = description.get('concurrency', 1)
                 if type(concurrency) is not int or concurrency < 1:
                     raise ValueError('Driver concurrency must be a positive integer')
+                monitors = check_monitors(record, description)
                 with self.lock:
                     if self.stopping:
                         raise ValueError("Service is stopping")
@@ -472,6 +476,7 @@ class Engine:
                     self.descriptions[device_id] = json.loads(dumps({"id":device_id, "driver":record["driver"], **description, **metadata}))
                     self.descriptions[device_id]['revision'] = self.store.save_device(record)['revision']
                     self.allocation.limits['device:' + device_id] = concurrency
+                    self.monitors.configure(device_id, monitors)
                     if persist:
                         saved = {d['id']: d for d in self.config.get('devices', [])}
                         saved[device_id] = record
@@ -1316,6 +1321,7 @@ class Engine:
             self.wake.set()
         if self.thread.is_alive():
             self.thread.join()
+        self.monitors.stop()
         self.pool.shutdown(wait=True)
         for scanner in (self.discovery_thread, self.scan_request):
             if scanner and scanner.is_alive():

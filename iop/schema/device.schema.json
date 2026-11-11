@@ -105,6 +105,66 @@
           "description": "Operation name to uncertainty, for example {\"value\": 0.02, \"unit\": \"V\", \"coverage_factor\": 2}"
         }
       }
+    },
+    "monitors": {
+      "type": "array",
+      "description": "Periodic reads of an observe operation while the device is idle; see docs/runtime/drivers.md",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "operation",
+          "interval_s"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$"
+          },
+          "operation": {
+            "type": "string",
+            "description": "An operation described with effect observe"
+          },
+          "arguments": {
+            "type": "object"
+          },
+          "interval_s": {
+            "type": "number",
+            "minimum": 0.1
+          },
+          "value": {
+            "type": "array",
+            "items": {
+              "type": [
+                "string",
+                "integer"
+              ]
+            },
+            "description": "Path to the value in the result; default [\"value\"]"
+          },
+          "minimum": {
+            "type": "number"
+          },
+          "maximum": {
+            "type": "number"
+          },
+          "equals": {},
+          "on_violation": {
+            "enum": [
+              "record",
+              "hold"
+            ]
+          },
+          "hold": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Other devices or shared resources held with this device"
+          }
+        }
+      }
     }
   }
 }

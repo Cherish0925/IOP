@@ -81,6 +81,12 @@ def laboratory(engine, refresh=False, detail='summary'):
         result['next_steps'].append({'action': 'discover', 'reason': 'The first connection inventory is not available yet.'})
     if result['setup']['offline_devices']:
         result['next_steps'].append({'action': 'reconnect', 'devices': sorted(result['setup']['offline_devices'])})
+    monitors = engine.monitors.summary()
+    result['monitors'] = monitors
+    alerts = [{'device': m['device'], 'monitor': m['id'], 'state': m['state']} for m in monitors if m['state'] in ('violation', 'error')]
+    if alerts:
+        result['next_steps'].append({'action': 'inspect_monitors', 'monitors': alerts,
+                                     'resolve': '/v1/resources/resolve' if engine.resource_holds else None})
     from .calibration import expired
     stale = sorted(d['id'] for d in devices if expired(d.get('calibration')))
     if stale:
