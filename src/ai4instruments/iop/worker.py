@@ -5,6 +5,7 @@ import sys
 import threading
 from concurrent.futures import CancelledError
 from .drivers import make_driver, parameters
+from .store import finite
 
 
 def main():
@@ -14,8 +15,12 @@ def main():
     active = {}
     lock = threading.Lock()
     def reply(value):
+        try:
+            text = json.dumps(value, allow_nan=False)
+        except ValueError:
+            text = json.dumps(finite(value), allow_nan=False)
         with lock:
-            output.write(json.dumps(value, allow_nan=False) + '\n'); output.flush()
+            output.write(text + '\n'); output.flush()
     def invoke(message, cancelled):
         try:
             p=message['params'];driver=devices[p['device']]

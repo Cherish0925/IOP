@@ -19,12 +19,16 @@ import re
 from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor, CancelledError
 from pathlib import Path, PurePosixPath
+from .calibration import operation_fields
 from .config import save_json
+from .device_configuration import METADATA, allowed
 from .drivers import make_driver, parameters
-from .store import Store, dumps, now
+from .store import Store, dumps, finite, now
+from . import library
 from . import platforms as platform_model
 from .resources import Allocator, QueueFull, capacities, quantities
 from .execution import Context
+from .monitors import Monitors, check as check_monitors
 
 TERMINAL = {"completed", "failed", "cancelled", "interrupted"}
 
@@ -54,7 +58,10 @@ class Engine:
         self.released = set(config.get('released_devices', []))
         self.communication = {}
         self.runs, self.operations, self.futures, self.processes = {}, {}, {}, {}
+        # Operations waiting on their own thread (manual steps) do not count against the worker pool.
+        self.waiting_steps = set()
         self.allocation = Allocator()
+        self.monitors = Monitors(self)
         self.capacities = capacities(config.get('resource_pools', {}))
         self.allocation.limits.update({'pool:' + k: v for k, v in self.capacities.items()})
         self.ready, self.dependents, self.remaining_dependencies, self.remaining = {}, {}, {}, {}
@@ -79,6 +86,10 @@ class Engine:
         self.enrollment = Enrollment(self)
         self.discovery['instruments'] = [dict(r, present=None) for r in self.enrollment.records.values()]
         self.platforms = {p['id']: p for p in self.store.platforms()}
+        # Standard and Workflow Operations saved in this laboratory, and how often each was used.
+        self.library = {record['id']: record for record in self.store.saved_operations()}
+        self.uses = self.store.operation_uses()
+        self.call_progress = {}
         self.platform_resources = platform_model.resource_index(self.platforms)
         self.resource_holds = self.store.resource_holds()
         self.worker_count = max(1, int(config.get("workers", 8)))
@@ -106,6 +117,7 @@ class Engine:
 
     def start(self):
         self.thread.start()
+        self.monitors.start()
         interval = float(self.config.get("discovery_interval", 30))
         if interval > 0:
             def inventory_loop():
@@ -291,6 +303,9 @@ class Engine:
             record = json.loads(dumps(self.platforms[platform_id]))
             record['active_runs'] = [r['id'] for r in self.runs.values() if r.get('platform', {}).get('id') == platform_id]
             record['missing_devices'] = sorted(set(record['definition']['devices']) - self.devices.keys())
+            signals = platform_model.timing(record['definition'])
+            if signals:
+                record['timing'] = signals
             return record
 
     def configure_resources(self, value):
@@ -334,6 +349,8 @@ class Engine:
         self.minimum_capacities[run['id']] = minimum
         self.remaining[run['id']] = sum(o['state'] not in TERMINAL for o in ops)
         for op in ops:
+            self._follow_calls(op, run.get('calls', {}))
+        for op in ops:
             if op['state'] != 'queued':
                 continue
             parents = ([self.operations[oid] for oid in op['after_ids'] if self.operations[oid]['state'] != 'completed']
@@ -344,7 +361,42 @@ class Engine:
             if not parents:
                 self.ready[run['id']][op['id']] = None
 
+    def _follow_calls(self, op, calls):
+        """Count the steps still open in each use of a saved operation that this step belongs to."""
+        for call in op.get('calls', ()):
+            if call not in calls:
+                continue
+            progress = self.call_progress.setdefault(op['run_id'], {}).setdefault((op.get('batch'), call), {
+                'remaining': 0, 'state': 'completed', 'operation': calls[call]['operation'], 'revision': calls[call]['revision']})
+            if op['state'] not in TERMINAL:
+                progress['remaining'] += 1
+            elif op['state'] != 'completed' and progress['state'] != 'failed':
+                progress['state'] = 'failed' if op['state'] == 'failed' else 'cancelled'
+
+    def _calls_ended(self, op):
+        """Record a use of a saved operation when its last step ends: this is its evidence."""
+        for call in op.get('calls', ()):
+            progress = self.call_progress.get(op['run_id'], {}).get((op.get('batch'), call))
+            if progress is None:
+                continue
+            if op['state'] != 'completed' and progress['state'] != 'failed':
+                progress['state'] = 'failed' if op['state'] == 'failed' else 'cancelled'
+            progress['remaining'] -= 1
+            if progress['remaining'] > 0:
+                continue
+            del self.call_progress[op['run_id']][(op.get('batch'), call)]
+            self._record_use(progress['operation'], progress['revision'], op['run_id'], call, progress['state'])
+
+    def _record_use(self, operation, revision, run_id, call, state):
+        uses = self.uses.setdefault(operation, {'calls': 0, 'completed': 0, 'failed': 0})
+        uses['calls'] += 1
+        if state in ('completed', 'failed'):
+            uses[state] += 1
+        uses['last'] = {'run_id': run_id, 'call': call, 'state': state, 'time': now(), 'revision': revision}
+        self.store.record_use(operation, uses, run_id, call, state)
+
     def _operation_ended(self, op):
+        self._calls_ended(op)
         self.ready[op['run_id']].pop(op['id'], None)
         self.remaining_dependencies.pop(op['id'], None)
         self.remaining[op['run_id']] -= 1
@@ -360,9 +412,150 @@ class Engine:
     def prepare_platform(self, definition):
         definition = platform_model.description(definition, self.devices)
         for procedure in definition['procedures'].values():
-            for step in procedure['steps']:
+            for step in library.expand(procedure['steps'], self.library.get)[0]:
+                if step['device'] not in definition['devices']:
+                    raise ValueError('Procedure device must belong to the platform')
                 self._operation('prepare', step)
         return definition
+
+    def save_operation(self, definition, expected_revision=None, archive=None):
+        """Save a Standard or Workflow Operation as a new revision; ``archive`` is the ZIP of a program."""
+        with self.lock:
+            definition = json.loads(dumps(definition))
+            if archive is not None:
+                definition['program'] = self._program(archive)
+            elif 'program' in definition:
+                raise ValueError('Send the program files with the definition')
+            definition = library.check(definition, self.library.get)
+            if 'program' not in definition:
+                self._constituents(definition)
+            old = self.library.get(definition['id'])
+            revision = old['revision'] if old else 0
+            if expected_revision is not None and expected_revision != revision:
+                raise ValueError('Operation revision changed; current revision is ' + str(revision))
+            if old and all(old.get(key) == value for key, value in definition.items()) and set(definition) | {'revision', 'updated'} == set(old):
+                return self.saved_operation(definition['id'])
+            record = {**definition, 'revision': revision + 1, 'updated': now()}
+            if archive is not None:
+                path = self.home / 'library' / record['id'] / f"{record['revision']}.zip"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(archive)
+            self.store.save_operation(record)
+            self.library[record['id']] = record
+            return self.saved_operation(record['id'])
+
+    @staticmethod
+    def _program(archive):
+        """Describe the files of a program and the command that starts it."""
+        try:
+            with zipfile.ZipFile(io.BytesIO(archive)) as package:
+                members = [m for m in package.infolist() if not m.is_dir()]
+                if sum(m.file_size for m in members) > 128 * 1024 * 1024:
+                    raise ValueError('Expanded program exceeds 128 MiB')
+                for member in members:
+                    relative_path(member.filename)
+                names = {m.filename for m in members}
+                manifest = json.loads(package.read('package.json')) if 'package.json' in names else {}
+        except zipfile.BadZipFile:
+            raise ValueError('The program must be a ZIP archive or a directory') from None
+        command = manifest.get('command', ['{python}', 'experiment.py'])
+        if not isinstance(command, list) or not command or any(not isinstance(part, str) or not part for part in command):
+            raise ValueError('package.json command must be a nonempty string array')
+        if 'package.json' not in names and 'experiment.py' not in names:
+            raise ValueError('A program needs package.json with its command, or experiment.py')
+        return {'command': command, 'files': [{'name': m.filename, 'size': m.file_size} for m in sorted(members, key=lambda m: m.filename)],
+                'sha256': hashlib.sha256(archive).hexdigest(), 'bytes': len(archive)}
+
+    def program_file(self, operation_id, name, revision=None):
+        """The text of one file of a saved program, so the method can be read before it is used or revised."""
+        with self.lock:
+            record = self.library[operation_id]
+            if 'program' not in record:
+                raise KeyError(name)
+            revision = int(revision or record['revision'])
+        path = self.home / 'library' / operation_id / f'{revision}.zip'
+        with zipfile.ZipFile(path) as package:
+            try:
+                data = package.read(name)
+            except KeyError:
+                raise KeyError(name) from None
+        try:
+            return {'operation': operation_id, 'revision': revision, 'name': name, 'text': data.decode('utf-8')}
+        except UnicodeDecodeError:
+            return {'operation': operation_id, 'revision': revision, 'name': name, 'bytes': len(data), 'text': None}
+
+    def _constituents(self, definition):
+        """Check the steps against registered devices and saved operations, and that no operation uses itself."""
+        for step in definition['steps']:
+            supplied = step.get('arguments', {}).keys() | step.get('bindings', {}).keys()
+            if 'device' not in step:
+                inner = self.library[step['operation']]
+                if supplied - inner.get('parameters', {}).keys():
+                    raise ValueError(f"Step {step['id']}: {inner['id']} has no parameter " +
+                                     ', '.join(sorted(supplied - inner.get('parameters', {}).keys())))
+            elif step['device'] in self.descriptions:
+                # A device named by a parameter or not yet registered is checked when the operation is used.
+                operations = self.descriptions[step['device']]['operations']
+                if step['operation'] not in operations:
+                    raise ValueError(f"Step {step['id']}: unknown operation {step['device']}.{step['operation']}")
+                if supplied - operations[step['operation']].get('parameters', {}).keys():
+                    raise ValueError(f"Step {step['id']}: {step['device']}.{step['operation']} has no parameter " +
+                                     ', '.join(sorted(supplied - operations[step['operation']].get('parameters', {}).keys())))
+        pending, seen = [step['operation'] for step in definition['steps'] if 'device' not in step], set()
+        while pending:
+            current = pending.pop()
+            if current == definition['id']:
+                raise ValueError('An operation cannot use itself, directly or through another operation')
+            if current not in seen:
+                seen.add(current)
+                pending.extend(step['operation'] for step in self.library[current]['steps'] if 'device' not in step)
+
+    def _unavailable(self, operation_id, found=None):
+        """What a saved operation names that the laboratory no longer has: devices, their operations
+        or parameters. A device given by a parameter, and the devices a program uses, are known only
+        when it runs."""
+        found = {} if found is None else found
+        if operation_id in found:
+            return found[operation_id]
+        found[operation_id] = problems = []
+        for step in self.library[operation_id].get('steps', []):
+            if 'device' not in step:
+                problems += [f"{step['operation']}: {p}" for p in self._unavailable(step['operation'], found)]
+                continue
+            if library.placeholders(step['device']):
+                continue
+            if step['device'] not in self.descriptions:
+                problems.append(f"{step['device']}: not registered")
+                continue
+            operation = self.descriptions[step['device']]['operations'].get(step['operation'])
+            if operation is None:
+                problems.append(f"{step['device']}.{step['operation']}: no such operation")
+                continue
+            extra = (step.get('arguments', {}).keys() | step.get('bindings', {}).keys()) - operation.get('parameters', {}).keys()
+            if extra:
+                problems.append(f"{step['device']}.{step['operation']}: no parameter " + ', '.join(sorted(extra)))
+        found[operation_id] = list(dict.fromkeys(problems))
+        return found[operation_id]
+
+    def saved_operation(self, operation_id):
+        with self.lock:
+            record = self.library[operation_id]
+            unavailable = self._unavailable(operation_id)
+            return {**record, 'uses': self.uses.get(operation_id, {'calls': 0, 'completed': 0, 'failed': 0}),
+                    **({'unavailable': unavailable} if unavailable else {})}
+
+    def saved_operations(self):
+        """One line per saved operation: enough to choose one; saved_operation gives its steps."""
+        with self.lock:
+            found, rows = {}, []
+            for record in sorted(self.library.values(), key=lambda r: (r['layer'], r['id'])):
+                unavailable = self._unavailable(record['id'], found)
+                rows.append({'id': record['id'], 'layer': record['layer'], 'description': record['description'],
+                             'parameters': list(record.get('parameters', {})), 'revision': record['revision'],
+                             **({'program': True} if 'program' in record else {}),
+                             'uses': self.uses.get(record['id'], {'calls': 0, 'completed': 0, 'failed': 0}),
+                             **({'unavailable': unavailable} if unavailable else {})})
+            return rows
 
     def apply_platform(self, definition, expected_revision=0):
         with self.lock:
@@ -411,6 +604,12 @@ class Engine:
         with self.registration_lock:
             from .identification import same_registration
             record = json.loads(dumps(record))
+            if 'calibration' in record:
+                from .calibration import check
+                check(record['calibration'])
+            if record.get('instrument_profile'):
+                from .identification import apply_profile
+                record = apply_profile(record, self.instrument_profiles())
             device_id = record.get("id", "")
             if not device_id:
                 config = record.get('config', {})
@@ -450,7 +649,7 @@ class Engine:
             else:
                 driver = make_driver(record, self.devices)
             try:
-                description = driver.describe()
+                description = allowed(record, driver.describe())
                 if not isinstance(description.get("operations"), dict) or not description["operations"]:
                     raise ValueError("Driver must describe its operations")
                 if any(not isinstance(spec, dict) for spec in description["operations"].values()):
@@ -458,15 +657,17 @@ class Engine:
                 concurrency = description.get('concurrency', 1)
                 if type(concurrency) is not int or concurrency < 1:
                     raise ValueError('Driver concurrency must be a positive integer')
+                monitors = check_monitors(record, description)
                 with self.lock:
                     if self.stopping:
                         raise ValueError("Service is stopping")
                     self.devices[device_id] = driver
                     self.device_records[device_id] = record
-                    metadata = {k:record[k] for k in ('identity', 'identity_source', 'instrument_profile', 'documentation') if k in record}
+                    metadata = {k:record[k] for k in METADATA if k in record}
                     self.descriptions[device_id] = json.loads(dumps({"id":device_id, "driver":record["driver"], **description, **metadata}))
                     self.descriptions[device_id]['revision'] = self.store.save_device(record)['revision']
                     self.allocation.limits['device:' + device_id] = concurrency
+                    self.monitors.configure(device_id, monitors)
                     if persist:
                         saved = {d['id']: d for d in self.config.get('devices', [])}
                         saved[device_id] = record
@@ -507,6 +708,8 @@ class Engine:
         with self.lock:
             if self.device_records[device_id]['driver'] != 'scpi':
                 raise ValueError('Use this instrument SDK to read its identity.')
+            if 'identify' not in self.descriptions[device_id]['operations']:
+                raise ValueError('This instrument has no identification query.')
             return self.submit({'name':'Instrument identity', 'request_id':request_id,
                                 'steps':[{'id':'identity', 'device':device_id, 'operation':'identify'}]})
 
@@ -530,6 +733,8 @@ class Engine:
             record['documentation'] = enriched.get('documentation', [])
             record['config']['operations'] = {**enriched['config'].get('operations', {}),
                                               **record['config'].get('operations', {})}
+            if 'protocol' in enriched['config']:
+                record['config']['protocol'] = {**enriched['config']['protocol'], **record['config'].get('protocol', {})}
             if not record.get('execution'):
                 self.devices[device_id].config.update(record['config'])
         elif enriched.get('profile_candidates') and not record['config'].get('operations'):
@@ -539,10 +744,10 @@ class Engine:
             driver.description = driver.worker.call('instrument_description',
                 {'device': device_id, 'identity': identity, 'config': record['config']}, timeout=driver.worker.startup_timeout)
             driver.description.setdefault('resources', []).append('worker:' + driver.worker_id)
-        metadata = {k:record[k] for k in ('identity', 'identity_source', 'instrument_profile', 'documentation') if k in record}
+        metadata = {k:record[k] for k in METADATA if k in record}
         if before == record:
             return
-        self.descriptions[device_id] = {'id':device_id, 'driver':record['driver'], **self.devices[device_id].describe(), **metadata}
+        self.descriptions[device_id] = {'id':device_id, 'driver':record['driver'], **allowed(record, self.devices[device_id].describe()), **metadata}
         self.descriptions[device_id]['revision'] = self.store.save_device(record)['revision']
         self.config['devices'] = [record if d['id'] == device_id else d for d in self.config['devices']]
         save_json(self.home / 'config.json', self.config)
@@ -582,8 +787,8 @@ class Engine:
                     self.devices[device_id].close()
                     self.devices[device_id] = new
                     self.device_records[device_id] = record
-                    metadata = {k:record[k] for k in ('identity', 'identity_source', 'instrument_profile', 'documentation') if k in record}
-                    self.descriptions[device_id] = {'id':device_id, 'driver':record['driver'], **new.describe(), **metadata}
+                    metadata = {k:record[k] for k in METADATA if k in record}
+                    self.descriptions[device_id] = {'id':device_id, 'driver':record['driver'], **allowed(record, new.describe()), **metadata}
                     self.descriptions[device_id]['revision'] = self.store.save_device(record)['revision']
                     self.config['devices'] = [record if d['id'] == device_id else d for d in self.config['devices']]
                     save_json(self.home/'config.json', self.config)
@@ -621,19 +826,30 @@ class Engine:
         for source in (self.descriptions[device_id], specs[name], step):
             for key, count in quantities(source.get('requirements', {}), self.capacities).items():
                 requirements[key] = max(requirements.get(key, 0), count)
+        calibration = self.descriptions[device_id].get('calibration')
+        recorded = operation_fields(calibration, name)
+        if recorded.get('calibration_expired') and calibration.get('enforce'):
+            raise RequestError('calibration_expired', 'Renew this instrument’s calibration before using it.',
+                               device_id=device_id, calibration=calibration['id'], valid_until=calibration['valid_until'])
         return {"id":identifier("op"), "run_id":run_id, "step":step.get("id"), "device":device_id,
                 "operation":name, "arguments":args, "bindings": bindings, "requirements": requirements,
                 "effect":specs[name].get('effect', 'change'),
                 "after":platform_model.dependencies(step), "state":"queued", "created":now(),
                 "resources":sorted(set(self._resources([device_id], name) + self._resources(step.get("resources", [])))),
                 "request_id":step.get("request_id"),
-                "device_revision":self.descriptions[device_id].get('revision')}
+                "device_revision":self.descriptions[device_id].get('revision'), **recorded}
 
     def submit(self, spec, package=None):
         with self.lock:
             if self.stopping:
                 raise ValueError("Service is stopping")
             spec = json.loads(dumps(spec))
+            program = None
+            if package is None and spec.get('kind', 'workflow') == 'workflow':
+                # A saved Workflow Operation that is a program runs as this experiment.
+                program = library.program_step(spec.get('steps'), self.library.get)
+                if program:
+                    package = (self.home / 'library' / program['operation'] / f"{program['revision']}.zip").read_bytes()
             kind = 'package' if package is not None else spec.get('kind', 'workflow')
             if kind not in {'workflow', 'package', 'external'} or (kind == 'package' and package is None):
                 raise ValueError('Use a workflow, an external experiment or a submitted package')
@@ -644,7 +860,7 @@ class Engine:
                     raise ValueError('Provide request_id for the external experiment')
             previous = self.store.request("runs", spec.get("request_id"))
             if previous:
-                if previous['kind'] != kind or previous["spec"] != spec or (package is not None and (self.home / "runs" / previous["id"] / "package.zip").read_bytes() != package):
+                if previous['kind'] != kind or previous["spec"] != spec or (package is not None and not program and (self.home / "runs" / previous["id"] / "package.zip").read_bytes() != package):
                     raise ValueError("request_id already names a different experiment")
                 return previous
             if len(self.runs) >= int(self.config.get('max_active_runs', 10000)):
@@ -657,9 +873,10 @@ class Engine:
             if platform and spec.get('platform_revision', platform['revision']) != platform['revision']:
                 raise ValueError('Platform revision changed')
             run = {"id":run_id, "state":"queued", "created":now(), "request_id":spec.get("request_id"),
-                   "kind":kind, "name":spec.get("name", "Experiment"),
+                   "kind":kind, "name":spec.get("name", program['operation'] if program else "Experiment"),
                    "project":spec.get("project"), "experiment":spec.get("experiment"), "spec":spec,
-                   "parameters":spec.get("parameters", {}), "resources":self._resources(spec.get("resources", [])),
+                   "parameters":program['arguments'] if program else spec.get("parameters", {}),
+                   "resources":self._resources(spec.get("resources", [])),
                    "requirements":quantities(spec.get('requirements', {}), self.capacities),
                    "devices":{}, "operations":[], "operation_count":0, "result":None}
             if platform:
@@ -668,10 +885,18 @@ class Engine:
                 if outside:
                     raise ValueError('Reserved devices must belong to the selected platform')
             operations = []
+            if program:
+                run['program_call'] = program
             if kind == 'workflow':
-                steps = spec.get("steps", [])
+                # A step without device uses a saved Standard or Workflow Operation.
+                steps, calls = library.expand(spec.get("steps", []), self.library.get)
                 platform_model.steps(steps)
                 operations = [self._operation(run_id, s) for s in steps]
+                if calls:
+                    run['calls'] = calls
+                    for op, step in zip(operations, steps):
+                        if 'calls' in step:
+                            op['calls'] = step['calls']
                 if platform and any(op['device'] not in platform['definition']['devices'] for op in operations):
                     raise ValueError('Workflow devices must belong to the selected platform')
                 if run["resources"] or run['requirements']:
@@ -875,6 +1100,10 @@ class Engine:
                                                           stdin=subprocess.DEVNULL, stdout=out, stderr=err, **options)
 
     def _finish(self, run, state):
+        call = run.get('program_call')
+        if call:
+            run['result'] = {call['step']: run.get('result')}
+            self._record_use(call['operation'], call['revision'], run['id'], call['step'], state)
         run.update(state=state, ended=now())
         run.pop("terminate_at", None)
         self.allocation.finish(run['id'])
@@ -896,6 +1125,7 @@ class Engine:
         self.ready.pop(run['id'], None)
         self.remaining.pop(run['id'], None)
         self.step_ids.pop(run['id'], None)
+        self.call_progress.pop(run['id'], None)
         self.minimum_capacities.pop(run['id'], None)
         process = self.processes.get(run['id'])
         if process and hasattr(process, 'close'):
@@ -1002,7 +1232,7 @@ class Engine:
                 for name in sorted(affected):
                     created[name] = make_driver(self.device_records[name], registry)
                     registry[name] = created[name]
-                    if created[name].describe() != {k: v for k, v in self.descriptions[name].items() if k not in {'id', 'driver', 'identity', 'identity_source', 'instrument_profile', 'documentation', 'revision'}}:
+                    if allowed(self.device_records[name], created[name].describe()) != {k: v for k, v in self.descriptions[name].items() if k not in {'id', 'driver', 'revision', *METADATA}}:
                         raise ValueError('Driver description changed; update the device configuration before reuse')
                 with self.lock:
                     self.devices.update(created)
@@ -1094,7 +1324,11 @@ class Engine:
             future = self.futures[op_id]
             op = self.operations[op_id]; run = self.runs[op['run_id']]
             try:
-                op['result'] = json.loads(dumps(future.result()))
+                result = future.result()
+                try:
+                    op['result'] = json.loads(dumps(result))
+                except ValueError:
+                    op['result'] = json.loads(dumps(finite(result)))
                 if op['operation'] == 'identify' and self.device_records[op['device']]['driver'] == 'scpi' and op['result'].get('identity'):
                     self.learn_identity(op['device'], op['result']['identity'])
                 op['state'] = 'completed'
@@ -1106,11 +1340,13 @@ class Engine:
             except BaseException as error:
                 op.update(state='failed', error=f'{type(error).__name__}: {error}')
                 from .process_driver import DriverUnavailable
-                if isinstance(error, DriverUnavailable):
+                from .drivers import UnconfirmedChange
+                if isinstance(error, (DriverUnavailable, UnconfirmedChange)):
                     op['outcome_unknown'] = True
-                    worker = getattr(self.devices[op['device']], 'worker', None)
-                    self.offline.update({name: str(error) for name, driver in self.devices.items()
-                        if name == op['device'] or (worker is not None and getattr(driver, 'worker', None) is worker)})
+                    if isinstance(error, DriverUnavailable):
+                        worker = getattr(self.devices[op['device']], 'worker', None)
+                        self.offline.update({name: str(error) for name, driver in self.devices.items()
+                            if name == op['device'] or (worker is not None and getattr(driver, 'worker', None) is worker)})
                     affected = self._amounts(op).keys() | self._amounts(run, reserve=True).keys()
                     self.store.hold_resources(affected, op_id, str(error))
                     self.resource_holds = self.store.resource_holds()
@@ -1119,6 +1355,14 @@ class Engine:
                     self._save_run(run, 'run.failing')
                     self._stop_pending(run)
             op['ended'] = now()
+            output = self.home / 'runs' / run['id'] / 'output'
+            written = output / 'operations' / op_id
+            if written.is_dir():
+                # Files a driver wrote for this operation are listed and downloadable as soon as it ends.
+                op['files'] = [{key: item[key] for key in ('id', 'name', 'size')} for item in (
+                    self._file_record(run['id'], path, 'output/' + path.relative_to(output).as_posix(), [op_id])
+                    for path in sorted(written.rglob('*'))
+                    if path.is_file() and not path.is_symlink() and path.resolve().is_relative_to(written.resolve()))]
             self.communication[op['device']] = {'time': op['ended'], 'operation_id': op_id,
                 'state': op['state'], 'error': op.get('error')}
             with self.store.transaction():
@@ -1128,6 +1372,7 @@ class Engine:
             self._operation_ended(op)
             self.allocation.release(op_id)
             del self.futures[op_id]
+            self.waiting_steps.discard(op_id)
             self.cancellations.pop(op_id, None)
             self.progress_times.pop(op_id, None)
             if run['kind'] in {'package', 'external'}:
@@ -1163,6 +1408,9 @@ class Engine:
                 elif run['kind'] == 'workflow' or process is not None:
                     if run['kind'] == 'workflow':
                         run['result'] = {self.operations[oid]['step']: self.operations[oid].get('result') for oid in run['operations']}
+                        if run.get('calls'):
+                            # Each saved operation used as a step returns its named result under that step.
+                            run['result'].update(library.results(run['calls'], run['result']))
                     self._finish(run, 'completed')
         if self.stopping:
             return
@@ -1204,7 +1452,8 @@ class Engine:
         candidates = deque((rid, iter(self.ready[rid])) for rid in run_ids)
         blocked = set()
         dispatch = []
-        while candidates and len(self.futures) + len(dispatch) < self.worker_count:
+        pooled = len(self.futures) - len(self.waiting_steps)
+        while candidates and pooled < self.worker_count:
             rid, items = candidates.popleft()
             try:
                 op_id = next(items)
@@ -1222,6 +1471,8 @@ class Engine:
             output = self.home / 'runs' / rid / 'output' / 'operations' / op_id
             context = Context(rid, op_id, output, lambda value, oid=op_id: self._progress(oid, value))
             self.cancellations[op_id] = context
+            if not getattr(self.devices[op['device']], 'dedicated_thread', False):
+                pooled += 1
             try:
                 if op.get('bindings'):
                     args = dict(op['arguments'])
@@ -1258,6 +1509,9 @@ class Engine:
             if error is not None:
                 from concurrent.futures import Future
                 future = Future(); future.set_exception(error)
+            elif getattr(self.devices[op['device']], 'dedicated_thread', False):
+                future = self._own_thread(self.devices[op['device']].invoke, op['operation'], op['arguments'], context)
+                self.waiting_steps.add(op_id)
             else:
                 future = self.pool.submit(self.devices[op['device']].invoke, op['operation'], op['arguments'], context)
             self.futures[op_id] = future
@@ -1265,6 +1519,21 @@ class Engine:
                 self.completed.put(oid)
                 self.wake.set()
             future.add_done_callback(completed)
+
+    @staticmethod
+    def _own_thread(function, *args):
+        """Run a call that may wait a long time, such as a manual step, outside the instrument worker pool."""
+        from concurrent.futures import Future
+        future = Future()
+
+        def run():
+            if future.set_running_or_notify_cancel():
+                try:
+                    future.set_result(function(*args))
+                except BaseException as error:
+                    future.set_exception(error)
+        threading.Thread(target=run, name='iop-waiting-step', daemon=True).start()
+        return future
 
     def _loop(self):
         while True:
@@ -1296,6 +1565,7 @@ class Engine:
             self.wake.set()
         if self.thread.is_alive():
             self.thread.join()
+        self.monitors.stop()
         self.pool.shutdown(wait=True)
         for scanner in (self.discovery_thread, self.scan_request):
             if scanner and scanner.is_alive():

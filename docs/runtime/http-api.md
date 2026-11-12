@@ -13,7 +13,7 @@ Base URL: `http://127.0.0.1:8765`. API bodies are JSON objects. Requests to `/v1
 | POST | `/v1/ui/desktop` | `{"view":"devices"}` | Open a native window on the service computer; local requests only |
 | GET | `/v1/context` | `refresh=true` for a new connection scan | Compact laboratory description: instruments, platforms, drivers, resources and remaining setup |
 | GET | `/v1/schemas/{name}` | `device`, `platform`, `workflow`, `instrument-profile` | Packaged JSON schema |
-| GET | `/v1/adapters` | — | Built-in and installed driver entries |
+| GET | `/v1/adapters` | `name=python` for one adapter | Built-in and installed driver entries; with `name`, the fields of that adapter's device record and operations with an example |
 | GET | `/v1/resources` | — | Configured capacities and current allocation |
 | POST | `/v1/resources` | `{"capacities":{"cpu":16,"solver":2}}` | Replace named capacities; accepted work must still fit |
 | POST | `/v1/devices/{device_id}/reconnect` | `{}` | Reconnect idle devices sharing a worker |
@@ -47,6 +47,12 @@ Base URL: `http://127.0.0.1:8765`. API bodies are JSON objects. Requests to `/v1
 | GET | `/v1/runs/{run_id}/artifacts` | — | File records |
 | POST | `/v1/runs/{run_id}/files?name=raw/data.bin` | Binary body and `Content-Length`; optional URL-encoded `operation_ids` JSON array | Stream a file without base64 encoding |
 | GET | `/v1/artifacts/{artifact_id}` | — | File bytes, streamed |
+| GET | `/v1/library` | — | Saved Standard and Workflow Operations: layer, description, parameters, use counts and, when a device or operation they name is gone, `unavailable` |
+| POST | `/v1/library` | `{"definition": {...}, "expected_revision": 1, "archive": "<base64 ZIP>"}`; revision and archive optional | Saved operation as a new revision; the archive holds the program of a Workflow Operation that decides from results. See [operations](operations.md) |
+| GET | `/v1/library/{id}/files/{name}` | `revision=n` optional | Text of one file of a saved program |
+| GET | `/v1/library/{id}` | — | One saved operation with its steps, result and record of use; `/history` lists revisions |
+| GET | `/v1/manual-tasks` | — | Steps of `manual` devices waiting for a person: instruction, arguments and readings to report |
+| POST | `/v1/manual-tasks/{operation_id}` | `{"status":"done","readings":{},"note":"","by":""}`; status `done`, `failed` or `unsure` | `{"operation_id":"...","status":"done"}`; invalid readings leave the step waiting |
 | GET | `/v1/events` | `after=0&run_id=...&limit=200&wait=25` | `{"events":[...],"cursor":N}` |
 | POST | `/v1/shutdown` | `{}` | `{"stopping":true}` |
 

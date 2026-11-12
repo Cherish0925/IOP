@@ -414,6 +414,41 @@ kbd {
   font-size: 12px;
   gap: 12px;
 }
+.attention {
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+.attention-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 38px;
+  font-size: 12px;
+  border-left: 3px solid var(--gold);
+}
+.attention-item + .attention-item {
+  border-top: 1px solid var(--line);
+}
+.attention-item > .icon {
+  flex: none;
+  color: var(--gold);
+}
+.attention-item > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attention-item strong {
+  margin-right: 10px;
+}
+.manual-instruction {
+  color: var(--text);
+  font-size: 17px;
+  line-height: 1.6;
+  font-weight: 550;
+}
 #content {
   width: 100%;
   max-width: 1600px;
@@ -1591,7 +1626,8 @@ input::file-selector-button {
     left: 50%;
     width: max-content;
   }
-  .connection-banner {
+  .connection-banner,
+  .attention-item {
     padding: 10px 18px;
   }
   .toolbar {

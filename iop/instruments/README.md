@@ -2,9 +2,9 @@
 
 [仪器接入](../instrument-setup.zh-CN.md) · [Instrument setup](../instrument-setup.md) · [Schema](../schema/instrument-profile.schema.json)
 
-型号说明将已读出的制造商与型号对应到具体命令、参数、单位和原始资料。它们补充通用 SCPI 连接，不代表该型号的全部功能。0.8.1 包含下列 9 个型号的部分操作；其他 SCPI 仪器仍可识别并使用通用查询和命令。
+型号说明将制造商与型号对应到具体命令、寄存器或接口路径，以及参数、单位和原始资料。SCPI 说明按读出的身份自动匹配；Modbus 与 HTTP 说明在登记时以 `instrument_profile` 指定。说明只覆盖所列操作，不代表该型号的全部功能。0.8.1 包含下列 9 个型号的部分操作；其他 SCPI 仪器仍可识别并使用通用查询和命令。
 
-Model descriptions map reported manufacturer/model names to documented operations. They extend the generic SCPI connection and cover selected operations, not every instrument feature. Version 0.8.1 contains the following nine models; other SCPI instruments retain generic identification, queries and commands.
+Model descriptions map manufacturer/model names to documented commands, registers or HTTP paths. SCPI descriptions are matched from the reported identity; Modbus and HTTP descriptions are named with `instrument_profile` at registration. They cover selected operations, not every instrument feature. Version 0.8.1 contains the following nine models; other SCPI instruments retain generic identification, queries and commands.
 
 | File | Models | Operations | Source |
 | --- | --- | --- | --- |

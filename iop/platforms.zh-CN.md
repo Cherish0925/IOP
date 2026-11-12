@@ -16,6 +16,17 @@
 
 实验的顶层 `resources` 保留跨步骤需要的设备和共同对象，直到该实验结束。仅有操作级排队不足以保护“改变条件—等待稳定—测量”这一完整过程。
 
+## 触发、时钟与参考信号
+
+连接可带 `signal`：`type`（`trigger`、`gate`、`marker`、`clock`、`reference` 或 `sync`），以及已知的 `edge`、`delay_s`、`width_s`、`level_v`、`frequency_hz`、`impedance_ohm`、`description`。
+
+```json
+{"kind": "electrical", "from": {"device": "awg", "port": "marker1"}, "to": {"device": "camera", "port": "trigger_in"},
+ "signal": {"type": "trigger", "edge": "rising", "delay_s": 2e-6, "level_v": 3.3}}
+```
+
+平台说明提供 `timing`：信号列表，以及接线允许时推导的接收端优先顺序 `arm_order`。反馈和双向连接照常保存，此时 `arm_order` 为 `null`。接线本身不能决定初始化要求；实际顺序由平台过程和仪器手册确定，包括时钟锁定和就绪条件。信号由仪器产生和接收，IOP 记录连接，不产生硬件时序。
+
 ## 运行两个平台
 
 以下步骤使用 `iop init --demo` 提供的模拟设备。已有真实设备配置时，请另选 `--home` 目录。

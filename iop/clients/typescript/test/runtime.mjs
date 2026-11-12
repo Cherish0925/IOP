@@ -99,6 +99,26 @@ serve(p)
     await client.release('stage');
     await assert.rejects(client.invoke('stage','position'),e=>e.code==='device_released');
     await client.reconnect('stage');
+    await client.saveOperation({id:'axis.position',layer:'standard',description:'Move the stage and read where it arrived',
+      parameters:{angle:{type:'number',minimum:-90,maximum:90}},
+      steps:[{id:'move',device:'stage',operation:'move_to',arguments:{angle_deg:'${angle}'}},{id:'read',device:'stage',operation:'position'}],
+      result:{angle:{step:'read',path:['angle_actual']}}});
+    assert.deepEqual((await (await client.submit([{id:'p',operation:'axis.position',arguments:{angle:7}}])).result()).p,{angle:7});
+    assert.equal((await client.savedOperation('axis.position')).uses.completed,1);
+    assert.deepEqual((await client.savedOperations()).map(o=>o.id),['axis.position']);
+    await client.register({id:'bench',driver:'manual',config:{operations:{mount:{instruction:'Mount {sample}',
+      parameters:{sample:{type:'string'}},readings:{mass_g:{type:'number',minimum:0}}}}}});
+    const mounting = await client.submit([{id:'mount',device:'bench',operation:'mount',arguments:{sample:'S-1'}}]);
+    let tasks = [];
+    for (let i = 0; i < 100 && !tasks.length; i++) { tasks = await client.manualTasks(); if (!tasks.length) await new Promise(r=>setTimeout(r,50)); }
+    assert.equal(tasks[0].instruction,'Mount S-1');
+    await client.reportManual(tasks[0].operation_id,'done',{mass_g:2.5},'','ts');
+    assert.deepEqual((await mounting.result()).mount.readings,{mass_g:2.5});
+    const slipped = await client.submit([{id:'mount',device:'bench',operation:'mount',arguments:{sample:'S-2'}}]);
+    for (tasks = []; !tasks.length;) { tasks = await client.manualTasks(); if (!tasks.length) await new Promise(r=>setTimeout(r,50)); }
+    await client.reportManual(tasks[0].operation_id,'unsure');
+    assert.equal((await slipped.wait()).state,'failed');
+    assert.deepEqual(await client.resolveResources(['device:bench'],'S-2 seated'),{released:['device:bench']});
     assert.deepEqual((await external.files()).find(f => f.name === 'output/position.json').operation_ids, [measured.id]);
     const file = (await run.files()).find(item=>item.name==='output/samples.bin');
     assert.equal(file.size,1048577);

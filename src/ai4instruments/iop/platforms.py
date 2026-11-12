@@ -2,6 +2,7 @@
 from __future__ import annotations
 from collections import deque
 import json
+import math
 import re
 
 
@@ -108,6 +109,9 @@ def description(value, devices):
                 raise ValueError('Connection endpoints must name platform devices')
             if not isinstance(endpoint.get('port'), str) or not endpoint['port']:
                 raise ValueError('Connection endpoints need a port name')
+        if 'signal' in connection:
+            signal(connection['signal'])
+    timing(value)
     procedures = value.setdefault('procedures', {})
     if not isinstance(procedures, dict):
         raise ValueError('Procedures must be an object')
@@ -116,11 +120,64 @@ def description(value, devices):
         if not isinstance(procedure, dict):
             raise ValueError('Procedure must be an object')
         for step in steps(procedure.get('steps')):
-            if step.get('device') not in members:
+            # A step without device uses a saved operation; its devices are checked when it is expanded.
+            if 'device' in step and step['device'] not in members:
                 raise ValueError('Procedure device must belong to the platform')
         strings(procedure.get('resources', []), 'Procedure resources')
     value.setdefault('name', value['id'])
     return value
+
+
+SIGNAL_TYPES = ('trigger', 'gate', 'marker', 'clock', 'reference', 'sync')
+
+
+def signal(value):
+    """Check the electrical description of a trigger, gate, clock or reference connection."""
+    if not isinstance(value, dict) or value.get('type') not in SIGNAL_TYPES:
+        raise ValueError('signal.type must be one of ' + ', '.join(SIGNAL_TYPES))
+    if 'edge' in value and value['edge'] not in ('rising', 'falling', 'both'):
+        raise ValueError('signal.edge must be rising, falling or both')
+    for key, positive in (('delay_s', False), ('width_s', True), ('level_v', False), ('frequency_hz', True), ('impedance_ohm', True)):
+        if key in value:
+            number = value[key]
+            if isinstance(number, bool) or not isinstance(number, (int, float)) or not math.isfinite(number) or positive and number <= 0:
+                raise ValueError(f'signal.{key} must be a {"positive" if positive else "finite"} number')
+    if 'description' in value and not isinstance(value['description'], str):
+        raise ValueError('signal.description must be text')
+    return value
+
+
+def timing(definition):
+    """Describe wiring and, where possible, a receiver-before-source order.
+
+    Wiring may contain feedback loops or bidirectional handshakes. Such a platform has no
+    inferred linear order; its experiment program supplies the device-specific initialization.
+    """
+    edges = [c for c in definition.get('connections', []) if 'signal' in c]
+    if not edges:
+        return None
+    targets = {}
+    for edge in edges:
+        if edge['from']['device'] != edge['to']['device']:
+            targets.setdefault(edge['from']['device'], set()).add(edge['to']['device'])
+    devices = {e['from']['device'] for e in edges} | {e['to']['device'] for e in edges}
+    remaining = {device: len(targets.get(device, ())) for device in devices}
+    sources = {device: [] for device in devices}
+    for source, receivers in targets.items():
+        for receiver in receivers:
+            sources[receiver].append(source)
+    ready = deque(sorted(device for device, count in remaining.items() if not count))
+    order = []
+    while ready:
+        device = ready.popleft()
+        order.append(device)
+        for source in sorted(sources[device]):
+            remaining[source] -= 1
+            if not remaining[source]:
+                ready.append(source)
+    return {'arm_order': order if len(order) == len(devices) else None,
+            'signals': [{'from': f"{e['from']['device']}.{e['from']['port']}", 'to': f"{e['to']['device']}.{e['to']['port']}",
+                         **e['signal']} for e in edges]}
 
 
 def resource_index(platforms):

@@ -1,15 +1,32 @@
 """Replace idle instrument configurations and retain their previous definitions."""
 import copy
+import fnmatch
 from .config import save_json
 from .drivers import make_driver
 from .errors import RequestError
 
 
-METADATA = ('identity', 'identity_source', 'instrument_profile', 'documentation')
+METADATA = ('identity', 'identity_source', 'instrument_profile', 'documentation', 'calibration')
+
+
+def allowed(record, description):
+    """Keep only the operations a device record allows; identify stays available for discovery."""
+    patterns = record.get('allowed_operations')
+    if patterns is None:
+        return description
+    if not isinstance(patterns, list) or any(not isinstance(p, str) or not p for p in patterns):
+        raise ValueError('allowed_operations must be a list of operation name patterns')
+    operations = {name: spec for name, spec in description.get('operations', {}).items()
+                  if any(fnmatch.fnmatchcase(name, p) for p in patterns)}
+    if not operations:
+        raise ValueError('allowed_operations matches none of the driver operations')
+    if 'identify' in description.get('operations', {}):
+        operations.setdefault('identify', description['operations']['identify'])
+    return {**description, 'operations': operations}
 
 
 def describe(record, driver):
-    description = driver.describe()
+    description = allowed(record, driver.describe())
     operations = description.get('operations')
     if not isinstance(operations, dict) or not operations or any(not isinstance(s, dict) for s in operations.values()):
         raise ValueError('Driver must describe its operations')
@@ -24,6 +41,9 @@ def configure(engine, device_id, definition, expected_revision):
     from .engine import TERMINAL
     from .discovery import connection_conflict
     definition = copy.deepcopy(definition)
+    if 'calibration' in definition:
+        from .calibration import check
+        check(definition['calibration'])
     if definition.get('id') != device_id:
         raise ValueError('Keep the instrument ID when editing its configuration')
     with engine.registration_lock:
@@ -60,6 +80,8 @@ def configure(engine, device_id, definition, expected_revision):
             driver.close()
             new = make_driver(definition, registry)
             description = describe(definition, new)
+            from .monitors import check
+            monitors = check(definition, description)
             with engine.lock:
                 config = copy.deepcopy(engine.config)
                 config['devices'] = [definition if d['id'] == device_id else d for d in config['devices']]
@@ -72,6 +94,7 @@ def configure(engine, device_id, definition, expected_revision):
                 engine.device_records[device_id] = definition
                 engine.descriptions[device_id] = dict(description, revision=version['revision'])
                 engine.allocation.limits['device:' + device_id] = description.get('concurrency', 1)
+                engine.monitors.configure(device_id, monitors)
                 engine.offline.pop(device_id, None)
                 engine.released.discard(device_id)
             return version

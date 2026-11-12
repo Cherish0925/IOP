@@ -87,19 +87,27 @@ def parser():
     root.add_argument('--endpoint', help='Remote service URL')
     sub = root.add_subparsers(dest='command', required=True)
     p = sub.add_parser('init', help='Create a configuration'); p.add_argument('--demo', action='store_true'); p.add_argument('--port', type=int, default=8765)
-    for name in ['start','serve','stop','status','open','devices','discover','adapters']:
+    for name in ['start','serve','stop','status','open','devices','discover']:
         sub.add_parser(name)
+    p = sub.add_parser('adapters', help='List adapters, or show the device record fields of one')
+    p.add_argument('name', nargs='?')
+    p = sub.add_parser('operations', help='List saved Standard and Workflow Operations, show one, or save definitions')
+    p.add_argument('name', nargs='?')
+    p.add_argument('--save', metavar='FILE', help='JSON file with one definition or a list of them')
     p = sub.add_parser('desktop', help='Open the native desktop window'); p.add_argument('--view', default='overview')
     sub.add_parser('shortcuts', help='Install desktop and browser application entries')
     p = sub.add_parser('context', help='Read the laboratory configuration for an agent or program')
     p.add_argument('--refresh', action='store_true'); p.add_argument('--start', action='store_true')
     p.add_argument('--full', action='store_true'); p.add_argument('--after', type=int)
-    sub.add_parser('mcp', help='Expose the shared service to an agent over MCP stdio')
+    toolset_help = 'Comma-separated MCP toolsets: setup, experiments, attention, episodes or all (default)'
+    p = sub.add_parser('mcp', help='Expose the shared service to an agent over MCP stdio')
+    p.add_argument('--toolsets', help=toolset_help)
     from .connector import options as connection_options
     connection_options(sub.add_parser('connect', help='Install or update a laboratory connector for an agent host'))
     p = sub.add_parser('mcp-http', help='Serve authenticated MCP over HTTP on loopback')
-    p.add_argument('--port', type=int, default=8766)
-    sub.add_parser('mcp-config', help='Print the MCP launcher configuration for this installation')
+    p.add_argument('--port', type=int, default=8766); p.add_argument('--toolsets', help=toolset_help)
+    p = sub.add_parser('mcp-config', help='Print the MCP launcher configuration for this installation')
+    p.add_argument('--toolsets', help=toolset_help)
     p = sub.add_parser('register'); p.add_argument('file')
     p = sub.add_parser('reconnect'); p.add_argument('device')
     p = sub.add_parser('release', help='Release an idle instrument connection'); p.add_argument('device')
@@ -175,13 +183,13 @@ def main():
             output(client.changes(args.after) if args.after is not None else client.context(args.refresh, 'full' if args.full else 'summary'))
         elif args.command == 'mcp-config':
             from .context import agent_configuration
-            output(agent_configuration(home, args.endpoint or os.environ.get('IOP_ENDPOINT')))
+            output(agent_configuration(home, args.endpoint or os.environ.get('IOP_ENDPOINT'), args.toolsets))
         elif args.command == 'mcp-http':
             from .mcp_http import run
-            run(home, args.endpoint, args.port)
+            run(home, args.endpoint, args.port, args.toolsets)
         elif args.command == 'mcp':
             from .mcp import run
-            run(home, args.endpoint)
+            run(home, args.endpoint, args.toolsets)
         elif args.command == 'open':
             from .desktop import open_browser
             open_browser(home, args.endpoint)
@@ -196,7 +204,13 @@ def main():
         elif args.command == 'discover':
             output(client.discover())
         elif args.command == 'adapters':
-            output(client.adapters())
+            output(client.adapters(args.name))
+        elif args.command == 'operations':
+            if args.save:
+                definitions = json.loads(Path(args.save).read_text(encoding='utf-8'))
+                output([client.save_operation(d) for d in (definitions if isinstance(definitions, list) else [definitions])])
+            else:
+                output(client.saved_operation(args.name) if args.name else client.saved_operations())
         elif args.command == 'reconnect':
             output(client.reconnect(args.device))
         elif args.command == 'release':

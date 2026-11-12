@@ -23,6 +23,9 @@ def launch(profile, environment):
         if profile.get("home"):
             remote += ["--home", profile["home"]]
         remote.append("mcp")
+        # The SSH account does not receive this host's environment; the toolset choice travels as an argument.
+        if env.get("IOP_MCP_TOOLSETS"):
+            remote += ["--toolsets", env["IOP_MCP_TOOLSETS"]]
         return [
             ssh,
             "-T",

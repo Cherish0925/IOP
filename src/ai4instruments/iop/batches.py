@@ -3,7 +3,7 @@ import copy
 import json
 import time
 import uuid
-from . import platforms
+from . import library, platforms
 from .resources import QueueFull
 from .store import dumps
 
@@ -16,23 +16,26 @@ def submit(engine, run_id, steps, request_id):
     # Missing dependencies mean sequence; an explicit [] starts an independent branch.
     steps = json.loads(dumps(steps))
     if any(not isinstance(step, dict) or any(not isinstance(step.get(k), str) or not step[k]
-           for k in ('id', 'device', 'operation')) for step in steps):
-        raise ValueError('Each step needs id, device and operation')
+           for k in ('id', 'operation')) or not isinstance(step.get('device', ''), str) for step in steps):
+        raise ValueError('Each step needs id and operation, with device for a device operation')
     previous = []
     for step in steps:
         step.setdefault('after', previous)
         previous = [step['id']]
         if 'request_id' in step:
             raise ValueError('The batch request_id identifies its steps; omit per-step request_id')
-    platforms.steps(steps)
+    submitted = steps
     with engine.lock:
         with engine.store.lock:
             row = engine.store.db.execute('SELECT body FROM operation_batches WHERE request_id=?', (request_id,)).fetchone()
         if row:
             record = json.loads(row[0])
-            if record['run_id'] != run_id or record['steps'] != steps:
+            if record['run_id'] != run_id or record['steps'] != submitted:
                 raise ValueError('request_id already names a different operation batch')
             return describe(engine, run_id, request_id)
+        # A step without device uses a saved Standard or Workflow Operation.
+        steps, calls = library.expand(submitted, engine.library.get)
+        platforms.steps(steps)
         run = engine.runs.get(run_id)
         if engine.stopping or not run or not (run['kind'] == 'external' and run['state'] in {'queued', 'running'} or
                                              run['kind'] == 'package' and run['state'] == 'running'):
@@ -40,6 +43,9 @@ def submit(engine, run_id, steps, request_id):
         if len(engine.operations) + len(steps) > int(engine.config.get('max_active_operations', 100000)):
             raise QueueFull('The service has reached its configured number of active operations')
         operations = [engine._operation(run_id, step) for step in steps]
+        for op, step in zip(operations, steps):
+            if 'calls' in step:
+                op['calls'], op['batch'] = step['calls'], request_id
         by_step = {op['step']: op for op in operations}
         reserved = engine._amounts(run, reserve=True)
         updated = copy.deepcopy(run)
@@ -59,7 +65,9 @@ def submit(engine, run_id, steps, request_id):
         updated['operation_count'] += len(ids)
         updated['involved_resources'] = sorted(set(updated['involved_resources']).union(
             *(engine._amounts(op).keys() for op in operations)))
-        record = {'request_id': request_id, 'run_id': run_id, 'steps': steps, 'operation_ids': ids}
+        record = {'request_id': request_id, 'run_id': run_id, 'steps': submitted, 'operation_ids': ids}
+        if calls:
+            record['calls'] = calls
         with engine.store.transaction():
             engine.store.db.execute('INSERT INTO operation_batches VALUES(?,?,?)', (request_id, run_id, dumps(record)))
             engine.store.put('runs', updated)
@@ -70,6 +78,7 @@ def submit(engine, run_id, steps, request_id):
         engine.operations.update({op['id']: op for op in operations})
         engine.remaining[run_id] += len(operations)
         for op in operations:
+            engine._follow_calls(op, calls)
             engine.remaining_dependencies[op['id']] = len(op['after_ids'])
             for parent in op['after_ids']:
                 engine.dependents.setdefault(parent, []).append(op['id'])
@@ -96,5 +105,9 @@ def describe(engine, run_id, request_id, wait=0):
             pending = any(op['state'] in {'queued', 'running'} for op in operations)
             remaining = deadline - time.monotonic()
             if not pending or remaining <= 0:
-                return {'request_id': request_id, 'run_id': run_id, 'complete': not pending, 'operations': operations}
+                receipt = {'request_id': request_id, 'run_id': run_id, 'complete': not pending, 'operations': operations}
+                if batch.get('calls'):
+                    # The named result of each saved operation used in this batch.
+                    receipt['results'] = library.results(batch['calls'], {op['step']: op.get('result') for op in operations})
+                return receipt
             engine.store.changed.wait(remaining)

@@ -101,7 +101,7 @@ class Handler(BaseHTTPRequestHandler):
             if method == 'GET' and url.path == '/':
                 return self._send(Path(__file__).with_name('reader.html').read_bytes(), media_type='text/html; charset=utf-8')
             if method == 'GET' and len(parts) == 2 and parts[0] == 'ui' and parts[1] in {
-                'app.css', 'app.js', 'core.js', 'devices.js', 'platforms.js', 'runs.js', 'resources.js', 'mark.svg'
+                'app.css', 'app.js', 'attention.js', 'core.js', 'devices.js', 'platforms.js', 'runs.js', 'resources.js', 'mark.svg'
             }:
                 file = Path(__file__).with_name('ui') / parts[1]
                 media = {'.js':'text/javascript; charset=utf-8', '.css':'text/css; charset=utf-8', '.svg':'image/svg+xml'}
@@ -154,9 +154,19 @@ class Handler(BaseHTTPRequestHandler):
                 result = spawn(engine.home, body.get('view', 'overview'))
             elif parts == ['v1', 'resources']:
                 result = engine.configure_resources(body['capacities']) if method == 'POST' else engine.resource_info()
+            elif parts == ['v1', 'manual-tasks'] and method == 'GET':
+                from .manual import tasks
+                result = tasks(engine)
+            elif len(parts) == 3 and parts[:2] == ['v1', 'manual-tasks'] and method == 'POST':
+                from .manual import report
+                result = report(engine, parts[2], body)
             elif parts == ['v1', 'adapters'] and method == 'GET':
                 from .plugins import adapters
-                result = adapters()
+                if 'name' in query:
+                    from .adapter_reference import reference
+                    result = reference(query['name'])
+                else:
+                    result = adapters()
             elif parts == ['v1', 'instrument-profiles']:
                 result = engine.save_instrument_profile(body) if method == 'POST' else engine.instrument_profiles()
             elif parts == ['v1', 'instrument-catalog'] and method == 'GET':
@@ -164,6 +174,17 @@ class Handler(BaseHTTPRequestHandler):
                     match={k: query[k] for k in ('manufacturer', 'model', 'serial_number', 'firmware') if k in query},
                     profile_id=query.get('id'), offset=query.get('offset', 0),
                     limit=query.get('limit', 50), details=query.get('details') == 'true')
+            elif parts == ['v1', 'library']:
+                archive = base64.b64decode(body['archive'], validate=True) if method == 'POST' and body.get('archive') else None
+                result = (engine.save_operation(body['definition'], body.get('expected_revision'), archive) if method == 'POST'
+                          else engine.saved_operations())
+            elif len(parts) >= 5 and parts[:2] == ['v1', 'library'] and parts[3] == 'files' and method == 'GET':
+                from urllib.parse import unquote
+                result = engine.program_file(parts[2], unquote('/'.join(parts[4:])), query.get('revision'))
+            elif len(parts) == 3 and parts[:2] == ['v1', 'library'] and method == 'GET':
+                result = engine.saved_operation(parts[2])
+            elif len(parts) == 4 and parts[:2] == ['v1', 'library'] and parts[3] == 'history' and method == 'GET':
+                result = engine.store.saved_operation_history(parts[2])
             elif parts == ['v1','platforms']:
                 result = engine.apply_platform(body['definition'], body.get('expected_revision', 0)) if method == 'POST' else engine.list_platforms()
             elif parts == ['v1','resources','resolve'] and method == 'POST':
@@ -188,6 +209,9 @@ class Handler(BaseHTTPRequestHandler):
             elif len(parts) == 3 and parts[:2] == ['v1','devices'] and method == 'GET':
                 with engine.lock:
                     result = dict(engine.descriptions[parts[2]], status=engine.device_states()[parts[2]])
+                    monitors = engine.monitors.summary(parts[2])
+                    if monitors:
+                        result['monitors'] = monitors
             elif len(parts) == 4 and parts[:2] == ['v1', 'devices'] and parts[3] == 'history' and method == 'GET':
                 result = engine.store.device_history(parts[2], query.get('limit', 100))
             elif len(parts) == 4 and parts[:2] == ['v1', 'devices'] and parts[3] == 'configuration' and method == 'POST':

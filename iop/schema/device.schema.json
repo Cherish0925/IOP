@@ -28,6 +28,15 @@
       },
       "uniqueItems": true
     },
+    "allowed_operations": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 1,
+      "description": "Operation name patterns available on this instrument, such as read_* or set.ch1.*; identify stays available. Omit to allow all."
+    },
     "execution": {
       "type": "object",
       "required": [
@@ -54,6 +63,112 @@
           "description": "Time to finish cancellation before the SDK process ends; default 2."
         }
       }
+    },
+    "calibration": {
+      "type": "object",
+      "required": [
+        "id"
+      ],
+      "description": "Calibration of this instrument. Operations record its id and any uncertainty listed for them.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Certificate or calibration record identifier"
+        },
+        "date": {
+          "type": "string",
+          "description": "ISO date or time with offset"
+        },
+        "valid_until": {
+          "type": "string",
+          "description": "ISO date (ends 23:59:59 UTC) or time with offset"
+        },
+        "certificate": {
+          "type": "string"
+        },
+        "by": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "enforce": {
+          "type": "boolean",
+          "description": "Refuse new operations after valid_until"
+        },
+        "uncertainty": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object"
+          },
+          "description": "Operation name to uncertainty, for example {\"value\": 0.02, \"unit\": \"V\", \"coverage_factor\": 2}"
+        }
+      }
+    },
+    "monitors": {
+      "type": "array",
+      "description": "Periodic reads of an observe operation while the device is idle; see docs/runtime/drivers.md",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "operation",
+          "interval_s"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$"
+          },
+          "operation": {
+            "type": "string",
+            "description": "An operation described with effect observe"
+          },
+          "arguments": {
+            "type": "object"
+          },
+          "interval_s": {
+            "type": "number",
+            "minimum": 0.1
+          },
+          "value": {
+            "type": "array",
+            "items": {
+              "type": [
+                "string",
+                "integer"
+              ]
+            },
+            "description": "Path to the value in the result; default [\"value\"]"
+          },
+          "minimum": {
+            "type": "number"
+          },
+          "maximum": {
+            "type": "number"
+          },
+          "equals": {},
+          "on_violation": {
+            "enum": [
+              "record",
+              "hold"
+            ]
+          },
+          "hold": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "Other devices or shared resources held with this device"
+          }
+        }
+      }
+    },
+    "instrument_profile": {
+      "type": "string",
+      "description": "ID of a model description in /v1/instrument-catalog. Its operations, name and documentation are added at registration; operations in config take precedence."
     }
   }
 }

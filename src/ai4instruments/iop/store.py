@@ -1,6 +1,7 @@
 """Persistent experiment records and ordered events."""
 from __future__ import annotations
 import json
+import math
 import sqlite3
 import threading
 import time
@@ -14,6 +15,21 @@ def now():
 
 def dumps(value):
     return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+
+
+def finite(value):
+    """Replace NaN and infinities, which JSON cannot carry, with "NaN", "Infinity" and "-Infinity".
+
+    Instruments report these for missing or overranged readings; the reading is recorded rather than
+    failing the operation. The strings follow the protobuf JSON mapping.
+    """
+    if isinstance(value, float) and not math.isfinite(value):
+        return 'NaN' if value != value else 'Infinity' if value > 0 else '-Infinity'
+    if isinstance(value, dict):
+        return {key: finite(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [finite(item) for item in value]
+    return value
 
 
 class Store:
@@ -40,6 +56,10 @@ class Store:
             id TEXT NOT NULL, revision INTEGER NOT NULL, body TEXT NOT NULL,
             PRIMARY KEY(id,revision));
           CREATE TABLE IF NOT EXISTS resource_holds(resource TEXT PRIMARY KEY, body TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS saved_operations(
+            id TEXT NOT NULL, revision INTEGER NOT NULL, body TEXT NOT NULL,
+            PRIMARY KEY(id,revision));
+          CREATE TABLE IF NOT EXISTS operation_uses(id TEXT PRIMARY KEY, body TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS discovery_records(key TEXT PRIMARY KEY, body TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS device_versions(
             id TEXT NOT NULL, revision INTEGER NOT NULL, body TEXT NOT NULL,
@@ -295,6 +315,33 @@ class Store:
         with self.lock:
             return [json.loads(row[0]) for row in self.db.execute(
                 'SELECT body FROM platform_versions WHERE id=? ORDER BY revision DESC', (platform_id,))]
+
+    def saved_operations(self):
+        """The latest revision of every Standard and Workflow Operation."""
+        with self.lock:
+            rows = self.db.execute('''SELECT o.body FROM saved_operations o JOIN
+                (SELECT id,MAX(revision) AS revision FROM saved_operations GROUP BY id) latest
+                ON o.id=latest.id AND o.revision=latest.revision ORDER BY o.id''')
+            return [json.loads(row[0]) for row in rows]
+
+    def saved_operation_history(self, operation_id):
+        with self.lock:
+            return [json.loads(row[0]) for row in self.db.execute(
+                'SELECT body FROM saved_operations WHERE id=? ORDER BY revision DESC', (operation_id,))]
+
+    def save_operation(self, record):
+        with self.transaction():
+            self.db.execute('INSERT INTO saved_operations VALUES(?,?,?)', (record['id'], record['revision'], dumps(record)))
+            self.event('operation.saved', operation=record['id'], revision=record['revision'], layer=record['layer'])
+
+    def operation_uses(self):
+        with self.lock:
+            return {key: json.loads(body) for key, body in self.db.execute('SELECT id,body FROM operation_uses')}
+
+    def record_use(self, operation_id, uses, run_id, call, state):
+        with self.transaction():
+            self.db.execute('INSERT OR REPLACE INTO operation_uses VALUES(?,?)', (operation_id, dumps(uses)))
+            self.event('call.' + state, run_id, call=call, operation=operation_id, revision=uses['last']['revision'])
 
     def save_platform(self, record):
         with self.transaction():

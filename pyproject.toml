@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai4instruments"
-version = "0.8.8"
+version = "0.9.0"
 description = "IOP persistent service for instruments and experiment programs"
 requires-python = ">=3.10"
 authors = [{name = "Shuxing Yang"}]
@@ -19,6 +19,9 @@ iop = "ai4instruments.iop.cli:main"
 [project.optional-dependencies]
 devices = ["pyserial>=3.5", "pyvisa>=1.14", "pyvisa-py>=0.7", "pyusb>=1.2", "zeroconf>=0.130", "pymodbus>=3.11,<4"]
 desktop = ["pywebview>=6.2,<7; sys_platform != 'linux'", "pywebview[pyside6]>=6.2,<7; sys_platform == 'linux'"]
+qcodes = ["qcodes>=0.50"]
+opcua = ["asyncua>=1.1"]
+epics = ["caproto>=1.1"]
 agent = ["mcp>=1.30,<2; python_version < '3.11'", "mcp>=2.3,<3; python_version >= '3.11'"]
 
 [tool.setuptools.package-data]

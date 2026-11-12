@@ -43,6 +43,7 @@ import {
   inspectRun,
 } from "./runs.js";
 import { renderResources, bindResources } from "./resources.js";
+import { updateAttention } from "./attention.js";
 const titles = {
   overview: () => t("概览", "Overview"),
   devices: () => t("仪器与软件", "Instruments & software"),
@@ -151,9 +152,37 @@ function overview() {
           ),
           `<button class="button small" id="overview-new-run">${icon("plus")}${t("新建实验", "New experiment")}</button>`,
         )
-  }</section><section class="panel"><div class="panel-header"><h2>${t("运行服务", "Runtime service")}</h2><span class="dot ${state.connected ? "online" : "offline"}"></span></div><div class="panel-body"><div class="settings-row"><span>${t("计算机", "Computer")}</span><code>${esc(s?.hostname || "—")}</code></div><div class="settings-row"><span>${t("版本", "Version")}</span><code>${esc(s?.version || "—")}</code></div><div class="settings-row"><span>${t("运行时间", "Uptime")}</span><code>${duration(s?.uptime_s)}</code></div><div class="settings-row"><span>${t("运行地址", "Address")}</span><code>${esc(location.host)}</code></div></div></section></div></div>`;
+  }</section>${operationsPanel()}<section class="panel"><div class="panel-header"><h2>${t("运行服务", "Runtime service")}</h2><span class="dot ${state.connected ? "online" : "offline"}"></span></div><div class="panel-body"><div class="settings-row"><span>${t("计算机", "Computer")}</span><code>${esc(s?.hostname || "—")}</code></div><div class="settings-row"><span>${t("版本", "Version")}</span><code>${esc(s?.version || "—")}</code></div><div class="settings-row"><span>${t("运行时间", "Uptime")}</span><code>${duration(s?.uptime_s)}</code></div><div class="settings-row"><span>${t("运行地址", "Address")}</span><code>${esc(location.host)}</code></div></div></section></div></div>`;
+}
+// The three roles of operations: device operations are Basic; saved methods are Standard and Workflow.
+function operationsPanel() {
+  const basic = state.devices.reduce(
+      (n, d) => n + Object.keys(d.operations || {}).length,
+      0,
+    ),
+    saved = (layer) => state.library.filter((o) => o.layer === layer),
+    rows = (layer) =>
+      saved(layer)
+        .map(
+          (o) =>
+            `<li><button class="button ghost small" data-operation="${esc(o.id)}">${esc(o.id)}</button><small>${esc(o.description)}${o.unavailable ? ` <span class="error-text">${esc(o.unavailable.join("; "))}</span>` : ""}</small><span class="count" title="${t("完成 / 调用", "completed / calls")}">${o.uses.completed}/${o.uses.calls}</span></li>`,
+        )
+        .join("");
+  return `<section class="panel"><div class="panel-header"><h2>${t("操作", "Operations")}</h2><span class="count">${basic + state.library.length}</span></div><div class="panel-body"><div class="settings-row"><span>Basic Operations</span><code>${basic} · ${state.devices.length} ${t("台设备", "devices")}</code></div><div class="settings-row"><span>Standard Operations</span><code>${saved("standard").length}</code></div><ul class="mini-list">${rows("standard")}</ul><div class="settings-row"><span>Workflow Operations</span><code>${saved("workflow").length}</code></div><ul class="mini-list">${rows("workflow")}</ul></div></section>`;
+}
+async function inspectOperation(id) {
+  const o = await api("library/" + encodeURIComponent(id));
+  modal(
+    o.id,
+    `<div class="form-stack"><p class="inline-note">${esc(o.description)}${o.conditions ? " · " + esc(o.conditions) : ""}</p>${o.unavailable ? `<p class="error-text">${t("实验室缺少", "The laboratory lacks")}: ${esc(o.unavailable.join("; "))}</p>` : ""}<div class="identity-grid"><div><small>${t("版本", "Revision")}</small><strong>${o.revision}</strong></div><div><small>${t("调用", "Calls")}</small><strong>${o.uses.calls}</strong></div><div><small>${t("完成", "Completed")}</small><strong>${o.uses.completed}</strong></div><div><small>${t("失败", "Failed")}</small><strong>${o.uses.failed}</strong></div></div><pre class="response-text">${esc(JSON.stringify({ parameters: o.parameters || {}, steps: o.steps, result: o.result || {} }, null, 2))}</pre></div>`,
+    o.layer === "workflow" ? "WORKFLOW OPERATION" : "STANDARD OPERATION",
+  );
 }
 function bindOverview() {
+  $$("[data-operation]").forEach(
+    (b) =>
+      (b.onclick = () => busy(b, () => inspectOperation(b.dataset.operation))),
+  );
   bindCards();
   bindRunRows();
   $$("[data-go]").forEach((b) => (b.onclick = () => navigate(b.dataset.go)));
@@ -179,6 +208,7 @@ function bindSettings() {
     translate();
     updateConnection(state.connected);
     updateServiceLabels();
+    updateAttention();
     updateMode();
     render(true);
   };
@@ -205,6 +235,7 @@ function render(force = false) {
     state.devices,
     state.platforms,
     state.runs,
+    state.library,
     state.resources,
     state.status?.devices,
     state.status?.active_runs,
@@ -290,22 +321,29 @@ export async function refresh(force = false) {
   clearTimeout(scheduled);
   try {
     const full = force || Date.now() - lastInventory > 15000;
-    const tasks = [api("status"), api("runs?limit=200&details=false")];
+    const tasks = [
+      api("status"),
+      api("runs?limit=200&details=false"),
+      api("manual-tasks"),
+    ];
     if (full)
       tasks.push(
         api("devices"),
         api("platforms"),
         api("discovery?cached=true"),
+        api("library"),
       );
     const values = await Promise.all(tasks);
     state.status = values[0];
     state.resources = values[0].resources;
     state.runs = values[1];
+    state.manual = values[2];
     if (full) {
-      state.devices = values[2];
-      state.platforms = values[3];
+      state.devices = values[3];
+      state.platforms = values[4];
       state.inventory =
-        values[4].updated || values[4].scanning ? values[4] : state.inventory;
+        values[5].updated || values[5].scanning ? values[5] : state.inventory;
+      state.library = values[6];
       lastInventory = Date.now();
     }
     if (!state.ui) {
@@ -325,6 +363,7 @@ export async function refresh(force = false) {
     $("#sidebar-version").textContent = state.status.version;
     $("#host-label").textContent = state.status.hostname;
     updateServiceLabels();
+    updateAttention();
     render(force);
   } catch (error) {
     updateConnection(

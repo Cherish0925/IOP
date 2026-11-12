@@ -1,0 +1,138 @@
+[
+  {
+    "id": "axis.position",
+    "layer": "standard",
+    "description": "Move one axis and read where it arrived",
+    "conditions": "The axis is free to rotate",
+    "parameters": {
+      "axis": {
+        "type": "string",
+        "enum": [
+          "stage",
+          "aux"
+        ]
+      },
+      "angle": {
+        "type": "number",
+        "minimum": -90,
+        "maximum": 90,
+        "unit": "deg"
+      }
+    },
+    "steps": [
+      {
+        "id": "move",
+        "device": "${axis}",
+        "operation": "move_to",
+        "arguments": {
+          "angle_deg": "${angle}"
+        }
+      },
+      {
+        "id": "read",
+        "device": "${axis}",
+        "operation": "position"
+      }
+    ],
+    "result": {
+      "angle": {
+        "step": "read",
+        "path": [
+          "angle_actual"
+        ]
+      }
+    }
+  },
+  {
+    "id": "meter.capture",
+    "layer": "standard",
+    "description": "Set the exposure and measure the power",
+    "parameters": {
+      "exposure": {
+        "type": "number",
+        "minimum": 0.001,
+        "maximum": 1,
+        "default": 0.02,
+        "unit": "s"
+      }
+    },
+    "steps": [
+      {
+        "id": "configure",
+        "device": "meter",
+        "operation": "configure",
+        "arguments": {
+          "exposure_s": "${exposure}"
+        }
+      },
+      {
+        "id": "measure",
+        "device": "meter",
+        "operation": "measure"
+      }
+    ],
+    "result": {
+      "power": {
+        "step": "measure",
+        "path": [
+          "power"
+        ]
+      }
+    }
+  },
+  {
+    "id": "bench.measure_at",
+    "layer": "workflow",
+    "description": "Position both axes at once, then measure",
+    "parameters": {
+      "a": {
+        "type": "number",
+        "minimum": -90,
+        "maximum": 90,
+        "unit": "deg"
+      },
+      "b": {
+        "type": "number",
+        "minimum": -90,
+        "maximum": 90,
+        "unit": "deg"
+      }
+    },
+    "steps": [
+      {
+        "id": "first",
+        "operation": "axis.position",
+        "arguments": {
+          "axis": "stage",
+          "angle": "${a}"
+        },
+        "after": []
+      },
+      {
+        "id": "second",
+        "operation": "axis.position",
+        "arguments": {
+          "axis": "aux",
+          "angle": "${b}"
+        },
+        "after": []
+      },
+      {
+        "id": "capture",
+        "operation": "meter.capture",
+        "after": [
+          "first",
+          "second"
+        ]
+      }
+    ],
+    "result": {
+      "power": {
+        "step": "capture",
+        "path": [
+          "power"
+        ]
+      }
+    }
+  }
+]

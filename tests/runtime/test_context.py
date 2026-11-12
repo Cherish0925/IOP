@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -100,6 +101,30 @@ class MCPCase(unittest.TestCase):
     setUp = fixture.ServiceCase.setUp
     tearDown = fixture.ServiceCase.tearDown
 
+    def test_toolsets_offer_part_of_the_tools(self):
+        import asyncio
+        from ai4instruments.iop import mcp
+
+        def names(selection):
+            server = mcp.create_server(self.client, selection=selection)
+            return {tool.name for tool in asyncio.run(server.list_tools())}, server.instructions
+        every, instructions = names(None)
+        grouped = [name for tools in mcp.TOOLSETS.values() for name in tools] + list(mcp.ALWAYS)
+        # A new tool must be placed in one toolset.
+        self.assertEqual(sorted(grouped), sorted(every))
+        self.assertNotIn('toolsets', instructions)
+        chosen, instructions = names('experiments, attention')
+        self.assertEqual(chosen, set(mcp.ALWAYS) | set(mcp.TOOLSETS['experiments']) | set(mcp.TOOLSETS['attention']))
+        self.assertIn('toolsets experiments, attention', instructions)
+        self.assertIn('setup, episodes', instructions)
+        with patch.dict(os.environ, {'IOP_MCP_TOOLSETS': 'episodes'}):
+            self.assertEqual(names(None)[0], set(mcp.ALWAYS) | set(mcp.TOOLSETS['episodes']))
+            self.assertEqual(names('all')[0], every)
+        with self.assertRaisesRegex(ValueError, 'Unknown toolsets: experiment; choose from all, setup'):
+            mcp.toolsets('experiment')
+        args = agent_configuration(Path('/lab'), toolsets='attention,experiments')['mcpServers']['iop']['args']
+        self.assertEqual(args[-3:], ['mcp', '--toolsets', 'experiments,attention'])
+
     def test_real_stdio_tools_configure_execute_and_retain_the_service(self):
         environment = dict(os.environ, IOP_TOKEN=self.config['token'])
         responses = queue.Queue()
@@ -145,20 +170,31 @@ class MCPCase(unittest.TestCase):
                 self.assertIn('submit_program', tools)
                 self.assertIn('request_id', tools['submit_experiment']['inputSchema']['required'])
                 context = call('lab_context', {})
+                selected = call('describe_instrument', {'device':'stage', 'operations':['pos*']})
+                missing = request('tools/call', {'name':'describe_instrument', 'arguments':{'device':'absent'}})
+                self.assertTrue(missing['isError'])
+                self.assertIn('not_found: Not found', missing['content'][0]['text'])
+                self.assertEqual(list(selected['operations']), ['position'])
                 self.assertEqual(context['status']['devices'], 3)
                 self.assertNotIn(self.config['token'], json.dumps(context))
                 definition = {'schema_version':1, 'id':'mcp-bench', 'devices':['stage']}
                 self.assertEqual(call('configure_platform', {'definition':definition})['revision'], 1)
+                self.assertEqual(call('describe_platform', {'platform':'mcp-bench'})['definition']['devices'], ['stage'])
                 self.assertEqual(self.client.request('/v1/runs'), [])
                 parameters = {'steps':[{'id':'read', 'device':'stage', 'operation':'position'}],
                               'platform':'mcp-bench', 'request_id':'mcp-read'}
                 run = call('submit_experiment', parameters)
                 self.assertEqual(call('submit_experiment', parameters)['id'], run['id'])
                 self.client.run(run['id']).result(5)
-                self.assertIn('read', call('experiment', {'run_id':run['id'], 'include_result':True})['result'])
+                inspected = call('experiment', {'run_id':run['id'], 'include_result':True, 'limit':1})
+                self.assertIn('read', inspected['result'])
+                self.assertEqual((len(inspected['operations']['operations']), inspected['more_files']), (1, False))
                 external = call('start_experiment', {'request_id':'adaptive-scan', 'resources':['stage']})
                 operation = {'run_id':external['id'], 'device':'stage', 'operation':'position', 'request_id':'adaptive-read'}
                 accepted_op = call('invoke_operation', operation)
+                waited = call('invoke_operation', dict(operation, request_id='adaptive-read-waited', wait=5))
+                self.assertEqual((waited['state'], waited['result']['unit']), ('completed', 'deg'))
+                self.assertNotIn('resources', waited)
                 completed_op = self.client.run(external['id']).invoke_record('stage', 'position', request_id='adaptive-read')
                 self.assertEqual(completed_op['id'], accepted_op['id'])
                 saved = call('save_experiment_file', {'run_id':external['id'], 'name':'point.json',
@@ -169,6 +205,10 @@ class MCPCase(unittest.TestCase):
                 submitted = call('submit_operations', {'run_id':external['id'], 'steps':batch_steps, 'request_id':'mcp-batch'})
                 batch = self.client.run(external['id']).batch(batch_steps, request_id='mcp-batch')
                 self.assertEqual(submitted['operations'][0]['id'], batch[0]['id'])
+                waited_batch = call('submit_operations', {'run_id':external['id'], 'steps':batch_steps,
+                                                          'request_id':'mcp-batch-waited', 'wait':5})
+                self.assertTrue(waited_batch['complete'])
+                self.assertEqual([op['result']['unit'] for op in waited_batch['operations']], ['deg', 'deg'])
                 acquired = call('save_acquisition', {'run_id':external['id'], 'name':'acquisition.json',
                     'operation_ids':[batch[-1]['id']], 'analysis':{'accepted':True}})
                 self.assertEqual(acquired['operation_ids'], [batch[-1]['id']])
@@ -182,15 +222,48 @@ class MCPCase(unittest.TestCase):
                 self.assertEqual(saved_episode['episode']['state'], 'ended')
                 self.assertEqual(saved_episode['transitions'][0]['operation_ids'], [batch[-1]['id']])
                 self.assertIn('connection_parameters', call('available_adapters', {})['adapters'][0])
+                self.assertIn('instruction', call('available_adapters', {'adapter':'manual'})['operation'])
                 self.assertEqual(call('finish_experiment', {'run_id':external['id']})['state'], 'completed')
                 self.assertEqual(call('release_instrument', {'device':'stage'})['state'], 'released')
                 self.assertEqual(call('reconnect_instrument', {'device':'stage'})['state'], 'connected')
+                self.client.register({'id':'hands', 'driver':'manual', 'config':{'operations':{'mount':{
+                    'instruction':'Mount the {part}', 'parameters':{'part':{'type':'string'}},
+                    'readings':{'seated':{'type':'boolean'}}}}}})
+                step = self.client.submit([{'id':'mount', 'device':'hands', 'operation':'mount', 'arguments':{'part':'lens'}}])
+                waiting = []
+                for _ in range(100):
+                    waiting = call('manual_tasks', {})
+                    if waiting:
+                        break
+                    time.sleep(0.05)
+                self.assertEqual(waiting[0]['instruction'], 'Mount the lens')
+                call('report_manual_step', {'operation_id':waiting[0]['operation_id'], 'status':'done',
+                                            'readings':{'seated':True}, 'by':'operator'})
+                self.assertEqual(step.result(5)['mount']['readings'], {'seated':True})
+                method = {'id':'axis.position', 'layer':'standard', 'description':'Move the stage and read where it arrived',
+                    'parameters':{'angle':{'type':'number', 'minimum':-90, 'maximum':90}},
+                    'steps':[{'id':'move', 'device':'stage', 'operation':'move_to', 'arguments':{'angle_deg':'${angle}'}},
+                             {'id':'read', 'device':'stage', 'operation':'position'}],
+                    'result':{'angle':{'step':'read', 'path':['angle_actual']}}}
+                self.assertEqual(call('saved_operations', {'definition':method})['revision'], 1)
+                self.assertEqual([item['id'] for item in call('saved_operations', {})], ['axis.position'])
+                self.assertEqual(call('lab_context', {})['operations']['standard'], ['axis.position'])
+                used = call('submit_experiment', {'steps':[{'id':'p', 'operation':'axis.position', 'arguments':{'angle':3}}],
+                                                  'request_id':'mcp-saved-operation'})
+                self.assertEqual(self.client.run(used['id']).result(5)['p'], {'angle':3})
+                self.assertEqual(call('saved_operations', {'operation':'axis.position'})['uses']['completed'], 1)
+                with tempfile.TemporaryDirectory() as folder:
+                    Path(folder, 'experiment.py').write_bytes(b'from ai4instruments.iop import Client\n')
+                    saved = call('saved_operations', {'definition':{'id':'stage.scan', 'layer':'workflow',
+                                 'description':'Scan the stage'}, 'program':folder})
+                self.assertEqual(saved['program']['files'], [{'name':'experiment.py', 'size':38}])
+                self.assertIn('Client', call('saved_operations', {'operation':'stage.scan', 'file':'experiment.py'})['text'])
                 accepted = call('submit_experiment', {'steps':[{'id':'wait', 'device':'aux', 'operation':'wait',
                                  'arguments':{'duration':0.5}}], 'request_id':'continue-after-agent'})
                 process.stdin.close()
                 process.wait(timeout=10)
                 self.assertEqual(self.client.run(accepted['id']).wait(5)['state'], 'completed')
-                self.assertEqual(self.client.request('/v1/status')['devices'], 3)
+                self.assertEqual(self.client.request('/v1/status')['devices'], 4)
                 self.assertEqual(process.returncode, 0)
             finally:
                 if process.poll() is None:

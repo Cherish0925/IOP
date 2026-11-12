@@ -1,10 +1,12 @@
 """Device drivers. Model-specific behavior stays in drivers and descriptions."""
 from __future__ import annotations
+import copy
 import importlib
 import math
 import socket
 import time
 from concurrent.futures import CancelledError
+from . import arrays, text_protocol
 from .store import now
 
 
@@ -50,6 +52,14 @@ def parameters(spec, supplied):
             raise ValueError(name + " must be one of " + str(field["enum"]))
         result[name] = value
     return result
+
+
+class UnconfirmedChange(RuntimeError):
+    """A change command may have reached the instrument, but its completion was not confirmed."""
+
+
+class Refused(RuntimeError):
+    """The instrument answered a command with an error reply: it did not act on it."""
 
 
 class Driver:
@@ -125,12 +135,19 @@ class SCPI(Driver):
         self.manager = None
         self.received = bytearray()
         self.expected_identity = None
+        self.transmitted = False
+        self.unconfirmed_change = self.config.get("unconfirmed_change", "fail")
+        if self.unconfirmed_change not in ("fail", "hold"):
+            raise ValueError("unconfirmed_change must be fail or hold")
         self.timeout = float(self.config.get("timeout", 5))
         if not math.isfinite(self.timeout) or self.timeout <= 0:
             raise ValueError("timeout must be positive")
         self.termination = self.config.get("termination", "\n")
         if not self.termination:
             raise ValueError("A text SCPI termination is required")
+        self.protocol_source = None
+        self._sync()
+        self.last_sent = 0.0
         transport = self.config.get('transport', 'tcp')
         required = {'tcp': 'host', 'serial': 'port', 'visa': 'resource'}
         if transport not in required:
@@ -144,16 +161,55 @@ class SCPI(Driver):
             if not isinstance(self.config['source_address'], str):
                 raise ValueError('source_address must be a local IP address string')
             ipaddress.ip_address(self.config['source_address'])
+        self.max_block_bytes = self.config.get('max_block_bytes', 256 * 1024 * 1024)
+        if type(self.max_block_bytes) is not int or self.max_block_bytes <= 0:
+            raise ValueError('max_block_bytes must be a positive integer')
+        if not isinstance(self.config.get('block_terminated', True), bool):
+            raise ValueError('block_terminated must be true or false')
+        # Result, reply and data descriptions are checked when the instrument is registered.
+        self.arrays, self.writes = {}, {}
+        self.readers, self.replies, self.finished = {}, {}, {}
+        for name, spec in self.config.get('operations', {}).items():
+            self._prepare(name, spec)
+
+    def _sync(self):
+        """Read protocol traits; a model description can add them after an identity query."""
+        source = self.config.get('protocol', {})
+        if source != self.protocol_source:
+            # Traits of command languages that are not SCPI; SCPI instruments need none of them.
+            self.protocol = text_protocol.protocol(source)
+            self.protocol_source = copy.deepcopy(source)
+            self.write_termination = self.protocol.get('write_termination', self.termination)
+            self.read_termination = self.protocol.get('read_termination', self.termination)
+
+    def _prepare(self, name, spec):
+        """Check how one operation's replies and data are read; operations can arrive with a model description."""
+        try:
+            self.readers[name], self.replies[name], self.finished[name] = text_protocol.operation(spec)
+            if spec.get('result', {}).get('type') == 'array':
+                if 'query' not in spec:
+                    raise ValueError('an array result needs a query')
+                self.arrays[name] = arrays.check_result(spec['result'])
+            if 'data' in spec:
+                if 'write' not in spec:
+                    raise ValueError('binary data is sent with a write command')
+                self.writes[name] = arrays.check_data(spec['data'], spec.get('parameters', {}))
+        except ValueError as error:
+            raise ValueError(f'Operation {name}: {error}') from None
 
     def describe(self):
+        self._sync()
         operations = {
             "identify":{"description":"Read SCPI identification", "effect":"observe", "parameters":{}, "query":"*IDN?"},
             "query":{"description":"Send a text query and read its response", "parameters":{"command":{"type":"string"}}},
             "write":{"description":"Send a command", "parameters":{"command":{"type":"string"}}},
         }
+        if not self.protocol['identify']:
+            del operations['identify']
         operations.update(self.config.get("operations", {}))
         connection = {k: self.config[k] for k in ('host', 'port', 'resource', 'backend', 'baudrate',
-            'bytesize', 'parity', 'stopbits', 'xonxoff', 'rtscts', 'dsrdtr', 'timeout', 'termination', 'source_address') if k in self.config}
+            'bytesize', 'parity', 'stopbits', 'xonxoff', 'rtscts', 'dsrdtr', 'timeout', 'termination', 'source_address',
+            'unconfirmed_change', 'max_block_bytes', 'block_terminated', 'protocol') if k in self.config}
         return {"name":self.config.get("name", self.id), "mode":"hardware", "transport":self.config.get("transport", "tcp"), 'connection': connection,
                 "operations":operations}
 
@@ -179,8 +235,8 @@ class SCPI(Driver):
             self.manager = pyvisa.ResourceManager(backend) if backend else pyvisa.ResourceManager()
             self.connection = self.manager.open_resource(self.config["resource"])
             self.connection.timeout = self.timeout * 1000
-            self.connection.read_termination = self.termination
-            self.connection.write_termination = self.termination
+            self.connection.read_termination = self.read_termination
+            self.connection.write_termination = self.write_termination
         else:
             raise ValueError("Unknown SCPI transport: " + kind)
         if self.expected_identity:
@@ -188,48 +244,128 @@ class SCPI(Driver):
             verify_identity(self.expected_identity, parse_identity(self.exchange('*IDN?', True)))
 
     def exchange(self, command, read=False):
+        """Send one command; with read, return its reply line."""
         if "\n" in command or "\r" in command:
             raise ValueError("Use one text command per operation")
         try:
             self.connect()
+            wait = self.protocol['min_interval'] - (time.monotonic() - self.last_sent)
+            if wait > 0:
+                time.sleep(wait)
             kind = self.config.get("transport", "tcp")
+            self.transmitted = True
             if kind == "visa":
-                return self.connection.query(command).strip() if read else self.connection.write(command)
-            wire = (command + self.termination).encode(self.config.get("encoding", "ascii"))
-            if kind == "tcp":
+                self.connection.write(command)
+            elif kind == "tcp":
+                self.connection.sendall((command + self.write_termination).encode(self.config.get("encoding", "ascii")))
+            else:
+                self.connection.write((command + self.write_termination).encode(self.config.get("encoding", "ascii")))
+            self.last_sent = time.monotonic()
+            if self.protocol['echo']:
+                echoed = self._line()
+                if echoed.strip() != command.strip():
+                    raise ValueError(f'Expected the echo of {command!r}; received {echoed!r}')
+            return self._line() if read else None
+        except Exception:
+            self.close()
+            raise
+
+    def _line(self):
+        """One reply line without its terminator."""
+        kind = self.config.get("transport", "tcp")
+        if kind == "visa":
+            return self.connection.read().strip()
+        terminator = self.read_termination.encode(self.config.get('encoding', 'ascii'))
+        deadline = time.monotonic() + self.timeout
+        search_from = 0
+        while True:
+            end = self.received.find(terminator, search_from)
+            if end >= 0:
+                response = bytes(self.received[:end])
+                del self.received[:end + len(terminator)]
+                if kind == 'tcp':
+                    self.connection.settimeout(self.timeout)
+                else:
+                    self.connection.timeout = self.timeout
+                return response.decode(self.config.get('encoding', 'ascii'))
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Instrument response timed out")
+            search_from = max(0, len(self.received) - len(terminator) + 1)
+            if kind == 'tcp':
+                self.connection.settimeout(remaining)
+                chunk = self.connection.recv(65536)
+            else:
+                self.connection.timeout = remaining
+                chunk = self.connection.read(min(65536, max(1, self.connection.in_waiting)))
+            if not chunk:
+                raise TimeoutError("Instrument returned no complete response")
+            self.received.extend(chunk)
+            if len(self.received) > 8 * 1024 * 1024:
+                raise ValueError("Response exceeds text-query size")
+
+    def _receive(self):
+        """Read more bytes; raise after `timeout` seconds without data, so large blocks may take longer."""
+        if self.config.get('transport', 'tcp') == 'tcp':
+            self.connection.settimeout(self.timeout)
+            chunk = self.connection.recv(65536)
+            if not chunk:
+                raise ConnectionError('Instrument closed the connection')
+        else:
+            self.connection.timeout = self.timeout
+            chunk = self.connection.read(min(65536, max(1, self.connection.in_waiting)))
+            if not chunk:
+                raise TimeoutError('Instrument response timed out')
+        self.received.extend(chunk)
+
+    def exchange_block(self, command, payload=None):
+        """Send a command followed by an IEEE 488.2 block, or query and return the block received."""
+        if "\n" in command or "\r" in command:
+            raise ValueError("Use one text command per operation")
+        encoding = self.config.get('encoding', 'ascii')
+        terminator = self.read_termination.encode(encoding)
+        terminated = self.config.get('block_terminated', True)
+        try:
+            self.connect()
+            kind = self.config.get('transport', 'tcp')
+            if payload is not None:
+                wire = command.encode(encoding) + arrays.block(payload) + self.write_termination.encode(encoding)
+                self.transmitted = True
+                if kind == 'tcp':
+                    self.connection.sendall(wire)
+                elif kind == 'serial':
+                    self.connection.write(wire)
+                else:
+                    self.connection.write_raw(wire)
+                return None
+            if kind == 'visa':
+                self.transmitted = True
+                data = self.connection.query_binary_values(command, datatype='s', container=bytes,
+                                                           expect_termination=terminated)
+                if len(data) > self.max_block_bytes:
+                    raise ValueError('Binary block exceeds max_block_bytes')
+                return data
+            wire = (command + self.write_termination).encode(encoding)
+            self.transmitted = True
+            if kind == 'tcp':
                 self.connection.sendall(wire)
             else:
                 self.connection.write(wire)
-            if not read:
-                return None
-            terminator = self.termination.encode(self.config.get('encoding', 'ascii'))
-            deadline = time.monotonic() + self.timeout
-            search_from = 0
-            while True:
-                end = self.received.find(terminator, search_from)
-                if end >= 0:
-                    response = bytes(self.received[:end])
-                    del self.received[:end + len(terminator)]
-                    if kind == 'tcp':
-                        self.connection.settimeout(self.timeout)
-                    else:
-                        self.connection.timeout = self.timeout
-                    return response.decode(self.config.get('encoding', 'ascii'))
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise TimeoutError("Instrument response timed out")
-                search_from = max(0, len(self.received) - len(terminator) + 1)
-                if kind == 'tcp':
-                    self.connection.settimeout(remaining)
-                    chunk = self.connection.recv(65536)
-                else:
-                    self.connection.timeout = remaining
-                    chunk = self.connection.read(min(65536, max(1, self.connection.in_waiting)))
-                if not chunk:
-                    raise TimeoutError("Instrument returned no complete response")
-                self.received.extend(chunk)
-                if len(self.received) > 8 * 1024 * 1024:
-                    raise ValueError("Response exceeds text-query size")
+            while (parsed := arrays.parse_block(self.received)) is None:
+                if len(self.received) > self.max_block_bytes + 16:
+                    raise ValueError('Binary block exceeds max_block_bytes')
+                self._receive()
+            data, end = parsed
+            if len(data) > self.max_block_bytes:
+                raise ValueError('Binary block exceeds max_block_bytes')
+            del self.received[:end]
+            if terminated:
+                while len(self.received) < len(terminator) and terminator.startswith(bytes(self.received)):
+                    self._receive()
+                if not self.received.startswith(terminator):
+                    raise ValueError('Expected the response terminator after the binary block')
+                del self.received[:len(terminator)]
+            return data
         except Exception:
             self.close()
             raise
@@ -238,25 +374,67 @@ class SCPI(Driver):
         if cancelled.is_set():
             raise CancelledError()
         spec = self.describe()["operations"][operation]
+        if operation not in self.readers:
+            self._prepare(operation, spec)
         is_query = operation == "query" or "query" in spec
         template = spec.get("query", spec.get("write"))
         command = template.format_map(arguments) if template else arguments["command"]
-        value = self.exchange(command, is_query)
         completion = spec.get("completion")
-        if completion:
-            deadline = time.monotonic() + float(completion.get("timeout", 30))
-            while True:
-                observed = self.exchange(completion["query"].format_map(arguments), True)
-                if observed == str(completion.get("equals", "1")):
-                    break
-                if time.monotonic() >= deadline:
-                    raise TimeoutError("Completion response did not arrive")
-                if cancelled.wait(float(completion.get("interval", 0.1))):
-                    raise CancelledError('Operation cancelled')
+        array_spec, data_spec = self.arrays.get(operation), self.writes.get(operation)
+        payload = None
+        if data_spec:
+            payload = arrays.encode(arguments[data_spec['parameter']], data_spec['dtype'], data_spec['byte_order'])
+        # Identity verification on a new connection is not this operation's command.
+        try:
+            self.connect()
+        except Exception:
+            self.close()
+            raise
+        self.transmitted = False
+        # A write is acknowledged when the operation or the protocol says so.
+        expected = self.replies.get(operation)
+        if expected is None:
+            expected = self.protocol['write_reply']
+        try:
+            if payload is not None:
+                value = self.exchange_block(command, payload)
+            elif array_spec and array_spec['encoding'] == 'block':
+                value = self.exchange_block(command)
+            else:
+                value = self.exchange(command, is_query or expected is not False)
+                self._accept(command, value, None if is_query else expected)
+            if completion:
+                deadline = time.monotonic() + float(completion.get("timeout", 30))
+                finished = self.finished.get(operation)
+                while True:
+                    query = completion["query"].format_map(arguments)
+                    observed = self.exchange(query, True)
+                    self._accept(query, observed)
+                    if finished.search(observed) if finished else observed == str(completion.get("equals", "1")):
+                        break
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("Completion response did not arrive")
+                    if cancelled.wait(float(completion.get("interval", 0.1))):
+                        raise CancelledError('Operation cancelled')
+        except Refused:
+            raise
+        except Exception as error:
+            # Once a change command has left this computer, a lost reply does not show
+            # whether the instrument acted. Optionally keep that outcome open.
+            if (self.unconfirmed_change == "hold" and self.transmitted
+                    and spec.get("effect", "change") != "observe"):
+                raise UnconfirmedChange(
+                    f"{command!r} was sent; completion was not confirmed ({type(error).__name__}: {error})") from error
+            raise
         result = {"time":now(), "source":"device" if is_query else "driver", "command":command}
-        if is_query:
+        if array_spec:
+            if array_spec['encoding'] == 'ascii':
+                value = arrays.encode(arrays.parse_ascii(value, array_spec['separator']), 'float64', array_spec['byte_order'])
+            result.update(arrays.result(value, array_spec, cancelled, operation))
+        elif is_query:
             encoding = spec.get("result", {})
-            result["value"] = float(value) if encoding.get("type") == "number" else value
+            reader = self.readers.get(operation)
+            result["value"] = reader(value) if reader else value
             if operation == 'identify':
                 from .identification import parse_identity
                 try:
@@ -267,9 +445,23 @@ class SCPI(Driver):
                 result["unit"] = encoding["unit"]
         else:
             result["sent"] = True
+            if payload is not None:
+                result["data_bytes"] = len(payload)
+            elif value is not None:
+                result["reply"] = value
         if completion:
             result["completion_response"] = observed
         return result
+
+    def _accept(self, command, reply, expected=None):
+        """Fail when the instrument answered with an error; it did not act, so nothing is unconfirmed."""
+        if reply is None:
+            return
+        error = self.protocol['error_reply']
+        if error and error.search(reply):
+            raise Refused(f'The instrument answered {command!r} with {reply!r}')
+        if expected not in (None, True, False) and not expected.search(reply):
+            raise Refused(f'The instrument answered {command!r} with {reply!r}; expected {expected.pattern!r}')
 
     def close(self):
         self.received.clear()
@@ -284,6 +476,8 @@ class SCPI(Driver):
 
 def make_driver(record, registry):
     execution = record.get('execution', {})
+    if execution and record.get('driver') == 'manual':
+        raise ValueError('Manual steps wait in the service; remove execution')
     if execution:
         if execution.get('mode') != 'process' or record.get('driver') == 'process':
             raise ValueError('Use execution.mode=process for an installed instrument driver')
@@ -301,6 +495,21 @@ def make_driver(record, registry):
     builtins = {"simulated":Simulated, "simulated-lab":Laboratory, "scpi":SCPI, "modbus":Modbus, "http":HTTP, "command":Command}
     if name in builtins:
         cls = builtins[name]
+    elif name == 'qcodes':
+        from .qcodes_driver import QCoDeS
+        cls = QCoDeS
+    elif name == 'manual':
+        from .manual import Manual
+        cls = Manual
+    elif name == 'opcua':
+        from .opcua_driver import OPCUA
+        cls = OPCUA
+    elif name == 'epics':
+        from .epics_driver import EPICS
+        cls = EPICS
+    elif name == 'python':
+        from .python_driver import PythonObject
+        cls = PythonObject
     else:
         module, separator, class_name = name.partition(":")
         if not separator:

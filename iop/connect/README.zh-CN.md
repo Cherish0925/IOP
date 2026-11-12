@@ -8,7 +8,7 @@ IOP Runtime 常驻在操纵仪器的计算机上。插件把选定的实验室�
 
 在 Agentic Research OS 打开 **Extensions → Plugins → Add from link**，
 填写 `https://github.com/Cherish0925/IOP`，选择 **iop-lab**，安装并激活。
-仪器电脑先安装 [IOP Runtime 0.8.5](https://github.com/Cherish0925/IOP/releases/tag/iop-v0.8.7)。
+仪器电脑先安装 [IOP Runtime](https://github.com/Cherish0925/IOP/releases/latest)。
 直接从 GitHub 安装的插件使用工具执行端 PATH 中的 `iop`；需要指定完整路径或远端实验室时，使用下面的具名连接，导入返回的 `research_os` 目录。
 
 Codex：`codex plugin marketplace add Cherish0925/IOP`，再执行 `codex plugin add iop-lab@iop`。

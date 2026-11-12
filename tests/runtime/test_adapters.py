@@ -71,6 +71,69 @@ class ModbusCase(unittest.TestCase):
         finally:a.close();b.close();server.shutdown();server.server_close()
 
 
+class ModbusValueCase(unittest.TestCase):
+    def test_values_spanning_registers_follow_the_stated_orders(self):
+        from ai4instruments.iop.adapters import decode_registers, encode_registers, modbus_value
+        # 123.456 as float32 is 0x42F6E979.
+        for registers, orders in (([0x42F6, 0xE979], ('big', 'big')), ([0xE979, 0x42F6], ('little', 'big')),
+                                  ([0xF642, 0x79E9], ('big', 'little')), ([0x79E9, 0xF642], ('little', 'little'))):
+            self.assertAlmostEqual(decode_registers(registers, 'float32', *orders)[0], 123.456, places=4)
+            self.assertEqual(encode_registers(123.456, 'float32', *orders), registers)
+        self.assertEqual(decode_registers([0xFFFF, 0xFFFE, 0x0001, 0x0000], 'int32'), [-2, 65536])
+        self.assertEqual(encode_registers(-2, 'int32', 'little'), [0xFFFE, 0xFFFF])
+        self.assertEqual(decode_registers(encode_registers(1.5e300, 'float64'), 'float64'), [1.5e300])
+        with self.assertRaisesRegex(ValueError, 'multiple of 2'):
+            decode_registers([1, 2, 3], 'uint32')
+        with self.assertRaisesRegex(ValueError, 'outside the uint32 range'):
+            encode_registers(-1, 'uint32')
+        with self.assertRaisesRegex(ValueError, 'write_registers'):
+            modbus_value({'function': 'write_register', 'value_parameter': 'x', 'type': 'float32'})
+        self.assertEqual(modbus_value({'signed': True}), ('int16', 'big', 'big'))
+
+    @unittest.skipUnless(importlib.util.find_spec('pymodbus'), 'Install the devices extra for Modbus communication')
+    def test_named_operations_read_and_write_floats_and_long_integers(self):
+        registers = {10: 0xE979, 11: 0x42F6, 20: 0xFFFF, 21: 0xFFFE, 22: 0x0001, 23: 0x0000}
+
+        class Instrument(socketserver.StreamRequestHandler):
+            def handle(self):
+                while True:
+                    header = self.rfile.read(7)
+                    if not header:
+                        return
+                    tid, _, size, unit = struct.unpack('>HHHB', header)
+                    pdu = self.rfile.read(size - 1)
+                    if pdu[0] == 3:
+                        address, count = struct.unpack('>HH', pdu[1:])
+                        body = bytes([3, count * 2]) + struct.pack('>' + 'H' * count, *[registers.get(address + i, 0) for i in range(count)])
+                    elif pdu[0] == 16:
+                        address, count = struct.unpack('>HH', pdu[1:5])
+                        for index, value in enumerate(struct.unpack('>' + 'H' * count, pdu[6:6 + 2 * count])):
+                            registers[address + index] = value
+                        body = pdu[:5]
+                    else:
+                        body = bytes([pdu[0] | 128, 1])
+                    self.wfile.write(struct.pack('>HHHB', tid, 0, len(body) + 1, unit) + body)
+                    self.wfile.flush()
+        server = socketserver.ThreadingTCPServer(('127.0.0.1', 0), Instrument)
+        server.daemon_threads = True
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        meter = Modbus('meter', {'host': '127.0.0.1', 'port': server.server_address[1], 'operations': {
+            'flow': {'function': 'read_holding_registers', 'arguments': {'address': 10}, 'type': 'float32',
+                     'word_order': 'little', 'unit': 'sccm'},
+            'counters': {'function': 'read_holding_registers', 'arguments': {'address': 20, 'count': 4}, 'type': 'int32', 'scale': 0.5},
+            'set_flow': {'function': 'write_registers', 'arguments': {'address': 30}, 'type': 'float32', 'word_order': 'little',
+                         'value_parameter': 'sccm', 'parameters': {'sccm': {'type': 'number', 'minimum': 0, 'maximum': 500}}}}}, {})
+        try:
+            flow = meter.invoke('flow', {}, threading.Event())
+            self.assertAlmostEqual(flow['value'], 123.456, places=4)
+            self.assertEqual((flow['unit'], flow['values']), ('sccm', [0xE979, 0x42F6]))
+            self.assertEqual(meter.invoke('counters', {}, threading.Event())['decoded'], [-1.0, 32768.0])
+            self.assertTrue(meter.invoke('set_flow', {'sccm': 123.456}, threading.Event())['acknowledged'])
+            self.assertEqual((registers[30], registers[31]), (0xE979, 0x42F6))
+        finally:
+            meter.close(); server.shutdown(); server.server_close()
+
+
 class LaboratoryCase(unittest.TestCase):
     def test_temperature_dosing_weighing_and_acquisition_share_one_runtime(self):
         with tempfile.TemporaryDirectory() as home:

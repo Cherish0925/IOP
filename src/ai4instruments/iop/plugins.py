@@ -7,7 +7,12 @@ def adapters():
         ('scpi', 'SCPI over TCP, serial and VISA'),
         ('modbus', 'Modbus TCP and RTU'),
         ('http', 'HTTP JSON operations'),
+        ('opcua', 'OPC UA servers, with operations, ranges and units from their address space'),
+        ('epics', 'EPICS Channel Access process variables, with units, limits and put completion'),
         ('command', 'Executable programs and command-line solvers'),
+        ('qcodes', 'QCoDeS instrument drivers, with operations from their parameter metadata'),
+        ('python', 'Objects of installed Python libraries and vendor SDKs, with operations bound to their methods'),
+        ('manual', 'Steps a person performs, with instructions and reported readings'),
         ('process', 'Independent SDK workers using JSON lines'),
         ('simulated', 'In-process demonstration instruments'),
         ('simulated-lab', 'Simulated laboratory components'),
@@ -15,7 +20,17 @@ def adapters():
     result = [{'name': name, 'source': 'builtin', 'description': description} for name, description in builtin]
     result[0]['connection_parameters'] = {
         'common': {'timeout': {'type':'number', 'default':5, 'unit':'s'},
-                   'termination': {'type':'string', 'default':'\n'}},
+                   'termination': {'type':'string', 'default':'\n'},
+                   'unconfirmed_change': {'type':'string', 'default':'fail', 'enum':['fail','hold'],
+                       'description':'hold: a change operation whose command was sent but whose reply or completion did not arrive keeps the device unavailable until its state is observed and recorded'},
+                   'max_block_bytes': {'type':'integer', 'default':268435456, 'unit':'byte',
+                       'description':'Largest IEEE 488.2 binary block accepted from the instrument'},
+                   'block_terminated': {'type':'boolean', 'default':True,
+                       'description':'The instrument sends the response terminator after a binary block'},
+                   'protocol': {'type':'object',
+                       'description':'For text command languages that are not SCPI: read_termination, write_termination, '
+                                     'identify (false without *IDN?), error_reply (pattern), write_reply (true or {"match": pattern}), '
+                                     'echo, min_interval (s)'}},
         'tcp': {'host': {'type':'string', 'required':True}, 'port': {'type':'integer', 'default':5025},
                 'source_address': {'type':'string', 'description':'Local IPv4 or IPv6 address of the instrument-facing network interface; omit to use system routing'}},
         'serial': {'port': {'type':'string', 'required':True}, 'baudrate': {'type':'integer', 'default':9600},

@@ -13,7 +13,13 @@
       "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$"
     },
     "driver": {
-      "const": "scpi"
+      "enum": [
+        "scpi",
+        "modbus",
+        "http"
+      ],
+      "default": "scpi",
+      "description": "Driver whose operations the description holds. SDK drivers describe their own operations."
     },
     "match": {
       "type": "object",
@@ -126,32 +132,165 @@
                 "minLength": 1
               },
               "result": {
-                "type": "object"
-              }
-            },
-            "oneOf": [
-              {
+                "type": "object",
+                "description": "scpi: type (number, integer, boolean, string or array), unit, match, scale, offset, map"
+              },
+              "data": {
+                "type": "object",
                 "required": [
-                  "query"
+                  "parameter",
+                  "dtype"
                 ],
-                "not": {
-                  "required": [
-                    "write"
-                  ]
+                "description": "Binary block sent after the write command; see docs/runtime/drivers.md",
+                "properties": {
+                  "parameter": {
+                    "type": "string"
+                  },
+                  "dtype": {
+                    "enum": [
+                      "int8",
+                      "uint8",
+                      "int16",
+                      "uint16",
+                      "int32",
+                      "uint32",
+                      "int64",
+                      "uint64",
+                      "float32",
+                      "float64"
+                    ]
+                  },
+                  "byte_order": {
+                    "enum": [
+                      "little",
+                      "big"
+                    ]
+                  }
                 }
               },
-              {
-                "required": [
-                  "write"
+              "effect": {
+                "enum": [
+                  "observe",
+                  "change"
+                ]
+              },
+              "completion": {
+                "type": "object",
+                "description": "scpi: query with equals or match, interval and timeout"
+              },
+              "function": {
+                "enum": [
+                  "read_holding_registers",
+                  "read_input_registers",
+                  "read_coils",
+                  "read_discrete_inputs",
+                  "write_register",
+                  "write_registers",
+                  "write_coil"
+                ]
+              },
+              "arguments": {
+                "type": "object"
+              },
+              "value_parameter": {
+                "type": "string"
+              },
+              "scale": {
+                "type": "number"
+              },
+              "offset": {
+                "type": "number"
+              },
+              "signed": {
+                "type": "boolean"
+              },
+              "unit": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "method": {
+                "enum": [
+                  "GET",
+                  "POST",
+                  "PUT",
+                  "PATCH",
+                  "DELETE"
+                ]
+              },
+              "body": {},
+              "result_path": {
+                "type": "array"
+              },
+              "reply": {
+                "description": "scpi write: true, false or {\"match\": pattern} for its acknowledgment line"
+              },
+              "type": {
+                "enum": [
+                  "uint16",
+                  "int16",
+                  "uint32",
+                  "int32",
+                  "float32",
+                  "uint64",
+                  "int64",
+                  "float64"
                 ],
-                "not": {
-                  "required": [
-                    "query"
-                  ]
-                }
+                "description": "modbus: how the value is held in registers; default uint16"
+              },
+              "word_order": {
+                "enum": [
+                  "big",
+                  "little"
+                ],
+                "description": "modbus: order of the registers of one value; default big (high word first)"
+              },
+              "byte_order": {
+                "enum": [
+                  "big",
+                  "little"
+                ],
+                "description": "modbus: order of the two bytes within a register; default big"
               }
-            ]
+            },
+            "description": "scpi: exactly one of query or write. modbus: function, with fixed arguments, type, word_order, byte_order, scale, offset, unit and value_parameter. http: path, method, query, body, result_path and unit."
           }
+        },
+        "protocol": {
+          "type": "object",
+          "description": "scpi: traits of a text command language that is not SCPI; see docs/runtime/drivers.md",
+          "properties": {
+            "read_termination": {
+              "type": "string",
+              "minLength": 1
+            },
+            "write_termination": {
+              "type": "string",
+              "minLength": 1
+            },
+            "identify": {
+              "type": "boolean",
+              "description": "false: the instrument has no *IDN? query"
+            },
+            "error_reply": {
+              "type": "string",
+              "description": "Pattern of replies that report an error"
+            },
+            "write_reply": {
+              "description": "true or {\"match\": pattern}: every write is answered with one line"
+            },
+            "echo": {
+              "type": "boolean"
+            },
+            "min_interval": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 60
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

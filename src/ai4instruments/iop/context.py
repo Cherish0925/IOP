@@ -9,7 +9,7 @@ from .plugins import adapters
 from .store import dumps, now
 
 
-SCHEMAS = ('device', 'platform', 'workflow', 'instrument-profile')
+SCHEMAS = ('device', 'platform', 'workflow', 'instrument-profile', 'operation')
 
 
 def schema_document(name):
@@ -19,6 +19,19 @@ def schema_document(name):
     if not path.exists():
         path = Path(__file__).resolve().parents[3] / 'iop/schema' / path.name
     return json.loads(path.read_text(encoding='utf-8'))
+
+
+# Overviews list this many operation names per device; describe_instrument returns all of them.
+SUMMARY_OPERATIONS = 24
+# Names of saved Standard and Workflow Operations listed per layer; saved_operations returns all of them.
+SAVED_OPERATIONS = 50
+
+
+def operation_names(names):
+    names = list(names)
+    if len(names) <= SUMMARY_OPERATIONS:
+        return {'operations': names}
+    return {'operations': names[:SUMMARY_OPERATIONS], 'operations_omitted': len(names) - SUMMARY_OPERATIONS}
 
 
 def laboratory(engine, refresh=False, detail='summary'):
@@ -81,6 +94,19 @@ def laboratory(engine, refresh=False, detail='summary'):
         result['next_steps'].append({'action': 'discover', 'reason': 'The first connection inventory is not available yet.'})
     if result['setup']['offline_devices']:
         result['next_steps'].append({'action': 'reconnect', 'devices': sorted(result['setup']['offline_devices'])})
+    monitors = engine.monitors.summary()
+    alerts = [{'device': m['device'], 'monitor': m['id'], 'state': m['state']} for m in monitors if m['state'] in ('violation', 'error')]
+    if alerts:
+        result['next_steps'].append({'action': 'inspect_monitors', 'monitors': alerts,
+                                     'resolve': '/v1/resources/resolve' if engine.resource_holds else None})
+    from .manual import tasks
+    waiting = tasks(engine)
+    if waiting:
+        result['next_steps'].append({'action': 'manual_tasks', 'count': len(waiting)})
+    from .calibration import expired
+    stale = sorted(d['id'] for d in devices if expired(d.get('calibration')))
+    if stale:
+        result['next_steps'].append({'action': 'renew_calibration', 'devices': stale})
     for platform_id, missing in result['setup']['missing_platform_devices'].items():
         result['next_steps'].append({'action': 'restore_platform_devices', 'platform': platform_id, 'devices': missing})
     result['operation'] = {
@@ -95,12 +121,28 @@ def laboratory(engine, refresh=False, detail='summary'):
         'request_id': 'Reuse the same request_id when retrying the same experiment submission.',
         'changes': '/v1/context/changes?after={cursor}',
         'instrument_catalog': '/v1/instrument-catalog',
+        'saved_operations': '/v1/library; a step without device uses one by name',
     }
+    # The three roles of operations: device operations are Basic; saved methods are Standard and Workflow.
+    saved = engine.saved_operations()
+    result['operations'] = {'basic': sum(len(d['operations']) for d in devices)}
+    for layer in ('standard', 'workflow'):
+        names = [o['id'] for o in saved if o['layer'] == layer]
+        result['operations'][layer] = names[:SAVED_OPERATIONS]
+        if len(names) > SAVED_OPERATIONS:
+            result['operations'][layer + '_omitted'] = len(names) - SAVED_OPERATIONS
+    unavailable = {o['id']: o['unavailable'] for o in saved if o.get('unavailable')}
+    if unavailable:
+        result['setup']['unavailable_operations'] = unavailable
+        result['next_steps'].append({'action': 'repair_saved_operations', 'operations': sorted(unavailable),
+                                     'details': '/v1/library/{id}'})
     if detail == 'summary':
         states = engine.device_states()
         result['devices'] = [{k: v for k, v in d.items() if k in
-            ('id', 'name', 'driver', 'mode', 'identity', 'revision', 'operations')} |
-            {'status': states.get(d['id'], {}), 'description': '/v1/devices/' + d['id']}
+            ('id', 'name', 'driver', 'mode', 'identity', 'revision')} | operation_names(d['operations']) |
+            {'status': states.get(d['id'], {}), 'description': '/v1/devices/' + d['id']} |
+            ({'calibration': {k: d['calibration'][k] for k in ('id', 'valid_until') if k in d['calibration']}}
+             if d.get('calibration') else {})
             for d in devices[:100]]
         if len(devices) > 100:
             result['devices_page'] = {'total': len(devices), 'next': '/v1/context/devices?offset=100'}
@@ -121,7 +163,7 @@ def device_page(engine, offset=0, limit=100):
         rows = list(engine.descriptions.values())
         states = engine.device_states()
         devices = [{k: v for k, v in row.items() if k in ('id', 'name', 'driver', 'mode', 'identity', 'revision')} |
-                   {'operations': list(row['operations']), 'status': states.get(row['id'], {}),
+                   operation_names(row['operations']) | {'status': states.get(row['id'], {}),
                     'description': '/v1/devices/' + row['id']} for row in rows[offset:offset + limit]]
         return {'devices': devices, 'total': len(rows), 'offset': offset,
                 'next': f'/v1/context/devices?offset={offset + limit}&limit={limit}' if offset + limit < len(rows) else None}
@@ -143,9 +185,12 @@ def changes(engine, after=0, limit=100, wait=0):
     return {'changes': records, 'cursor': events[-1]['sequence'] if events else int(after)}
 
 
-def agent_configuration(home, endpoint=None):
+def agent_configuration(home, endpoint=None, toolsets=None):
     args = ['-m', 'ai4instruments.iop', '--home', str(home)]
     if endpoint:
         args += ['--endpoint', endpoint]
     args += ['mcp']
+    if toolsets:
+        from .mcp import toolsets as chosen
+        args += ['--toolsets', ','.join(chosen(toolsets))]
     return {'mcpServers': {'iop': {'command': sys.executable, 'args': args}}}

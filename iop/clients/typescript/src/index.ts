@@ -1,4 +1,4 @@
-export type Step = { id: string; device: string; operation: string; arguments?: Record<string, unknown>; after?: string[]; resources?: string[]; requirements?: Record<string, number>; bindings?: Record<string, { step: string; path?: (string | number)[] }> };
+export type Step = { id: string; device?: string; operation: string; arguments?: Record<string, unknown>; after?: string[]; resources?: string[]; requirements?: Record<string, number>; bindings?: Record<string, { step: string; path?: (string | number)[] }> };
 export type Endpoint = { device: string; port: string };
 export type Procedure = { steps: Step[]; resources?: string[] };
 export type PlatformDefinition = {
@@ -13,6 +13,7 @@ export type OperationRecord = RunRecord & { run_id: string; device: string; oper
 export type BatchRecord = { request_id: string; run_id: string; complete: boolean; operations: OperationRecord[] };
 export type ArtifactRecord = { id: string; run_id: string; name: string; size: number; media_type: string; created: string; operation_ids?: string[] };
 export type Event = { sequence: number; kind: string; run_id?: string; [key: string]: unknown };
+export type ManualTask = { operation_id: string; run_id: string | null; device: string; operation: string; instruction: string; arguments: Record<string, unknown>; readings: Record<string, Record<string, unknown>>; created: string };
 export type RunUpdates = { run: RunRecord; changes: Event[]; operations: OperationRecord[]; cursor: number; has_more: boolean };
 export type Submission = { name?: string; project?: string; experiment?: string; platform?: string; resources?: string[]; requirements?: Record<string, number>; parameters?: Record<string, unknown>; request_id?: string };
 export class IOPError extends Error {
@@ -45,7 +46,7 @@ export class IOP {
   devicePage(offset = 0, limit = 100) { return this.request('/v1/context/devices?' + new URLSearchParams({offset:String(offset),limit:String(limit)})); }
   deviceHistory(device: string) { return this.request<{id: string; revision: number; definition: Record<string, unknown>}[]>(`/v1/devices/${encodeURIComponent(device)}/history`); }
   configureDevice(device: string, definition: Record<string, unknown>, expectedRevision: number) { return this.request(`/v1/devices/${encodeURIComponent(device)}/configuration`, { definition, expected_revision: expectedRevision }); }
-  schema(name: 'device' | 'platform' | 'workflow' | 'instrument-profile') { return this.request<Record<string, unknown>>('/v1/schemas/' + name); }
+  schema(name: 'device' | 'platform' | 'workflow' | 'instrument-profile' | 'operation') { return this.request<Record<string, unknown>>('/v1/schemas/' + name); }
   discover() { return this.request<Record<string, unknown>>('/v1/discovery'); }
   startDiscovery() { return this.request<Record<string, unknown>>('/v1/discovery', {}); }
   inventory() { return this.request<Record<string, unknown>>('/v1/discovery?cached=true'); }
@@ -59,6 +60,7 @@ export class IOP {
   }
   registerMany(devices: Record<string, unknown>[]) { return this.request('/v1/devices/batch', { devices }); }
   adapters() { return this.request<Record<string, unknown>[]>('/v1/adapters'); }
+  adapterReference(name: string) { return this.request<Record<string, unknown>>('/v1/adapters?' + new URLSearchParams({ name })); }
   instrumentCatalog(options: { manufacturer?: string; model?: string; serial_number?: string; firmware?: string; id?: string; offset?: number; limit?: number; details?: boolean } = {}) {
     const query = new URLSearchParams(Object.entries(options).map(([key, value]) => [key, String(value)]));
     return this.request<{profiles: Record<string, unknown>[]; total: number; offset: number; next_offset: number | null; errors: Record<string, unknown>[]}>(`/v1/instrument-catalog?${query}`);
@@ -67,6 +69,26 @@ export class IOP {
   configureResources(capacities: Record<string, number>) { return this.request('/v1/resources', { capacities }); }
   reconnect(device: string) { return this.request('/v1/devices/' + encodeURIComponent(device) + '/reconnect', {}); }
   release(device: string) { return this.request('/v1/devices/' + encodeURIComponent(device) + '/release', {}); }
+  resolveResources(resources: string[], observation: string) { return this.request<{released: string[]}>('/v1/resources/resolve', { resources, observation }); }
+  manualTasks() { return this.request<ManualTask[]>('/v1/manual-tasks'); }
+  reportManual(operationId: string, status: 'done' | 'failed' | 'unsure', readings: Record<string, unknown> = {}, note = '', by = '') {
+    return this.request<{operation_id: string; status: string}>('/v1/manual-tasks/' + encodeURIComponent(operationId), { status, readings, note, by });
+  }
+  savedOperations() { return this.request<Record<string, unknown>[]>('/v1/library'); }
+  savedOperation(id: string) { return this.request<Record<string, unknown>>('/v1/library/' + encodeURIComponent(id)); }
+  /** Save a Standard or Workflow Operation; `program` is the ZIP of a Workflow Operation that decides from results. */
+  saveOperation(definition: Record<string, unknown>, expectedRevision?: number, program?: Uint8Array) {
+    let archive: string | undefined;
+    if (program) {
+      let text = '';
+      for (let offset = 0; offset < program.length; offset += 8192) text += String.fromCharCode(...program.subarray(offset, offset + 8192));
+      archive = btoa(text);
+    }
+    return this.request<Record<string, unknown>>('/v1/library', { definition, expected_revision: expectedRevision ?? null, archive });
+  }
+  programFile(id: string, name: string) {
+    return this.request<{ text: string | null }>(`/v1/library/${encodeURIComponent(id)}/files/${name.split('/').map(encodeURIComponent).join('/')}`);
+  }
   platforms() { return this.request<Platform[]>('/v1/platforms'); }
   platform(id: string) { return this.request<Platform>('/v1/platforms/' + encodeURIComponent(id)); }
   configurePlatform(definition: PlatformDefinition, expectedRevision = 0) {
@@ -155,6 +177,14 @@ export class Run {
     }
     if (batch.operations.some(op => op.state !== 'completed')) throw new IOPError('Operation batch did not complete', 0, batch);
     return batch.operations;
+  }
+  /** Use a saved Standard or Workflow Operation in this experiment and return its named result. */
+  async call(operation: string, args: Record<string, unknown> = {}, options: { requestId?: string; signal?: AbortSignal } = {}) {
+    const requestId = options.requestId ?? crypto.randomUUID();
+    await this.batch([{ id: 'call', operation, arguments: args }], { requestId, signal: options.signal });
+    const batch = await this.client.request<{ results: Record<string, Record<string, unknown>> }>(
+      `/v1/runs/${encodeURIComponent(this.id)}/batches?` + new URLSearchParams({ request_id: requestId }), undefined, options.signal);
+    return batch.results.call;
   }
   async invoke(device: string, operation: string, args: Record<string, unknown> = {}, options: { requestId?: string; signal?: AbortSignal } = {}) {
     return (await this.invokeRecord(device, operation, args, options)).result;

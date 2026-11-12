@@ -127,6 +127,9 @@ class InstallCase(unittest.TestCase):
         self.assertEqual(cmd[-2:], ["my-lab", "'/opt/Lab tools/iop' --home '/data/Lab A' mcp"])
         self.assertNotIn("IOP_TOKEN", env)
         self.assertIn("BatchMode=yes", cmd)
+        with patch("shutil.which", return_value="/bin/ssh"):
+            cmd, _ = bridge.launch(profile, {"IOP_MCP_TOOLSETS": "experiments,attention"})
+        self.assertTrue(cmd[-1].endswith(" mcp --toolsets experiments,attention"))
 
 
 @unittest.skipUnless(importlib.util.find_spec("mcp"), "Install the agent extra for the MCP round trip")

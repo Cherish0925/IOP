@@ -11,9 +11,23 @@ import zipfile
 from pathlib import Path
 from urllib.request import Request, build_opener, ProxyHandler, HTTPRedirectHandler, getproxies, proxy_bypass
 from urllib.error import HTTPError
-from urllib.parse import urlencode, urlparse, urljoin
+from urllib.parse import quote, urlencode, urlparse, urljoin
 from .config import home_path
 from .engine import TERMINAL
+
+
+def archive(path):
+    """ZIP bytes of a program directory, leaving out environments and caches; a ZIP file is sent as it is."""
+    path = Path(path).expanduser()
+    if not path.is_dir():
+        return path.read_bytes()
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as package:
+        for file in sorted(path.rglob('*')):
+            rel = file.relative_to(path)
+            if file.is_file() and not file.is_symlink() and not any(p in {'.git','.venv','venv','__pycache__'} for p in rel.parts):
+                package.write(file, rel.as_posix())
+    return buffer.getvalue()
 
 
 class IOPError(RuntimeError):
@@ -172,14 +186,52 @@ class Client:
     def release(self, device):
         return self.request('/v1/devices/' + device + '/release', {})
 
-    def adapters(self):
-        return self.request('/v1/adapters')
+    def resolve_resources(self, resources, observation):
+        """Return held resources to use after recording the observed state of the equipment."""
+        return self.request('/v1/resources/resolve', {'resources': list(resources), 'observation': observation})
+
+    def manual_tasks(self):
+        """Steps waiting for a person, with their instructions and requested readings."""
+        return self.request('/v1/manual-tasks')
+
+    def report_manual(self, operation_id, status, readings=None, note='', by=''):
+        """Report a manual step done (with its readings), failed or unsure."""
+        return self.request('/v1/manual-tasks/' + quote(operation_id, safe=''),
+                            {'status': status, 'readings': readings or {}, 'note': note, 'by': by})
+
+    def adapters(self, name=None):
+        """Installed adapters, or with a name the fields and an example of that adapter's device record."""
+        return self.request('/v1/adapters' + ('?' + urlencode({'name': name}) if name else ''))
 
     def resources(self):
         return self.request('/v1/resources')
 
     def configure_resources(self, capacities):
         return self.request('/v1/resources', {'capacities': capacities})
+
+    def saved_operations(self):
+        """Standard and Workflow Operations saved in the laboratory, one line each."""
+        return self.request('/v1/library')
+
+    def saved_operation(self, operation_id):
+        """One saved operation with its parameters, steps, result and use record."""
+        return self.request('/v1/library/' + quote(operation_id, safe=''))
+
+    def save_operation(self, definition, expected_revision=None, program=None):
+        """Save a Standard or Workflow Operation as a new revision.
+
+        ``program`` is a directory or ZIP holding a Workflow Operation that decides from results; it
+        starts like a submitted program, reads its arguments from IOP_PARAMETERS_JSON and saves its result.
+        """
+        body = {'definition': definition, 'expected_revision': expected_revision}
+        if program is not None:
+            body['archive'] = base64.b64encode(archive(program)).decode()
+        return self.request('/v1/library', body)
+
+    def program_file(self, operation_id, name, revision=None):
+        """The text of one file of a saved program."""
+        return self.request('/v1/library/' + quote(operation_id, safe='') + '/files/' + quote(name, safe='/') +
+                            ('?' + urlencode({'revision': revision}) if revision else ''))
 
     def platforms(self):
         return self.request('/v1/platforms')
@@ -210,16 +262,7 @@ class Client:
 
     def submit_package(self, path, *, name=None, project=None, experiment=None, resources=(), parameters=None, request_id=None, platform=None, requirements=None):
         path = Path(path)
-        if path.is_dir():
-            buffer = io.BytesIO()
-            with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as archive:
-                for file in sorted(path.rglob('*')):
-                    rel = file.relative_to(path)
-                    if file.is_file() and not file.is_symlink() and not any(p in {'.git','.venv','venv','__pycache__'} for p in rel.parts):
-                        archive.write(file, rel.as_posix())
-            data = buffer.getvalue()
-        else:
-            data = path.read_bytes()
+        data = archive(path)
         run = self.request('/v1/packages', {'archive':base64.b64encode(data).decode(), 'name':name or path.stem,
                            'project':project, 'experiment':experiment, 'resources':list(resources), 'platform':platform,
                            'parameters':parameters or {}, 'requirements':requirements or {}, 'request_id':request_id or str(uuid.uuid4())})
@@ -336,6 +379,12 @@ class Run:
         if any(op['state'] != 'completed' for op in result['operations']):
             raise IOPError('Operation batch did not complete', details=result)
         return result['operations']
+
+    def call(self, operation, arguments=None, *, request_id=None, timeout=None):
+        """Use a saved Standard or Workflow Operation in this experiment and return its named result."""
+        request_id = request_id or uuid.uuid4().hex
+        self.batch([{'id': 'call', 'operation': operation, 'arguments': arguments or {}}], request_id=request_id, timeout=timeout)
+        return self.client.request('/v1/runs/' + self.id + '/batches?' + urlencode({'request_id': request_id}))['results']['call']
 
     def begin_episode(self, episode_id, *, task, observation, policy=None, seed=None, info=None):
         """Save initial conditions. Device preparation is performed explicitly before this call."""
