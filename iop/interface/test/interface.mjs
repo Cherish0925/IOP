@@ -454,6 +454,32 @@ sys.stdout.buffer.write(b.getvalue())`,
   assert.match(settle, /sim-axis/);
   assert.match(settle, /shutter: not registered/);
   await page.click("#modal-close");
+  const bench = (await api("platforms")).find((p) => p.id === "bench-01");
+  await api("platforms", {
+    definition: {
+      ...bench.definition,
+      conditions: [
+        {
+          id: "axis.in_range",
+          kind: "operating_point",
+          description: "The axis reads a position inside its range",
+          verify: { device: "sim-axis", operation: "position" },
+          accept: { value: ["angle_actual"], minimum: -90, maximum: 90 },
+        },
+      ],
+    },
+    expected_revision: bench.revision,
+  });
+  await page.click('[data-view="platforms"]');
+  await page.click("#refresh-button");
+  await page.waitForSelector('[data-condition="axis.in_range"] .error-text');
+  await page.click('[data-maintain="bench-01"]');
+  await page.waitForFunction(
+    () =>
+      document.querySelector('[data-condition="axis.in_range"]') &&
+      !document.querySelector('[data-condition="axis.in_range"] .error-text'),
+  );
+  assert.equal((await api("conditions"))[0].state, "holds");
   const lasting = await api("runs", {
     name: "Continues after browser closes",
     steps: [
@@ -476,7 +502,7 @@ sys.stdout.buffer.write(b.getvalue())`,
   assert.equal(continued.state, "completed", JSON.stringify(continued));
   assert.deepEqual(errors, []);
   console.log(
-    "Interface passed: discovery, registration, topology, workflow, results, resources, search, language, themes, mobile, program ZIP, file download, manual steps, held resources, saved operations and service continuity.",
+    "Interface passed: discovery, registration, topology, workflow, results, resources, search, language, themes, mobile, program ZIP, file download, manual steps, held resources, saved operations, operating conditions and service continuity.",
   );
 } finally {
   if (browser) await browser.close();

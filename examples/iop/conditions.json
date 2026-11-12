@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "demo-bench",
+  "name": "Demonstration bench",
+  "devices": ["stage", "meter"],
+  "conditions": [
+    {
+      "id": "stage.in_range",
+      "kind": "operating_point",
+      "description": "The stage is inside the range where the meter responds to it",
+      "verify": {"device": "stage", "operation": "position"},
+      "accept": {"value": ["angle_actual"], "minimum": -45, "maximum": 45},
+      "correct": {"device": "stage", "operation": "move_to", "arguments": {"angle_deg": 0}}
+    },
+    {
+      "id": "meter.signal",
+      "kind": "signal",
+      "description": "The meter reads the full signal",
+      "after": ["stage.in_range"],
+      "verify": {"device": "meter", "operation": "measure"},
+      "accept": {"value": ["power"], "minimum": 0.98},
+      "reference": {"power": ["power"]},
+      "valid_for": 600,
+      "correct": {
+        "tune": {
+          "device": "stage", "operation": "move_to", "argument": "angle_deg",
+          "read": {"device": "stage", "operation": "position", "value": ["angle_actual"]},
+          "step": 5, "resolution": 0.5, "minimum": -45, "maximum": 45
+        }
+      }
+    }
+  ]
+}

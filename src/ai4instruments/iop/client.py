@@ -233,6 +233,35 @@ class Client:
         return self.request('/v1/library/' + quote(operation_id, safe='') + '/files/' + quote(name, safe='/') +
                             ('?' + urlencode({'revision': revision}) if revision else ''))
 
+    def conditions(self, platform=None):
+        """What must hold for experiments, with what is known now: holds, due, lost or unknown."""
+        return self.request('/v1/conditions' + ('?' + urlencode({'platform': platform}) if platform else ''))
+
+    def condition(self, condition_id):
+        """One condition with its definition, state, statistics and latest records."""
+        return self.request('/v1/conditions/' + quote(condition_id, safe=''))
+
+    def maintain(self, platform=None, conditions=None, *, run_id=None, request_id=None, force=False, timeout=None):
+        """Verify the conditions that are due and correct those that drifted, in dependency order.
+
+        Returns the report when the pass has ended; ``holds`` says whether every named condition holds.
+        Inside an experiment pass its ``run_id``; ``force`` verifies conditions whose state still holds.
+        """
+        request_id = request_id or uuid.uuid4().hex
+        deadline = time.monotonic() + timeout if timeout is not None else None
+        wait = min(25, max(0, self.timeout - 1))
+        job = self.request('/v1/conditions/maintain?' + urlencode({'wait': wait}), {
+            'platform': platform, 'conditions': conditions, 'run_id': run_id, 'request_id': request_id, 'force': force})
+        while not job['complete']:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError('Maintenance is still running: ' + job['id'])
+            job = self.request('/v1/maintenance/' + job['id'] + '?' + urlencode({'wait': wait}))
+        return job
+
+    def invalidate(self, conditions, reason):
+        """Record that something disturbed the system; these conditions are verified again before use."""
+        return self.request('/v1/conditions/invalidate', {'conditions': conditions, 'reason': reason})
+
     def platforms(self):
         return self.request('/v1/platforms')
 
@@ -247,25 +276,33 @@ class Client:
                               {'request_id': request_id or str(uuid.uuid4())})
         return Run(self, record['id'])
 
-    def submit(self, steps, *, name='Experiment', project=None, experiment=None, resources=(), request_id=None, parameters=None, platform=None, requirements=None):
+    def submit(self, steps, *, name='Experiment', project=None, experiment=None, resources=(), request_id=None, parameters=None, platform=None, requirements=None, requires=()):
+        """Submit a graph of steps. ``requires`` names platform conditions that must hold for it to be accepted."""
         return Run(self, self.request('/v1/runs', {'name':name, 'project':project, 'experiment':experiment,
                    'steps':steps, 'resources':list(resources), 'parameters':parameters or {}, 'platform': platform,
-                   'requirements':requirements or {}, 'request_id':request_id or str(uuid.uuid4())})['id'])
+                   'requirements':requirements or {}, 'request_id':request_id or str(uuid.uuid4()),
+                   **({'requires': list(requires)} if requires else {})})['id'])
 
     def start_experiment(self, *, name='Experiment', project=None, experiment=None, resources=(),
-                         request_id=None, parameters=None, platform=None, requirements=None):
-        """Start one externally driven run; retain its ID and call finish after saving results."""
+                         request_id=None, parameters=None, platform=None, requirements=None, requires=()):
+        """Start one externally driven run; retain its ID and call finish after saving results.
+
+        ``requires`` names platform conditions the experiment relies on: its operations are accepted
+        while they hold, and ``run.maintain()`` restores them when one is due.
+        """
         return Run(self, self.request('/v1/runs', {'kind':'external', 'name':name, 'project':project,
                    'experiment':experiment, 'resources':list(resources), 'parameters':parameters or {},
                    'platform':platform, 'requirements':requirements or {},
-                   'request_id':request_id or str(uuid.uuid4())})['id'])
+                   'request_id':request_id or str(uuid.uuid4()),
+                   **({'requires': list(requires)} if requires else {})})['id'])
 
-    def submit_package(self, path, *, name=None, project=None, experiment=None, resources=(), parameters=None, request_id=None, platform=None, requirements=None):
+    def submit_package(self, path, *, name=None, project=None, experiment=None, resources=(), parameters=None, request_id=None, platform=None, requirements=None, requires=()):
         path = Path(path)
         data = archive(path)
         run = self.request('/v1/packages', {'archive':base64.b64encode(data).decode(), 'name':name or path.stem,
                            'project':project, 'experiment':experiment, 'resources':list(resources), 'platform':platform,
-                           'parameters':parameters or {}, 'requirements':requirements or {}, 'request_id':request_id or str(uuid.uuid4())})
+                           'parameters':parameters or {}, 'requirements':requirements or {}, 'request_id':request_id or str(uuid.uuid4()),
+                           **({'requires': list(requires)} if requires else {})})
         return Run(self, run['id'])
 
     def run(self, run_id):
@@ -363,13 +400,29 @@ class Run:
             raise IOPError(op.get('error', op['state']))
         return op
 
-    def batch(self, steps, *, request_id=None, timeout=None):
-        """Run a sequence or dependency graph inside this experiment; return operation records."""
+    def maintain(self, conditions=None, *, force=False, timeout=None):
+        """Inside this experiment, verify what it relies on and correct what drifted; returns the report."""
+        return self.client.maintain(conditions=conditions, run_id=self.id, force=force, timeout=timeout)
+
+    def batch(self, steps, *, request_id=None, timeout=None, maintain=False):
+        """Run a sequence or dependency graph inside this experiment; return operation records.
+
+        With ``maintain``, when a condition the work relies on is due or lost, it is maintained
+        first and the batch is then submitted.
+        """
         request_id = request_id or uuid.uuid4().hex
         deadline = time.monotonic() + timeout if timeout is not None else None
         wait = min(25, max(0, self.client.timeout - 1), timeout if timeout is not None else 25)
-        result = self.client.request('/v1/runs/'+self.id+'/batches?' + urlencode({'wait':wait}),
-                                     {'steps':steps, 'request_id':request_id})
+        body = {'steps':steps, 'request_id':request_id}
+        try:
+            result = self.client.request('/v1/runs/'+self.id+'/batches?' + urlencode({'wait':wait}), body)
+        except IOPError as error:
+            if not maintain or error.code != 'conditions_not_held':
+                raise
+            report = self.maintain(list(error.details['conditions']))
+            if not report.get('holds'):
+                raise IOPError('Conditions could not be restored', details=report) from None
+            result = self.client.request('/v1/runs/'+self.id+'/batches?' + urlencode({'wait':wait}), body)
         while not result['complete']:
             remaining = deadline - time.monotonic() if deadline is not None else 25
             if remaining <= 0:
@@ -380,10 +433,11 @@ class Run:
             raise IOPError('Operation batch did not complete', details=result)
         return result['operations']
 
-    def call(self, operation, arguments=None, *, request_id=None, timeout=None):
+    def call(self, operation, arguments=None, *, request_id=None, timeout=None, maintain=False):
         """Use a saved Standard or Workflow Operation in this experiment and return its named result."""
         request_id = request_id or uuid.uuid4().hex
-        self.batch([{'id': 'call', 'operation': operation, 'arguments': arguments or {}}], request_id=request_id, timeout=timeout)
+        self.batch([{'id': 'call', 'operation': operation, 'arguments': arguments or {}}], request_id=request_id,
+                   timeout=timeout, maintain=maintain)
         return self.client.request('/v1/runs/' + self.id + '/batches?' + urlencode({'request_id': request_id}))['results']['call']
 
     def begin_episode(self, episode_id, *, task, observation, policy=None, seed=None, info=None):

@@ -53,6 +53,7 @@ iop context --start
 | `configure_resources` | 设置资源可用数量 |
 | `run_procedure` | 执行已保存的初始化或其他过程 |
 | `saved_operations` | 列出、查看或保存 Standard 与 Workflow Operations；不带 `device` 的步骤按名称使用它们 |
+| `operating_conditions` | 平台上实验所依赖的条件：读取状态、保持它们成立，或记录一次扰动 |
 | `submit_experiment` | 提交具有串并行依赖的仪器操作 |
 | `submit_program` | 将 Agent 所在计算机上的目录或 ZIP 上传给服务运行 |
 | `experiment` | 读取状态、分页操作记录、文件和结果 |
@@ -72,11 +73,11 @@ MCP 资源 `iop://laboratory` 提供相同的实验室说明。提交工具立�
 | 工具集 | 工具数 | 用途 |
 | --- | --- | --- |
 | `setup` | 12 | 登记仪器、型号描述、平台和资源 |
-| `experiments` | 17 | 已保存的操作、实验、批次、采集、程序、结果和文件 |
+| `experiments` | 18 | 已保存的操作、工作条件、实验、批次、采集、程序、结果和文件 |
 | `attention` | 5 | 重连和释放仪器、挂起的资源、人工步骤 |
 | `episodes` | 3 | 研究回合与转移记录 |
 
-默认四个全部加载（40 个工具，说明约 20 kB）。已完成配置的实验室用 `experiments,attention`：25 个工具，约 13 kB。
+默认四个全部加载（41 个工具，说明约 22 kB）。已完成配置的实验室用 `experiments,attention`：26 个工具，约 15 kB。
 
 ## 连接远端实验室
 

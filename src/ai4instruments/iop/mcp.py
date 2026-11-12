@@ -20,7 +20,7 @@ TOOLSETS = {
     'setup': ('configuration_schema', 'register_instrument', 'instrument_configuration', 'register_instruments',
               'discover_instruments', 'identify_instrument', 'instrument_profiles', 'save_instrument_profile',
               'retry_instrument_discovery', 'available_adapters', 'configure_platform', 'configure_resources'),
-    'experiments': ('saved_operations', 'run_procedure', 'submit_experiment', 'start_experiment', 'invoke_operation',
+    'experiments': ('saved_operations', 'operating_conditions', 'run_procedure', 'submit_experiment', 'start_experiment', 'invoke_operation',
                     'finish_experiment', 'submit_operations', 'save_acquisition', 'submit_program', 'continue_program',
                     'experiment', 'cancel_experiment', 'experiment_updates', 'experiment_files', 'operation_result',
                     'save_experiment_file', 'download_file'),
@@ -124,6 +124,8 @@ def create_server(client, *, http=False, selection=None):
         'Read describe_instrument before choosing operations and arguments. '
         'Device operations are Basic Operations; lab_context lists the Standard and Workflow Operations saved here. '
         'Use a saved one as a step instead of recomposing it, and save a method that worked with saved_operations. '
+        'A platform states what must hold for its experiments as conditions; maintain them with operating_conditions '
+        'before work that relies on them and when a submission is refused with conditions_not_held. '
         'Saving platform configuration does not execute initialization. '
         'Submit experiments or programs once, retain the returned ID and inspect them later. '
         'For adaptive work, start_experiment, submit_operations within that run, then finish_experiment. '
@@ -236,8 +238,23 @@ def create_server(client, *, http=False, selection=None):
         return client.saved_operation(operation) if operation else client.saved_operations()
 
     @tool()
+    def operating_conditions(platform: str | None = None, condition: str | None = None, maintain: bool = False,
+                             conditions: list[str] | None = None, run_id: str | None = None,
+                             request_id: str | None = None, force: bool = False, invalidate: str | None = None,
+                             maintenance: str | None = None, wait: float = 0) -> dict | list:
+        """Conditions a platform's experiments rely on (environment, equilibrium, references, calibration, alignment, locks, operating point, signal), each with a verification, a tolerance, corrections and a validity time. No arguments: all with their state (holds, due, lost, unknown). condition: one with statistics and records. maintain=true with platform or conditions: verify what is due and correct what drifted, dependencies first; pass request_id, and run_id inside an experiment; force re-verifies what holds. Returns within wait (up to 25 s); read on with maintenance=<id>. invalidate=<reason> marks conditions due after a disturbance."""
+        if maintenance:
+            return client.request('/v1/maintenance/' + quote(maintenance, safe='') + waiting(wait))
+        if invalidate:
+            return client.invalidate(conditions or [], invalidate)
+        if maintain:
+            return client.request('/v1/conditions/maintain' + waiting(wait), {
+                'platform': platform, 'conditions': conditions, 'run_id': run_id, 'request_id': request_id, 'force': force})
+        return client.condition(condition) if condition else client.conditions(platform)
+
+    @tool()
     def configure_platform(definition: dict, expected_revision: int = 0, preview: bool = False) -> dict:
-        """Save devices, physical connections, shared resources and procedures. Use the current revision, or 0 for a new platform. Preview checks the definition without saving; neither option executes a procedure."""
+        """Save devices, physical connections, shared resources, procedures and operating conditions. Use the current revision, or 0 for a new platform. Preview checks the definition without saving; neither option executes a procedure."""
         if preview:
             return client.request('/v1/platforms/preview', {'definition': definition})
         return client.configure_platform(definition, expected_revision)
@@ -255,19 +272,19 @@ def create_server(client, *, http=False, selection=None):
     @tool()
     def submit_experiment(steps: list[dict], request_id: str, name: str = 'Experiment',
                           platform: str | None = None, resources: list[str] | None = None,
-                          requirements: dict[str, int] | None = None) -> dict:
-        """Submit instrument operations with after dependencies and optional result bindings. Returns immediately. Reuse request_id only for the identical submission."""
+                          requirements: dict[str, int] | None = None, requires: list[str] | None = None) -> dict:
+        """Submit instrument operations with after dependencies and optional result bindings. Returns immediately. Reuse request_id only for the identical submission. requires names platform conditions that must hold for the experiment to be accepted."""
         return client.submit(steps, name=name, platform=platform, resources=resources or [],
-                             requirements=requirements, request_id=request_id).info(details=False)
+                             requirements=requirements, request_id=request_id, requires=requires or ()).info(details=False)
 
     @tool()
     def start_experiment(request_id: str, name: str = 'Experiment', platform: str | None = None,
                          resources: list[str] | None = None, parameters: dict | None = None,
-                         requirements: dict[str, int] | None = None) -> dict:
-        """Start one experiment for successive agent decisions. Reserve all mutually dependent devices up front. The run stays open across connections until finished or cancelled."""
+                         requirements: dict[str, int] | None = None, requires: list[str] | None = None) -> dict:
+        """Start one experiment for successive agent decisions. Reserve all mutually dependent devices up front. The run stays open across connections until finished or cancelled. requires names platform conditions it relies on: operations are accepted while they hold, and operating_conditions(maintain=true, run_id=...) restores them."""
         return client.start_experiment(request_id=request_id, name=name, platform=platform,
                                        resources=resources or [], parameters=parameters,
-                                       requirements=requirements).info(details=False)
+                                       requirements=requirements, requires=requires or ()).info(details=False)
 
     @tool()
     def invoke_operation(run_id: str, device: str, operation: str, request_id: str,

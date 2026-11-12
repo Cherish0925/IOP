@@ -91,6 +91,9 @@ class Engine:
         self.uses = self.store.operation_uses()
         self.call_progress = {}
         self.platform_resources = platform_model.resource_index(self.platforms)
+        # What must hold on each platform for its experiments, and what is known about it now.
+        from .conditions import Conditions
+        self.conditions = Conditions(self)
         self.resource_holds = self.store.resource_holds()
         self.worker_count = max(1, int(config.get("workers", 8)))
         self.package_count = max(1, int(config.get("package_workers", 4)))
@@ -416,6 +419,11 @@ class Engine:
                 if step['device'] not in definition['devices']:
                     raise ValueError('Procedure device must belong to the platform')
                 self._operation('prepare', step)
+        conditions = self.conditions.prepare(definition)
+        if conditions:
+            definition['conditions'] = conditions
+        else:
+            definition.pop('conditions', None)
         return definition
 
     def save_operation(self, definition, expected_revision=None, archive=None):
@@ -435,6 +443,9 @@ class Engine:
                 raise ValueError('Operation revision changed; current revision is ' + str(revision))
             if old and all(old.get(key) == value for key, value in definition.items()) and set(definition) | {'revision', 'updated'} == set(old):
                 return self.saved_operation(definition['id'])
+            if any(job['state'] == 'running' and definition['id'] in job.get('operation_revisions', {})
+                   for job in self.conditions.jobs.values()):
+                raise ValueError('This saved operation is in use by active maintenance; revise it after that pass ends')
             record = {**definition, 'revision': revision + 1, 'updated': now()}
             if archive is not None:
                 path = self.home / 'library' / record['id'] / f"{record['revision']}.zip"
@@ -442,6 +453,7 @@ class Engine:
                 path.write_bytes(archive)
             self.store.save_operation(record)
             self.library[record['id']] = record
+            self.conditions.index()
             return self.saved_operation(record['id'])
 
     @staticmethod
@@ -518,6 +530,8 @@ class Engine:
         if operation_id in found:
             return found[operation_id]
         found[operation_id] = problems = []
+        problems += [f'{c}: no such condition' for c in self.library[operation_id].get('requires', [])
+                     if c not in self.conditions.definitions]
         for step in self.library[operation_id].get('steps', []):
             if 'device' not in step:
                 problems += [f"{step['operation']}: {p}" for p in self._unavailable(step['operation'], found)]
@@ -587,6 +601,7 @@ class Engine:
             self.store.save_platform(record)
             self.platforms[record['id']] = record
             self.platform_resources = platform_model.resource_index(self.platforms)
+            self.conditions.index()
             return self.platform_info(record['id'])
 
     def run_procedure(self, platform_id, procedure_id, request_id=None):
@@ -908,6 +923,13 @@ class Engine:
                             run['requirements'][key] = max(run['requirements'].get(key, 0), count)
             if len(self.operations) + len(operations) > int(self.config.get('max_active_operations', 100000)):
                 raise QueueFull('The service has reached its configured number of active operations')
+            required = self.conditions.required(spec, run.get('calls'), program)
+            if required:
+                # The experiment is accepted only while what it relies on holds; the record keeps what that was.
+                run['conditions'] = self.conditions.require(required)
+                run['requires'] = required
+                for op in operations:
+                    op['requires'] = required
             used = {op['device'] for op in operations}
             if package is not None:
                 used = set(platform['definition']['devices']) if platform else (set(spec.get('resources', [])) & self.devices.keys() or self.devices.keys())
@@ -932,6 +954,7 @@ class Engine:
             self.runs[run_id] = run
             self.operations.update({op["id"]:op for op in operations})
             self._index_run(run)
+            self.conditions.rely(run_id, required)
             self.wake.set()
             return json.loads(dumps(run))
 
@@ -977,7 +1000,11 @@ class Engine:
                 raise ValueError("Operations require an active external experiment or running package")
             if len(self.operations) >= int(self.config.get('max_active_operations', 100000)):
                 raise QueueFull('The service has reached its configured number of active operations')
+            if run.get('requires'):
+                self.conditions.require(run['requires'], run_id)
             op = self._operation(run_id, step)
+            if run.get('requires'):
+                op['requires'] = run['requires']
             if run.get('platform') and op['device'] not in run['platform']['definition']['devices']:
                 raise ValueError('Operation device must belong to the selected platform')
             if run['resources'] or run.get('requirements'):
@@ -1450,6 +1477,7 @@ class Engine:
             index = run_ids.index(self.last_scheduled_run) + 1
             run_ids = run_ids[index:] + run_ids[:index]
         candidates = deque((rid, iter(self.ready[rid])) for rid in run_ids)
+        maintaining = {job['run_id'] for job in self.conditions.jobs.values() if job['state'] == 'running'}
         blocked = set()
         dispatch = []
         pooled = len(self.futures) - len(self.waiting_steps)
@@ -1461,6 +1489,8 @@ class Engine:
                 continue
             candidates.append((rid, items))
             op = self.operations[op_id]
+            if rid in maintaining and not op.get('maintenance'):
+                continue
             amounts = self._amounts(op)
             if not self.allocation.can_claim(rid, amounts, blocked | waiting):
                 blocked.update(amounts)
@@ -1474,6 +1504,8 @@ class Engine:
             if not getattr(self.devices[op['device']], 'dedicated_thread', False):
                 pooled += 1
             try:
+                if op.get('requires'):
+                    op['conditions'] = self.conditions.require(op['requires'], rid)
                 if op.get('bindings'):
                     args = dict(op['arguments'])
                     for name, binding in op['bindings'].items():
@@ -1563,6 +1595,7 @@ class Engine:
                     run.update(state="cancelling", end_state="interrupted")
                     self._stop_pending(run)
             self.wake.set()
+        self.conditions.stop()
         if self.thread.is_alive():
             self.thread.join()
         self.monitors.stop()

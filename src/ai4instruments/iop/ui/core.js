@@ -17,6 +17,7 @@ export const state = {
   runs: [],
   manual: [],
   library: [],
+  conditions: [],
   resources: { capacities: {}, allocation: [] },
   inventory: null,
   ui: null,

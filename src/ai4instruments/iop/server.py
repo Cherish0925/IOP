@@ -185,6 +185,18 @@ class Handler(BaseHTTPRequestHandler):
                 result = engine.saved_operation(parts[2])
             elif len(parts) == 4 and parts[:2] == ['v1', 'library'] and parts[3] == 'history' and method == 'GET':
                 result = engine.store.saved_operation_history(parts[2])
+            elif parts == ['v1', 'conditions'] and method == 'GET':
+                result = engine.conditions.listing(query.get('platform'))
+            elif parts == ['v1', 'conditions', 'maintain'] and method == 'POST':
+                job = engine.conditions.maintain(body.get('platform'), body.get('conditions'), body.get('run_id'),
+                                                 body.get('request_id'), body.get('force', False))
+                result = engine.conditions.job(job['id'], query.get('wait', 0)) if query.get('wait') else job
+            elif parts == ['v1', 'conditions', 'invalidate'] and method == 'POST':
+                result = engine.conditions.invalidate(body['conditions'], body['reason'])
+            elif len(parts) == 3 and parts[:2] == ['v1', 'conditions'] and method == 'GET':
+                result = engine.conditions.describe(parts[2])
+            elif len(parts) == 3 and parts[:2] == ['v1', 'maintenance'] and method == 'GET':
+                result = engine.conditions.job(parts[2], query.get('wait', 0))
             elif parts == ['v1','platforms']:
                 result = engine.apply_platform(body['definition'], body.get('expected_revision', 0)) if method == 'POST' else engine.list_platforms()
             elif parts == ['v1','resources','resolve'] and method == 'POST':

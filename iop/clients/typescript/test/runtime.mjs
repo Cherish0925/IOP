@@ -106,6 +106,16 @@ serve(p)
     assert.deepEqual((await (await client.submit([{id:'p',operation:'axis.position',arguments:{angle:7}}])).result()).p,{angle:7});
     assert.equal((await client.savedOperation('axis.position')).uses.completed,1);
     assert.deepEqual((await client.savedOperations()).map(o=>o.id),['axis.position']);
+    await client.configurePlatform({schema_version:1,id:'ts-bench',devices:['stage'],conditions:[{id:'stage.in_range',kind:'operating_point',
+      description:'The stage reads inside its range',verify:{device:'stage',operation:'position'},accept:{value:['angle_actual'],minimum:-90,maximum:90}}]});
+    const relying = [{id:'read',device:'stage',operation:'position'}];
+    await assert.rejects(client.submit(relying,{requires:['stage.in_range']}),e=>e.code==='conditions_not_held');
+    const pass = await client.maintain({platform:'ts-bench'});
+    assert.deepEqual([pass.holds,pass.report[0].result],[true,'verified']);
+    assert.equal((await client.conditions('ts-bench'))[0].state,'holds');
+    assert.equal((await (await client.submit(relying,{requires:['stage.in_range']})).wait()).state,'completed');
+    assert.equal((await client.condition('stage.in_range')).statistics.verifications,1);
+    assert.equal((await client.invalidate(['stage.in_range'],'the stage was touched'))[0].state,'due');
     await client.register({id:'bench',driver:'manual',config:{operations:{mount:{instruction:'Mount {sample}',
       parameters:{sample:{type:'string'}},readings:{mass_g:{type:'number',minimum:0}}}}}});
     const mounting = await client.submit([{id:'mount',device:'bench',operation:'mount',arguments:{sample:'S-1'}}]);

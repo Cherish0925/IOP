@@ -60,6 +60,11 @@ class Store:
             id TEXT NOT NULL, revision INTEGER NOT NULL, body TEXT NOT NULL,
             PRIMARY KEY(id,revision));
           CREATE TABLE IF NOT EXISTS operation_uses(id TEXT PRIMARY KEY, body TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS condition_states(id TEXT PRIMARY KEY, body TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS condition_records(sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+            condition TEXT NOT NULL, body TEXT NOT NULL);
+          CREATE INDEX IF NOT EXISTS condition_records_condition ON condition_records(condition,sequence);
+          CREATE TABLE IF NOT EXISTS maintenance(id TEXT PRIMARY KEY, request_id TEXT UNIQUE, body TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS discovery_records(key TEXT PRIMARY KEY, body TEXT NOT NULL);
           CREATE TABLE IF NOT EXISTS device_versions(
             id TEXT NOT NULL, revision INTEGER NOT NULL, body TEXT NOT NULL,
@@ -342,6 +347,36 @@ class Store:
         with self.transaction():
             self.db.execute('INSERT OR REPLACE INTO operation_uses VALUES(?,?)', (operation_id, dumps(uses)))
             self.event('call.' + state, run_id, call=call, operation=operation_id, revision=uses['last']['revision'])
+
+    def condition_states(self):
+        with self.lock:
+            return {key: json.loads(body) for key, body in self.db.execute('SELECT id,body FROM condition_states')}
+
+    def condition_records(self, condition, limit=1000):
+        """The verifications and corrections of one condition, oldest first."""
+        with self.lock:
+            rows = self.db.execute('SELECT body FROM condition_records WHERE condition=? ORDER BY sequence DESC LIMIT ?',
+                                   (condition, min(max(int(limit), 1), 10000))).fetchall()
+            return [json.loads(row[0]) for row in reversed(rows)]
+
+    def record_condition(self, condition, state, record, event, **data):
+        """Save what was observed or done for a condition together with its resulting state."""
+        with self.transaction():
+            self.db.execute('INSERT OR REPLACE INTO condition_states VALUES(?,?)', (condition, dumps(state)))
+            if record is not None:
+                self.db.execute('INSERT INTO condition_records(condition,body) VALUES(?,?)', (condition, dumps(record)))
+            if event:
+                self.event(event, data.pop('run_id', None), condition=condition, **data)
+
+    def maintenance(self, identifier=None, request_id=None):
+        with self.lock:
+            row = self.db.execute('SELECT body FROM maintenance WHERE ' + ('id=?' if identifier else 'request_id=?'),
+                                  (identifier or request_id,)).fetchone()
+            return json.loads(row[0]) if row else None
+
+    def save_maintenance(self, job):
+        with self.transaction():
+            self.db.execute('INSERT OR REPLACE INTO maintenance VALUES(?,?,?)', (job['id'], job.get('request_id'), dumps(job)))
 
     def save_platform(self, record):
         with self.transaction():

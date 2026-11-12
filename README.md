@@ -48,6 +48,12 @@ Operations keep the three roles defined by [AI4Instruments](https://github.com/C
 
 A step with `device` is a Basic Operation; a step without it uses a saved operation by name. The Runtime expands it into its Basic Operations and records every use, so methods that worked accumulate in the laboratory and stay open to reading and revision. See [operations](docs/runtime/operations.md).
 
+## Operating conditions
+
+A platform describes the conditions required by its experiments: observations, tolerances, dependencies, correction methods and optional validity periods. `maintain` runs these methods using the same operations and scheduler as experiments. Corrections reserve the coupled devices together; independent platforms can keep working.
+
+Experiments name their conditions with `requires`. The Runtime checks their recorded state before each dependent operation, keeps the observations with the results, and marks relevant intervals when a later observation reveals drift. Bounded `tune` provides a local numerical search; saved operations and programs express other methods. Classification and dependencies remain configurable for each platform. See [operating conditions](docs/runtime/conditions.md).
+
 ## Research and learning
 
 Episode records retain the experiment trajectory alongside the three operation roles. Python, TypeScript and MCP clients can save versioned task/policy identities, observations, rewards and termination information. Each transition links to completed operations in that experiment. Identical retries return the saved record; reconnection preserves the sequence. JSON Lines export supports downstream data processing and learning.
