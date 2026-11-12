@@ -466,11 +466,14 @@ sys.stdout.buffer.write(b.getvalue())`,
     ],
   });
   await page.close();
-  await pause(1300);
-  assert.equal(
-    (await api("runs/" + lasting.id + "?details=false")).state,
-    "completed",
-  );
+  const until = performance.now() + 10000;
+  let continued;
+  do {
+    continued = await api("runs/" + lasting.id + "?details=false");
+    if (!["queued", "running"].includes(continued.state)) break;
+    await pause(50);
+  } while (performance.now() < until);
+  assert.equal(continued.state, "completed", JSON.stringify(continued));
   assert.deepEqual(errors, []);
   console.log(
     "Interface passed: discovery, registration, topology, workflow, results, resources, search, language, themes, mobile, program ZIP, file download, manual steps, held resources, saved operations and service continuity.",
