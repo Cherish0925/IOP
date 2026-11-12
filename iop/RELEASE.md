@@ -10,7 +10,7 @@ Instrument access adds SCPI binary arrays, non-SCPI text protocols, multi-regist
 
 Calibration records, idle observations, manual steps and per-instrument operation selection share the existing scheduler and experiment records. With `unconfirmed_change: "hold"`, cancelling a wait after a command was sent retains the unknown outcome. Python SDK cancellation releases the action only when its configured stop and completion readback establish that it stopped. Feedback wiring is retained; a wiring-derived arming order is offered only when one exists.
 
-Agent calls can return completed results in the same request. Large arrays remain in files, instrument descriptions can be selected by operation, and MCP toolsets can be selected for each connection. HTTP, Python, TypeScript, CLI and the browser expose the new capabilities. IOP Connect 1.3.0 includes the updated operating guide.
+Agent calls can return completed results in the same request. Large arrays remain in files, instrument descriptions can be selected by operation, and MCP toolsets can be selected for each connection. HTTP, Python, TypeScript, CLI and the browser expose the new capabilities. IOP Connect 1.3.0 includes the updated operating guide. HTTP MCP returns a complete credential error even when the request body is still arriving, including on Windows.
 
 Existing laboratory configurations and records are retained. Finish accepted experiments before updating a running service. Saved-operation `conditions` describe applicability in words; they are not executable conditions. The added adapters have been exercised with software instruments and protocol servers; physical instrument coverage is recorded separately.
 

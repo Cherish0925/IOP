@@ -181,6 +181,7 @@ class ConnectedCase(unittest.TestCase):
         import threading
         import time
         import uvicorn
+        from http.client import HTTPResponse
         from urllib.request import urlopen
         from urllib.error import HTTPError
         from ai4instruments.iop.mcp_http import application
@@ -211,6 +212,33 @@ class ConnectedCase(unittest.TestCase):
             while not server.started and time.monotonic() < deadline:
                 time.sleep(0.02)
             self.assertTrue(server.started)
+            # A client can send headers before its JSON body. The rejection must
+            # arrive immediately without resetting the still-arriving upload.
+            with socket.create_connection(sock.getsockname(), timeout=5) as delayed:
+                delayed.sendall(
+                    b"POST /mcp HTTP/1.1\r\nHost: localhost\r\n"
+                    b"Content-Length: 7\r\nConnection: close\r\n\r\n"
+                )
+                response = HTTPResponse(delayed)
+                response.begin()
+                self.assertEqual(response.status, 401)
+                self.assertEqual(response.read(), b"Unauthorized")
+                delayed.sendall(b'{"a":')
+                delayed.sendall(b"1}")
+                self.assertEqual(delayed.recv(1), b"")
+            # An Expect client can stop uploading after the early rejection.
+            # The reply is still complete and the server eventually closes it.
+            with socket.create_connection(sock.getsockname(), timeout=5) as stopped:
+                stopped.sendall(
+                    b"POST /mcp HTTP/1.1\r\nHost: localhost\r\n"
+                    b"Content-Length: 7\r\nExpect: 100-continue\r\n"
+                    b"Connection: close\r\n\r\n"
+                )
+                response = HTTPResponse(stopped)
+                response.begin()
+                self.assertEqual(response.status, 401)
+                self.assertEqual(response.read(), b"Unauthorized")
+                self.assertEqual(stopped.recv(1), b"")
             for wrong in (None, self.config["token"]):
                 with self.assertRaises(HTTPError) as resp:
                     post("tools/list", {}, wrong)
