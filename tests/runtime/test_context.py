@@ -258,6 +258,28 @@ class MCPCase(unittest.TestCase):
                                  'description':'Scan the stage'}, 'program':folder})
                 self.assertEqual(saved['program']['files'], [{'name':'experiment.py', 'size':38}])
                 self.assertIn('Client', call('saved_operations', {'operation':'stage.scan', 'file':'experiment.py'})['text'])
+                ready = {'id':'aux.in_range', 'kind':'operating_point', 'description':'The auxiliary axis reads inside its range',
+                         'verify':{'device':'aux', 'operation':'position'},
+                         'accept':{'value':['angle_actual'], 'minimum':-90, 'maximum':90}}
+                call('configure_platform', {'definition':{'schema_version':1, 'id':'aux-bench', 'devices':['aux'],
+                                                         'conditions':[ready]}})
+                self.assertEqual([(c['id'], c['state']) for c in call('operating_conditions', {})], [('aux.in_range', 'unknown')])
+                self.assertIn({'action':'maintain_conditions', 'platform':'aux-bench', 'conditions':['aux.in_range'],
+                               'submit':'/v1/conditions/maintain'}, call('lab_context', {})['next_steps'])
+                relying = {'steps':[{'id':'read', 'device':'aux', 'operation':'position'}], 'request_id':'mcp-relying',
+                           'requires':['aux.in_range']}
+                refused = request('tools/call', {'name':'submit_experiment', 'arguments':relying})
+                self.assertTrue(refused['isError'])
+                self.assertIn('conditions_not_held: aux.in_range is unknown', refused['content'][0]['text'])
+                maintained = call('operating_conditions', {'maintain':True, 'platform':'aux-bench',
+                                                           'request_id':'mcp-maintain', 'wait':25})
+                self.assertEqual((maintained['complete'], maintained['holds'], maintained['report'][0]['result']),
+                                 (True, True, 'verified'))
+                self.assertEqual(call('operating_conditions', {'maintenance':maintained['id']})['state'], 'completed')
+                self.assertEqual(self.client.run(call('submit_experiment', relying)['id']).wait(5)['state'], 'completed')
+                self.assertEqual(call('operating_conditions', {'condition':'aux.in_range'})['statistics']['verifications'], 1)
+                due = call('operating_conditions', {'invalidate':'the mount was touched', 'conditions':['aux.in_range']})
+                self.assertEqual((due[0]['state'], due[0]['reason']), ('due', 'the mount was touched'))
                 accepted = call('submit_experiment', {'steps':[{'id':'wait', 'device':'aux', 'operation':'wait',
                                  'arguments':{'duration':0.5}}], 'request_id':'continue-after-agent'})
                 process.stdin.close()

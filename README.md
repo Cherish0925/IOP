@@ -48,6 +48,19 @@ Operations keep the three roles defined by [AI4Instruments](https://github.com/C
 
 A step with `device` is a Basic Operation; a step without it uses a saved operation by name. The Runtime expands it into its Basic Operations and records every use, so methods that worked accumulate in the laboratory and stay open to reading and revision. See [operations](docs/runtime/operations.md).
 
+## Operating conditions
+
+An experiment has its meaning only while the system is in its working state. A platform states that state as conditions: what must hold, how it is verified, its tolerance, what restores it and how long it stays valid. The Runtime keeps them true with one loop, run in dependency order when the platform is brought up, when a verification has expired and when something disturbed the system.
+
+| | |
+| --- | --- |
+| **Three outcomes** | A verification holds, has drifted (correct this condition), or is unusable (look at what it depends on). |
+| **Order by cause** | Bringing a system up follows the dependencies forward; finding a fault follows them backward to the first condition that does not hold. |
+| **Validity** | An accepted verification is trusted for a time, and no longer after a correction upstream or a disturbance. |
+| **Data carry it** | An experiment names what it relies on with `requires` and records it; data taken before a condition was found lost are marked in doubt. |
+
+The records show which conditions drift, how fast, and what restores them, so experience with one system accumulates there. See [operating conditions](docs/runtime/conditions.md).
+
 ## Research and learning
 
 Episode records retain the experiment trajectory alongside the three operation roles. Python, TypeScript and MCP clients can save versioned task/policy identities, observations, rewards and termination information. Each transition links to completed operations in that experiment. Identical retries return the saved record; reconnection preserves the sequence. JSON Lines export supports downstream data processing and learning.

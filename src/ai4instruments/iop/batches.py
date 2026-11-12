@@ -8,7 +8,7 @@ from .resources import QueueFull
 from .store import dumps
 
 
-def submit(engine, run_id, steps, request_id):
+def submit(engine, run_id, steps, request_id, maintenance=False):
     if not isinstance(request_id, str) or not request_id.strip():
         raise ValueError('Provide a stable request_id for the operation batch')
     if not isinstance(steps, list) or not steps:
@@ -42,6 +42,10 @@ def submit(engine, run_id, steps, request_id):
             raise ValueError('An operation batch requires an active experiment program')
         if len(engine.operations) + len(steps) > int(engine.config.get('max_active_operations', 100000)):
             raise QueueFull('The service has reached its configured number of active operations')
+        required = sorted(set(run.get('requires', [])) | set(engine.conditions.required({}, calls)))
+        if required and not maintenance:
+            # Work continues only while what it relies on holds; a pass of maintenance restores it.
+            relied = engine.conditions.require(required, run_id)
         operations = [engine._operation(run_id, step) for step in steps]
         for op, step in zip(operations, steps):
             if 'calls' in step:
@@ -65,6 +69,10 @@ def submit(engine, run_id, steps, request_id):
         updated['operation_count'] += len(ids)
         updated['involved_resources'] = sorted(set(updated['involved_resources']).union(
             *(engine._amounts(op).keys() for op in operations)))
+        added = [] if maintenance else [c for c in required if c not in run.get('requires', [])]
+        if added:
+            updated['requires'] = required
+            updated['conditions'] = {**run.get('conditions', {}), **{c: relied[c] for c in added}}
         record = {'request_id': request_id, 'run_id': run_id, 'steps': submitted, 'operation_ids': ids}
         if calls:
             record['calls'] = calls
@@ -76,6 +84,7 @@ def submit(engine, run_id, steps, request_id):
                 engine.store.event('operation.queued', run_id, operation_id=op['id'], device=op['device'], operation=op['operation'])
         run.update(updated)
         engine.operations.update({op['id']: op for op in operations})
+        engine.conditions.rely(run_id, added)
         engine.remaining[run_id] += len(operations)
         for op in operations:
             engine._follow_calls(op, calls)

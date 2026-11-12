@@ -249,6 +249,102 @@
           }
         }
       }
+    },
+    "conditions": {
+      "type": "array",
+      "description": "What must hold on the platform for its experiments. The Runtime verifies each condition, corrects it when it drifted and trusts an accepted verification for valid_for.",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "description",
+          "verify",
+          "accept"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+            "description": "Unique among all platforms."
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "enum": [
+              "environment",
+              "equilibrium",
+              "reference",
+              "calibration",
+              "alignment",
+              "lock",
+              "operating_point",
+              "signal"
+            ],
+            "description": "From the outside in; each kind presupposes the ones before it."
+          },
+          "after": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true,
+            "description": "Conditions of this platform that must hold first."
+          },
+          "verify": {
+            "$ref": "#/$defs/conditionStep"
+          },
+          "accept": {
+            "$ref": "#/$defs/tolerance"
+          },
+          "usable": {
+            "$ref": "#/$defs/tolerance",
+            "description": "When not met, the measurement itself means nothing and the conditions in after are verified."
+          },
+          "reference": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": [
+                  "string",
+                  "integer"
+                ]
+              }
+            },
+            "description": "Values of the accepted verification kept with experiments that rely on the condition."
+          },
+          "correct": {
+            "oneOf": [
+              {
+                "$ref": "#/$defs/conditionStep"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "#/$defs/conditionStep"
+                }
+              }
+            ],
+            "description": "Operations that restore the condition, tried in order; each is followed by a verification."
+          },
+          "settle": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Seconds between a correction and its verification."
+          },
+          "valid_for": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "description": "Seconds an accepted verification is trusted."
+          },
+          "note": {
+            "type": "string"
+          }
+        }
+      }
     }
   },
   "$defs": {
@@ -263,6 +359,67 @@
         "minLength": 1
       },
       "uniqueItems": true
+    },
+    "conditionStep": {
+      "type": "object",
+      "required": [
+        "operation"
+      ],
+      "additionalProperties": false,
+      "description": "One operation: a device operation, or a saved operation without device.",
+      "properties": {
+        "device": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "arguments": {
+          "type": "object"
+        }
+      }
+    },
+    "tolerance": {
+      "type": "object",
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "minimum"
+          ]
+        },
+        {
+          "required": [
+            "maximum"
+          ]
+        },
+        {
+          "required": [
+            "equals"
+          ]
+        }
+      ],
+      "properties": {
+        "value": {
+          "type": "array",
+          "items": {
+            "type": [
+              "string",
+              "integer"
+            ]
+          },
+          "description": "Path into the verification result; default [\"value\"]."
+        },
+        "minimum": {
+          "type": "number"
+        },
+        "maximum": {
+          "type": "number"
+        },
+        "equals": {}
+      }
     }
   }
 }

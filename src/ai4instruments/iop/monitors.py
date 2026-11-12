@@ -183,6 +183,9 @@ class Monitors:
             # the device stays usable so the condition can be corrected. A later return to
             # ok followed by a new violation holds again.
             entering = current in ('violation', 'error') and previous not in ('violation', 'error')
+            if entering:
+                # What was verified with this device is verified again before experiments rely on it.
+                engine.conditions.disturbed(device, f'monitor {device}.{monitor["id"]} left its limits')
             if entering and monitor['on_violation'] == 'hold':
                 origin = f'monitor:{device}.{monitor["id"]}'
                 if not any(h.get('operation_id') == origin for h in engine.resource_holds.values()):

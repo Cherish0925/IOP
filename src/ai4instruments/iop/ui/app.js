@@ -332,6 +332,7 @@ export async function refresh(force = false) {
         api("platforms"),
         api("discovery?cached=true"),
         api("library"),
+        api("conditions"),
       );
     const values = await Promise.all(tasks);
     state.status = values[0];
@@ -344,6 +345,7 @@ export async function refresh(force = false) {
       state.inventory =
         values[5].updated || values[5].scanning ? values[5] : state.inventory;
       state.library = values[6];
+      state.conditions = values[7];
       lastInventory = Date.now();
     }
     if (!state.ui) {

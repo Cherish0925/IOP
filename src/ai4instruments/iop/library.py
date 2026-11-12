@@ -57,7 +57,8 @@ def check(definition, lookup):
     """Validate a Standard or Workflow Operation; ``lookup`` returns saved operations by name."""
     if not isinstance(definition, dict):
         raise ValueError('Describe the operation with an object')
-    unknown = set(definition) - {'id', 'layer', 'description', 'conditions', 'parameters', 'steps', 'result', 'program'}
+    unknown = set(definition) - {'id', 'layer', 'description', 'conditions', 'requires', 'parameters', 'steps', 'result',
+                                'program'}
     if unknown:
         raise ValueError('Unknown operation fields: ' + ', '.join(sorted(unknown)))
     name(definition.get('id'), 'Operation name')
@@ -67,6 +68,9 @@ def check(definition, lookup):
         raise ValueError('Describe what the operation achieves')
     if not isinstance(definition.get('conditions', ''), str):
         raise ValueError('conditions state in words when the result has its meaning')
+    requires = definition.get('requires', [])
+    if not isinstance(requires, list) or any(not isinstance(c, str) or not c for c in requires) or len(set(requires)) != len(requires):
+        raise ValueError('requires names the platform conditions that must hold when the operation is used')
     declared = definition.get('parameters', {})
     if not isinstance(declared, dict) or any(not isinstance(spec, dict) for spec in declared.values()):
         raise ValueError('Each parameter needs a description object')

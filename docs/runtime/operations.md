@@ -40,6 +40,7 @@ A Workflow Operation that decides from results is a saved program and runs as it
 | --- | --- |
 | `layer` | `standard` or `workflow`. A Standard Operation uses Basic and Standard Operations; a Workflow Operation may use all three / 标准操作使用基础操作和标准操作；工作流操作三类都可使用 |
 | `description`, `conditions` | What it achieves, and when the result has that meaning / 作用，以及结果成立的条件 |
+| `requires` | Names of [platform conditions](conditions.md) that must hold when the operation is used; an experiment using it is accepted while they hold / 使用该操作时必须成立的[平台条件](conditions.md)名称；条件成立时使用它的实验才被受理 |
 | `parameters` | Described like operation parameters; arguments are checked before anything runs / 与操作参数格式相同，执行前校验 |
 | `steps` | Run in the order written; `after: []` starts a parallel branch and `after: [ids]` joins branches. `"${name}"` in `arguments` or `device` inserts a parameter with its type / 按书写顺序执行；`after: []` 开始并行分支，`after: [ids]` 汇合。`"${name}"` 按类型代入参数 |
 | `result` | Names the values returned: a step and an optional path into its result / 为返回值命名：取自某一步结果中的路径 |

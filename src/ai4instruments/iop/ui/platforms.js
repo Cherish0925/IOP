@@ -54,9 +54,21 @@ export function topology(definition) {
     })
     .join("")}</svg></div>`;
 }
+const conditionStates = {
+  holds: ["成立", "Holds"],
+  due: ["待核对", "Due"],
+  lost: ["不成立", "Lost"],
+  unknown: ["未核对", "Not verified"],
+};
+function conditionRows(platform) {
+  const rows = state.conditions.filter((c) => c.platform === platform);
+  if (!rows.length) return "";
+  const held = rows.filter((c) => c.state === "holds").length;
+  return `<details class="raw" style="margin:15px 20px" ${held < rows.length ? "open" : ""}><summary>${icon("check")}${t("工作条件", "Operating conditions")} ${held}/${rows.length}</summary><div class="table-wrap"><table><tbody>${rows.map((c) => `<tr data-condition="${esc(c.id)}"><td>${esc(c.id)}<small>${esc(c.description)}</small></td><td>${c.state === "holds" ? "" : '<span class="error-text">'}${t(...conditionStates[c.state])}${c.state === "holds" ? "" : "</span>"}${c.reason ? `<small>${esc(c.reason)}</small>` : ""}</td><td>${c.value === undefined ? "" : esc(String(c.value))}</td></tr>`).join("")}</tbody></table></div><div class="platform-bottom"><span class="muted">${t("按依赖顺序核对到期的条件，并校正漂移的条件。", "Verify what is due and correct what drifted, dependencies first.")}</span><button class="button small" data-maintain="${esc(platform)}">${icon("play")}${t("保持", "Maintain")}</button></div></details>`;
+}
 export function platformCard(record, compact = false) {
   const d = record.definition;
-  return `<article class="platform-card"><div class="platform-heading"><div><h3>${esc(d.name || d.id)}</h3><small>${d.devices.length} ${t("台设备", "devices")} · ${t("配置", "Revision")} ${record.revision}${record.active_runs.length ? " · " + record.active_runs.length + " " + t("个实验运行中", "active experiments") : ""}</small></div><button class="button small" data-platform-edit="${esc(d.id)}">${t("配置", "Configure")}${icon("chevron")}</button></div>${topology(d)}${!compact && d.connections.length ? `<details class="raw" style="margin:15px 20px"><summary>${icon("network")}${d.connections.length} ${t("条物理连接", "physical connections")}</summary><div class="table-wrap"><table><tbody>${d.connections.map((c) => `<tr><td>${esc(c.from.device)}<small>${esc(c.from.port)}</small></td><td>${icon("arrow")}</td><td>${esc(c.to.device)}<small>${esc(c.to.port)}</small></td><td>${esc(c.kind)}</td></tr>`).join("")}</tbody></table></div></details>` : ""}<div class="platform-bottom"><span class="muted">${esc(d.description || d.id)}</span>${Object.keys(
+  return `<article class="platform-card"><div class="platform-heading"><div><h3>${esc(d.name || d.id)}</h3><small>${d.devices.length} ${t("台设备", "devices")} · ${t("配置", "Revision")} ${record.revision}${record.active_runs.length ? " · " + record.active_runs.length + " " + t("个实验运行中", "active experiments") : ""}</small></div><button class="button small" data-platform-edit="${esc(d.id)}">${t("配置", "Configure")}${icon("chevron")}</button></div>${topology(d)}${!compact && d.connections.length ? `<details class="raw" style="margin:15px 20px"><summary>${icon("network")}${d.connections.length} ${t("条物理连接", "physical connections")}</summary><div class="table-wrap"><table><tbody>${d.connections.map((c) => `<tr><td>${esc(c.from.device)}<small>${esc(c.from.port)}</small></td><td>${icon("arrow")}</td><td>${esc(c.to.device)}<small>${esc(c.to.port)}</small></td><td>${esc(c.kind)}</td></tr>`).join("")}</tbody></table></div></details>` : ""}${compact ? "" : conditionRows(d.id)}<div class="platform-bottom"><span class="muted">${esc(d.description || d.id)}</span>${Object.keys(
     d.procedures || {},
   )
     .map(
@@ -72,6 +84,19 @@ export function bindCards(root = document) {
         editPlatform(
           state.platforms.find((p) => p.id === b.dataset.platformEdit),
         )),
+  );
+  $$("[data-maintain]", root).forEach(
+    (b) =>
+      (b.onclick = () =>
+        busy(b, async () => {
+          let pass = await api("conditions/maintain?wait=25", {
+            platform: b.dataset.maintain,
+            request_id: uniqueID(),
+          });
+          while (!pass.complete)
+            pass = await api("maintenance/" + pass.id + "?wait=25");
+          emit("refresh");
+        })),
   );
   $$("[data-procedure]", root).forEach(
     (b) =>

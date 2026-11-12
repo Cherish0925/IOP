@@ -91,6 +91,9 @@ class Engine:
         self.uses = self.store.operation_uses()
         self.call_progress = {}
         self.platform_resources = platform_model.resource_index(self.platforms)
+        # What must hold on each platform for its experiments, and what is known about it now.
+        from .conditions import Conditions
+        self.conditions = Conditions(self)
         self.resource_holds = self.store.resource_holds()
         self.worker_count = max(1, int(config.get("workers", 8)))
         self.package_count = max(1, int(config.get("package_workers", 4)))
@@ -416,6 +419,11 @@ class Engine:
                 if step['device'] not in definition['devices']:
                     raise ValueError('Procedure device must belong to the platform')
                 self._operation('prepare', step)
+        conditions = self.conditions.prepare(definition)
+        if conditions:
+            definition['conditions'] = conditions
+        else:
+            definition.pop('conditions', None)
         return definition
 
     def save_operation(self, definition, expected_revision=None, archive=None):
@@ -518,6 +526,8 @@ class Engine:
         if operation_id in found:
             return found[operation_id]
         found[operation_id] = problems = []
+        problems += [f'{c}: no such condition' for c in self.library[operation_id].get('requires', [])
+                     if c not in self.conditions.definitions]
         for step in self.library[operation_id].get('steps', []):
             if 'device' not in step:
                 problems += [f"{step['operation']}: {p}" for p in self._unavailable(step['operation'], found)]
@@ -587,6 +597,7 @@ class Engine:
             self.store.save_platform(record)
             self.platforms[record['id']] = record
             self.platform_resources = platform_model.resource_index(self.platforms)
+            self.conditions.index()
             return self.platform_info(record['id'])
 
     def run_procedure(self, platform_id, procedure_id, request_id=None):
@@ -908,6 +919,11 @@ class Engine:
                             run['requirements'][key] = max(run['requirements'].get(key, 0), count)
             if len(self.operations) + len(operations) > int(self.config.get('max_active_operations', 100000)):
                 raise QueueFull('The service has reached its configured number of active operations')
+            required = self.conditions.required(spec, run.get('calls'), program)
+            if required:
+                # The experiment is accepted only while what it relies on holds; the record keeps what that was.
+                run['conditions'] = self.conditions.require(required)
+                run['requires'] = required
             used = {op['device'] for op in operations}
             if package is not None:
                 used = set(platform['definition']['devices']) if platform else (set(spec.get('resources', [])) & self.devices.keys() or self.devices.keys())
@@ -932,6 +948,7 @@ class Engine:
             self.runs[run_id] = run
             self.operations.update({op["id"]:op for op in operations})
             self._index_run(run)
+            self.conditions.rely(run_id, required)
             self.wake.set()
             return json.loads(dumps(run))
 
@@ -977,6 +994,8 @@ class Engine:
                 raise ValueError("Operations require an active external experiment or running package")
             if len(self.operations) >= int(self.config.get('max_active_operations', 100000)):
                 raise QueueFull('The service has reached its configured number of active operations')
+            if run.get('requires'):
+                self.conditions.require(run['requires'], run_id)
             op = self._operation(run_id, step)
             if run.get('platform') and op['device'] not in run['platform']['definition']['devices']:
                 raise ValueError('Operation device must belong to the selected platform')
@@ -1563,6 +1582,7 @@ class Engine:
                     run.update(state="cancelling", end_state="interrupted")
                     self._stop_pending(run)
             self.wake.set()
+        self.conditions.stop()
         if self.thread.is_alive():
             self.thread.join()
         self.monitors.stop()

@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "id": "demo-bench",
+  "name": "Demonstration bench",
+  "devices": ["stage", "meter"],
+  "conditions": [
+    {
+      "id": "stage.at_reference",
+      "kind": "alignment",
+      "description": "The stage is at its reference angle",
+      "verify": {"device": "stage", "operation": "position"},
+      "accept": {"value": ["angle_actual"], "minimum": -0.5, "maximum": 0.5},
+      "correct": {"device": "stage", "operation": "move_to", "arguments": {"angle_deg": 0}}
+    },
+    {
+      "id": "meter.signal",
+      "kind": "signal",
+      "description": "The meter reads the full signal at the reference angle",
+      "after": ["stage.at_reference"],
+      "verify": {"device": "meter", "operation": "measure"},
+      "accept": {"value": ["power"], "minimum": 0.9},
+      "usable": {"value": ["power"], "minimum": 0.01},
+      "reference": {"power": ["power"]},
+      "valid_for": 600
+    }
+  ]
+}

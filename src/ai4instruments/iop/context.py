@@ -25,6 +25,7 @@ def schema_document(name):
 SUMMARY_OPERATIONS = 24
 # Names of saved Standard and Workflow Operations listed per layer; saved_operations returns all of them.
 SAVED_OPERATIONS = 50
+CONDITIONS = 20
 
 
 def operation_names(names):
@@ -122,6 +123,7 @@ def laboratory(engine, refresh=False, detail='summary'):
         'changes': '/v1/context/changes?after={cursor}',
         'instrument_catalog': '/v1/instrument-catalog',
         'saved_operations': '/v1/library; a step without device uses one by name',
+        'conditions': '/v1/conditions; requires names what an experiment relies on',
     }
     # The three roles of operations: device operations are Basic; saved methods are Standard and Workflow.
     saved = engine.saved_operations()
@@ -131,6 +133,18 @@ def laboratory(engine, refresh=False, detail='summary'):
         result['operations'][layer] = names[:SAVED_OPERATIONS]
         if len(names) > SAVED_OPERATIONS:
             result['operations'][layer + '_omitted'] = len(names) - SAVED_OPERATIONS
+    # Platform conditions that do not hold now; those that hold cost the agent nothing.
+    lacking = {}
+    for row in engine.conditions.listing():
+        if row['state'] != 'holds':
+            lacking.setdefault(row['platform'], {}).setdefault(row['state'], []).append(row['id'])
+    if lacking:
+        result['setup']['conditions'] = {state: sorted(c for p in lacking.values() for c in p.get(state, []))[:CONDITIONS]
+                                         for state in ('lost', 'due', 'unknown') if any(state in p for p in lacking.values())}
+        for platform_id, states in sorted(lacking.items()):
+            result['next_steps'].append({'action': 'maintain_conditions', 'platform': platform_id,
+                                         'conditions': sorted(c for names in states.values() for c in names)[:CONDITIONS],
+                                         'submit': '/v1/conditions/maintain'})
     unavailable = {o['id']: o['unavailable'] for o in saved if o.get('unavailable')}
     if unavailable:
         result['setup']['unavailable_operations'] = unavailable
@@ -176,7 +190,7 @@ def changes(engine, after=0, limit=100, wait=0):
     for event in events:
         row = {k: event[k] for k in ('sequence', 'time', 'kind', 'run_id', 'device_id', 'devices',
                                     'connection', 'revision', 'operation_id', 'stream', 'artifact_id', 'size',
-                                    'chunk_sequence', 'transition_sequence') if event.get(k) is not None}
+                                    'chunk_sequence', 'transition_sequence', 'condition') if event.get(k) is not None}
         if event.get('run_id'):
             row['details'] = '/v1/runs/' + event['run_id'] + '?details=false'
         elif event.get('device_id'):

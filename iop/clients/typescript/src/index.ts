@@ -1,11 +1,22 @@
 export type Step = { id: string; device?: string; operation: string; arguments?: Record<string, unknown>; after?: string[]; resources?: string[]; requirements?: Record<string, number>; bindings?: Record<string, { step: string; path?: (string | number)[] }> };
 export type Endpoint = { device: string; port: string };
 export type Procedure = { steps: Step[]; resources?: string[] };
+export type ConditionStep = { device?: string; operation: string; arguments?: Record<string, unknown> };
+export type Tolerance = { value?: (string | number)[]; minimum?: number; maximum?: number; equals?: unknown };
+/** What must hold on a platform for its experiments: how it is verified, its tolerance, what restores it and how long it stays valid. */
+export type Condition = {
+  id: string; description: string; kind?: 'environment' | 'equilibrium' | 'reference' | 'calibration' | 'alignment' | 'lock' | 'operating_point' | 'signal';
+  after?: string[]; verify: ConditionStep; accept: Tolerance; usable?: Tolerance; reference?: Record<string, (string | number)[]>;
+  correct?: ConditionStep | ConditionStep[]; settle?: number; valid_for?: number; note?: string;
+};
+export type ConditionState = { id: string; platform: string; description: string; kind?: string; after: string[]; state: 'holds' | 'due' | 'lost' | 'unknown'; reason?: string; value?: unknown; verified?: string; valid_until?: string; [key: string]: unknown };
+export type Maintenance = { id: string; platform: string; state: string; complete: boolean; holds?: boolean; run_id: string; report: { condition: string; result: 'held' | 'verified' | 'corrected' | 'lost' | 'blocked'; value?: unknown; by?: string; found?: string }[]; error?: string };
 export type PlatformDefinition = {
   schema_version: 1; id: string; name?: string; description?: string; devices: string[];
   resources?: { id: string; devices: string[]; description?: string; operations?: Record<string, string[]> }[];
   connections?: { from: Endpoint; to: Endpoint; kind: string; description?: string }[];
   procedures?: Record<string, Procedure>;
+  conditions?: Condition[];
 };
 export type Platform = { id: string; revision: number; updated: string; definition: PlatformDefinition; active_runs?: string[]; missing_devices?: string[] };
 export type RunRecord = { id: string; state: string; result?: unknown; error?: string; platform?: Platform; [key: string]: unknown };
@@ -15,7 +26,7 @@ export type ArtifactRecord = { id: string; run_id: string; name: string; size: n
 export type Event = { sequence: number; kind: string; run_id?: string; [key: string]: unknown };
 export type ManualTask = { operation_id: string; run_id: string | null; device: string; operation: string; instruction: string; arguments: Record<string, unknown>; readings: Record<string, Record<string, unknown>>; created: string };
 export type RunUpdates = { run: RunRecord; changes: Event[]; operations: OperationRecord[]; cursor: number; has_more: boolean };
-export type Submission = { name?: string; project?: string; experiment?: string; platform?: string; resources?: string[]; requirements?: Record<string, number>; parameters?: Record<string, unknown>; request_id?: string };
+export type Submission = { name?: string; project?: string; experiment?: string; platform?: string; resources?: string[]; requirements?: Record<string, number>; parameters?: Record<string, unknown>; request_id?: string; requires?: string[] };
 export class IOPError extends Error {
   constructor(message: string, readonly status: number, readonly details: Record<string, unknown> = {}) { super(message); this.name = 'IOPError'; }
   get code() { return this.details.code as string | undefined; }
@@ -89,6 +100,17 @@ export class IOP {
   programFile(id: string, name: string) {
     return this.request<{ text: string | null }>(`/v1/library/${encodeURIComponent(id)}/files/${name.split('/').map(encodeURIComponent).join('/')}`);
   }
+  conditions(platform?: string) { return this.request<ConditionState[]>('/v1/conditions' + (platform ? '?' + new URLSearchParams({ platform }) : '')); }
+  condition(id: string) { return this.request<Condition & ConditionState & { statistics: Record<string, unknown>; records: Record<string, unknown>[] }>('/v1/conditions/' + encodeURIComponent(id)); }
+  /** Verify the conditions that are due and correct those that drifted, in dependency order; resolves when the pass has ended. */
+  async maintain(options: { platform?: string; conditions?: string[]; runId?: string; requestId?: string; force?: boolean; signal?: AbortSignal } = {}): Promise<Maintenance> {
+    let job = await this.request<Maintenance>('/v1/conditions/maintain?wait=25', {
+      platform: options.platform, conditions: options.conditions, run_id: options.runId,
+      request_id: options.requestId ?? crypto.randomUUID(), force: options.force ?? false }, options.signal);
+    while (!job.complete) job = await this.request<Maintenance>(`/v1/maintenance/${encodeURIComponent(job.id)}?wait=25`, undefined, options.signal);
+    return job;
+  }
+  invalidate(conditions: string[], reason: string) { return this.request<ConditionState[]>('/v1/conditions/invalidate', { conditions, reason }); }
   platforms() { return this.request<Platform[]>('/v1/platforms'); }
   platform(id: string) { return this.request<Platform>('/v1/platforms/' + encodeURIComponent(id)); }
   configurePlatform(definition: PlatformDefinition, expectedRevision = 0) {
@@ -179,6 +201,10 @@ export class Run {
     return batch.operations;
   }
   /** Use a saved Standard or Workflow Operation in this experiment and return its named result. */
+  /** Inside this experiment, verify what it relies on and correct what drifted. */
+  maintain(conditions?: string[], options: { force?: boolean; signal?: AbortSignal } = {}) {
+    return this.client.maintain({ conditions, runId: this.id, ...options });
+  }
   async call(operation: string, args: Record<string, unknown> = {}, options: { requestId?: string; signal?: AbortSignal } = {}) {
     const requestId = options.requestId ?? crypto.randomUUID();
     await this.batch([{ id: 'call', operation, arguments: args }], { requestId, signal: options.signal });

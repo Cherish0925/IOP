@@ -1,0 +1,272 @@
+"""Operating conditions: verified, corrected in dependency order, trusted for a time, and relied on by experiments."""
+import tempfile
+import threading
+import time
+import unittest
+from ai4instruments.iop import Client, IOPError
+from ai4instruments.iop.conditions import check, outcome, summary
+from ai4instruments.iop.config import initialize
+from ai4instruments.iop.drivers import Driver
+from ai4instruments.iop.engine import Engine
+from ai4instruments.iop.server import Server
+from . import test_service as fixture
+
+# A signal chain whose physical state the cases change behind the Runtime's back:
+# a source feeds a coupler, and a detector reads what comes through.
+WORLD = {}
+
+
+class Part(Driver):
+    def describe(self):
+        return {'operations': {
+            'source': {'read': {'effect': 'observe', 'parameters': {}}, 'stabilize': {'parameters': {}}},
+            'coupler': {'peak_up': {'parameters': {}}, 'nudge': {'parameters': {}}},
+            'detector': {'read': {'effect': 'observe', 'parameters': {}}},
+        }[self.config['part']]}
+
+    def invoke(self, operation, arguments, cancelled):
+        WORLD['log'].append(f"{self.config['part']}.{operation}")
+        if operation == 'stabilize':
+            WORLD['level'] = 1.0
+        elif operation == 'peak_up':
+            WORLD['alignment'] = 1.0
+        elif operation == 'nudge':
+            WORLD['alignment'] = min(1.0, WORLD['alignment'] + 0.01)
+        elif self.config['part'] == 'source':
+            return {'level': WORLD['level']}
+        else:
+            return {'signal': WORLD['level'] * WORLD['alignment'], 'dark': 0.002}
+        return {}
+
+
+SOURCE = {'id': 'source.stable', 'kind': 'equilibrium', 'description': 'The source has reached its level',
+          'verify': {'device': 'source', 'operation': 'read'}, 'accept': {'value': ['level'], 'minimum': 0.95, 'maximum': 1.05},
+          'correct': {'device': 'source', 'operation': 'stabilize'}}
+PATH = {'id': 'path.aligned', 'kind': 'alignment', 'description': 'The source reaches the detector', 'after': ['source.stable'],
+        'verify': {'device': 'detector', 'operation': 'read'}, 'accept': {'value': ['signal'], 'minimum': 0.8},
+        'usable': {'value': ['signal'], 'minimum': 0.05}, 'reference': {'dark': ['dark']}, 'valid_for': 3600,
+        'correct': [{'device': 'coupler', 'operation': 'nudge'}, {'device': 'coupler', 'operation': 'peak_up'}]}
+
+
+def platform(*conditions):
+    return {'schema_version': 1, 'id': 'chain', 'devices': ['source', 'coupler', 'detector'], 'conditions': list(conditions)}
+
+
+class ConditionsCase(unittest.TestCase):
+    def setUp(self):
+        fixture.ServiceCase.setUp(self)
+        WORLD.update(level=1.0, alignment=1.0, log=[])
+        for part in ('source', 'coupler', 'detector'):
+            self.client.register({'id': part, 'driver': __name__ + ':Part', 'config': {'part': part}})
+        self.client.configure_platform(platform(SOURCE, PATH))
+
+    tearDown = fixture.ServiceCase.tearDown
+
+    def states(self):
+        return {row['id']: row['state'] for row in self.client.conditions('chain')}
+
+    def test_a_platform_is_brought_to_its_working_state_in_dependency_order(self):
+        self.assertEqual(self.states(), {'source.stable': 'unknown', 'path.aligned': 'unknown'})
+        report = self.client.maintain('chain')
+        self.assertTrue(report['holds'])
+        self.assertEqual([(e['condition'], e['result']) for e in report['report']],
+                         [('source.stable', 'verified'), ('path.aligned', 'verified')])
+        self.assertEqual(WORLD['log'], ['source.read', 'detector.read'])
+        self.assertEqual(self.states(), {'source.stable': 'holds', 'path.aligned': 'holds'})
+        # Nothing is due: a second pass touches no instrument.
+        again = self.client.maintain('chain')
+        self.assertEqual([e['result'] for e in again['report']], ['held', 'held'])
+        self.assertEqual(len(WORLD['log']), 2)
+        run = self.client.run(report['run_id']).info()
+        self.assertEqual((run['state'], run['result']['holds']), ('completed', True))
+        described = self.client.condition('path.aligned')
+        self.assertEqual((described['reference'], described['statistics']['verifications']), ({'dark': 0.002}, 1))
+        self.assertIn('valid_until', described)
+
+    def test_a_drifted_condition_is_corrected_with_the_first_correction_that_restores_it(self):
+        self.client.maintain('chain')
+        WORLD['alignment'] = 0.5
+        report = self.client.maintain('chain', force=True)
+        entry = report['report'][-1]
+        self.assertEqual((entry['condition'], entry['result'], entry['found'], entry['by']),
+                         ('path.aligned', 'corrected', 'drifted', 'coupler.peak_up'))
+        self.assertEqual(WORLD['log'][-5:], ['detector.read', 'coupler.nudge', 'detector.read', 'coupler.peak_up', 'detector.read'])
+        described = self.client.condition('path.aligned')
+        self.assertEqual(described['statistics']['corrections'],
+                         {'coupler.nudge': {'tried': 1, 'restored': 0}, 'coupler.peak_up': {'tried': 1, 'restored': 1}})
+        self.assertEqual(described['statistics']['held']['count'], 1)
+        self.assertEqual([r['type'] for r in described['records']][-4:], ['verified', 'corrected', 'verified', 'corrected'])
+
+    def test_an_unusable_measurement_sends_the_search_upstream(self):
+        self.client.maintain('chain')
+        WORLD['level'] = 0.0
+        # The state of the source still says it holds; only the detector is due.
+        self.client.invalidate(['path.aligned'], 'table was bumped')
+        self.assertEqual(self.states(), {'source.stable': 'holds', 'path.aligned': 'due'})
+        del WORLD['log'][:]
+        report = self.client.maintain(conditions=['path.aligned'])
+        self.assertTrue(report['holds'])
+        results = {e['condition']: e for e in report['report']}
+        self.assertEqual((results['source.stable']['result'], results['source.stable']['by']), ('corrected', 'source.stabilize'))
+        self.assertEqual(results['path.aligned']['result'], 'verified')
+        # Nothing was done to the coupler: the cause was upstream.
+        self.assertEqual(WORLD['log'], ['detector.read', 'source.read', 'source.stabilize', 'source.read', 'detector.read'])
+
+    def test_a_correction_upstream_makes_what_depends_on_it_due(self):
+        self.client.maintain('chain')
+        WORLD['level'] = 0.5
+        self.client.maintain(conditions=['source.stable'], force=True)
+        states = {row['id']: row for row in self.client.conditions()}
+        self.assertEqual((states['path.aligned']['state'], states['path.aligned']['reason']),
+                         ('due', 'source.stable was corrected since'))
+
+    def test_a_verification_is_trusted_for_a_time(self):
+        self.client.configure_platform(platform(SOURCE, {**PATH, 'valid_for': 0.3}), expected_revision=1)
+        self.client.maintain('chain')
+        self.assertEqual(self.states()['path.aligned'], 'holds')
+        time.sleep(0.35)
+        row = [r for r in self.client.conditions() if r['id'] == 'path.aligned'][0]
+        self.assertEqual((row['state'], row['reason']), ('due', 'valid_for elapsed'))
+
+    def test_a_condition_without_a_working_correction_is_lost_and_blocks_what_depends_on_it(self):
+        self.client.configure_platform(platform({k: v for k, v in SOURCE.items() if k != 'correct'}, PATH), expected_revision=1)
+        WORLD['level'] = 0.5
+        report = self.client.maintain('chain')
+        self.assertFalse(report['holds'])
+        self.assertEqual([(e['condition'], e['result']) for e in report['report']],
+                         [('source.stable', 'lost'), ('path.aligned', 'blocked')])
+        self.assertEqual(report['report'][1]['by'], 'source.stable')
+        context = self.client.context()
+        self.assertEqual(context['setup']['conditions'], {'lost': ['source.stable'], 'unknown': ['path.aligned']})
+        self.assertIn({'action': 'maintain_conditions', 'platform': 'chain', 'conditions': ['path.aligned', 'source.stable'],
+                       'submit': '/v1/conditions/maintain'}, context['next_steps'])
+
+    def test_experiments_are_accepted_while_what_they_rely_on_holds(self):
+        steps = [{'id': 'read', 'device': 'detector', 'operation': 'read'}]
+        with self.assertRaisesRegex(IOPError, 'path.aligned is unknown') as refused:
+            self.client.submit(steps, requires=['path.aligned'])
+        self.assertEqual((refused.exception.code, list(refused.exception.details['conditions'])),
+                         ('conditions_not_held', ['path.aligned']))
+        self.client.maintain('chain')
+        run = self.client.submit(steps, requires=['path.aligned'])
+        run.result(10)
+        info = run.info()
+        self.assertEqual((info['requires'], info['conditions']['path.aligned']['reference']), (['path.aligned'], {'dark': 0.002}))
+        self.assertNotIn('in_doubt', info)
+        # A later verification finds the condition lost: data taken since the accepted one are in doubt.
+        WORLD['alignment'] = 0.2
+        self.client.configure_platform(platform(SOURCE, {**PATH, 'correct': []}), expected_revision=1)
+        self.client.maintain('chain', force=True)
+        doubt = run.info()['in_doubt']['path.aligned']
+        self.assertEqual((doubt['outcome'], doubt['since']), ('drifted', info['conditions']['path.aligned']['accepted']))
+
+    def test_saved_operations_name_the_conditions_they_require(self):
+        self.client.save_operation({'id': 'signal.read', 'layer': 'standard', 'description': 'Read the signal',
+                                    'requires': ['path.aligned'],
+                                    'steps': [{'id': 'read', 'device': 'detector', 'operation': 'read'}],
+                                    'result': {'signal': {'step': 'read', 'path': ['signal']}}})
+        with self.assertRaisesRegex(IOPError, 'conditions_not_held|path.aligned is unknown'):
+            self.client.submit([{'id': 's', 'operation': 'signal.read'}])
+        self.client.maintain('chain')
+        self.assertEqual(self.client.submit([{'id': 's', 'operation': 'signal.read'}]).result(10)['s'], {'signal': 1.0})
+        self.client.save_operation({'id': 'other.read', 'layer': 'standard', 'description': 'Read', 'requires': ['gone'],
+                                    'steps': [{'id': 'read', 'device': 'detector', 'operation': 'read'}]})
+        self.assertEqual(self.client.saved_operation('other.read')['unavailable'], ['gone: no such condition'])
+
+    def test_a_continuous_experiment_maintains_what_it_relies_on_as_it_goes(self):
+        self.client.configure_platform(platform(SOURCE, {**PATH, 'valid_for': 0.4}), expected_revision=1)
+        self.client.maintain('chain')
+        experiment = self.client.start_experiment(resources=['source', 'coupler', 'detector'], requires=['path.aligned'])
+        read = [{'id': 'read', 'device': 'detector', 'operation': 'read'}]
+        experiment.batch(read)
+        time.sleep(0.45)
+        WORLD['alignment'] = 0.3
+        with self.assertRaises(IOPError) as refused:
+            experiment.batch(read)
+        self.assertEqual(refused.exception.code, 'conditions_not_held')
+        # The same batch with maintain: verified inside the experiment, corrected, then run.
+        operations = experiment.batch(read, maintain=True)
+        self.assertEqual(operations[0]['result']['signal'], 1.0)
+        self.assertEqual(experiment.info()['in_doubt']['path.aligned']['outcome'], 'drifted')
+        experiment.finish()
+
+    def test_a_monitored_reading_outside_its_limits_makes_conditions_due(self):
+        current = self.client.device_history('source')[0]
+        self.client.configure_platform({'schema_version': 1, 'id': 'chain', 'devices': ['source', 'coupler', 'detector']}, expected_revision=1)
+        self.client.configure_device('source', {**current['definition'], 'monitors': [
+            {'id': 'level', 'operation': 'read', 'interval_s': 0.1, 'value': ['level'], 'maximum': 1.2}]}, current['revision'])
+        self.client.configure_platform(platform(SOURCE, PATH), expected_revision=2)
+        self.client.maintain('chain')
+        WORLD['level'] = 2.0
+        deadline = time.monotonic() + 5
+        while self.states()['source.stable'] == 'holds' and time.monotonic() < deadline:
+            time.sleep(0.05)
+        rows = {row['id']: row for row in self.client.conditions()}
+        self.assertEqual((rows['source.stable']['state'], rows['source.stable']['reason']),
+                         ('due', 'monitor source.level left its limits'))
+        self.assertEqual((rows['path.aligned']['state'], rows['path.aligned']['reason']), ('due', 'source.stable does not hold'))
+
+    def test_states_and_records_survive_a_restart(self):
+        self.client.maintain('chain')
+        self.server.shutdown(); self.server.server_close(); self.engine.close()
+        self.engine = Engine(self.temp.name, self.config)
+        self.server = Server(('127.0.0.1', 0), self.engine)
+        self.engine.start()
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.client = Client(self.engine.endpoint, token=self.config['token'])
+        self.assertEqual(self.states(), {'source.stable': 'holds', 'path.aligned': 'holds'})
+        self.assertEqual(self.client.condition('source.stable')['statistics']['verifications'], 1)
+
+
+class ExampleCase(unittest.TestCase):
+    setUp = fixture.ServiceCase.setUp
+    tearDown = fixture.ServiceCase.tearDown
+
+    def test_the_example_conditions_are_maintained_on_the_demonstration_devices(self):
+        import json
+        from pathlib import Path
+        self.client.configure_platform(json.loads((Path(__file__).resolve().parents[2] / 'examples/iop/conditions.json').read_text()))
+        # At 45 degrees the meter sees nothing: the search goes to the stage, which is moved back.
+        self.client.invoke('stage', 'move_to', {'angle_deg': 45})
+        report = self.client.maintain('demo-bench')
+        self.assertEqual([(e['condition'], e['result']) for e in report['report']],
+                         [('stage.at_reference', 'corrected'), ('meter.signal', 'verified')])
+        self.assertEqual(self.client.condition('meter.signal')['reference'], {'power': 1.0})
+
+
+class DefinitionCase(unittest.TestCase):
+    def test_definitions_are_checked(self):
+        for change, message in (
+                ({'after': ['missing']}, 'after names other conditions'),
+                ({'accept': {'value': ['signal']}}, 'set minimum, maximum or equals'),
+                ({'verify': {'operation': ''}}, 'verify is one operation'),
+                ({'kind': 'mood'}, 'kind is one of'),
+                ({'valid_for': 0}, 'valid_for is a duration'),
+                ({'interval': 5}, 'unknown fields interval')):
+            with self.assertRaisesRegex(ValueError, message):
+                check([SOURCE, {**PATH, **change}])
+        with self.assertRaisesRegex(ValueError, 'cycle'):
+            check([{**SOURCE, 'after': ['path.aligned']}, PATH])
+        with self.assertRaisesRegex(ValueError, 'already defined on another platform'):
+            check([SOURCE], taken={'source.stable'})
+
+    def test_a_result_is_classified_in_three_ways(self):
+        condition = check([SOURCE, PATH])[1]
+        self.assertEqual(outcome(condition, {'signal': 0.9, 'dark': 0.01}), ('holds', 0.9, {'dark': 0.01}))
+        self.assertEqual(outcome(condition, {'signal': 0.4, 'dark': 0.01})[0], 'drifted')
+        self.assertEqual(outcome(condition, {'signal': 0.01, 'dark': 0.01})[0], 'unusable')
+        self.assertEqual(outcome(condition, {'error': 'no reading'}), ('unusable', None, {}))
+
+    def test_records_give_the_drift_and_when_the_tolerance_will_be_reached(self):
+        condition = check([SOURCE])[0]
+        rows = [{'type': 'verified', 'time': f'2026-01-01T0{hour}:00:00+00:00', 'outcome': 'holds', 'value': 1.0 + 0.01 * hour}
+                for hour in range(4)]
+        trend = summary(condition, rows)['trend']
+        self.assertAlmostEqual(trend['per_hour'], 0.01)
+        self.assertEqual((trend['points'], trend['expected_until']), (4, '2026-01-01T05:00:00+00:00'))
+        rows.append({'type': 'verified', 'time': '2026-01-01T06:00:00+00:00', 'outcome': 'drifted', 'value': 1.06})
+        self.assertEqual(summary(condition, rows)['held'], {'count': 1, 'median_s': 21600.0, 'shortest_s': 21600.0})
+
+
+if __name__ == '__main__':
+    unittest.main()
