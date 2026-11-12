@@ -1,4 +1,5 @@
 """Operating conditions: verified, corrected in dependency order, trusted for a time, and relied on by experiments."""
+import math
 import tempfile
 import threading
 import time
@@ -20,7 +21,10 @@ class Part(Driver):
     def describe(self):
         return {'operations': {
             'source': {'read': {'effect': 'observe', 'parameters': {}}, 'stabilize': {'parameters': {}}},
-            'coupler': {'peak_up': {'parameters': {}}, 'nudge': {'parameters': {}}},
+            'coupler': {'peak_up': {'parameters': {}}, 'nudge': {'parameters': {}},
+                        'where': {'effect': 'observe', 'parameters': {}},
+                        **{'set_' + axis: {'parameters': {'position': {'type': 'number', 'minimum': -1, 'maximum': 1}}}
+                           for axis in 'xy'}},
             'detector': {'read': {'effect': 'observe', 'parameters': {}}},
         }[self.config['part']]}
 
@@ -32,10 +36,16 @@ class Part(Driver):
             WORLD['alignment'] = 1.0
         elif operation == 'nudge':
             WORLD['alignment'] = min(1.0, WORLD['alignment'] + 0.01)
+        elif operation in ('set_x', 'set_y'):
+            WORLD[operation[-1]] = arguments['position']
+        elif operation == 'where':
+            return {'x': WORLD['x'], 'y': WORLD['y']}
         elif self.config['part'] == 'source':
             return {'level': WORLD['level']}
         else:
-            return {'signal': WORLD['level'] * WORLD['alignment'], 'dark': 0.002}
+            # The coupling falls off as a Gaussian around the point the beam has drifted to.
+            offset = (WORLD['x'] - WORLD['x0']) ** 2 + (WORLD['y'] - WORLD['y0']) ** 2
+            return {'signal': WORLD['level'] * WORLD['alignment'] * math.exp(-offset / 0.08), 'dark': 0.002}
         return {}
 
 
@@ -55,7 +65,7 @@ def platform(*conditions):
 class ConditionsCase(unittest.TestCase):
     def setUp(self):
         fixture.ServiceCase.setUp(self)
-        WORLD.update(level=1.0, alignment=1.0, log=[])
+        WORLD.update(level=1.0, alignment=1.0, x=0.0, y=0.0, x0=0.0, y0=0.0, log=[])
         for part in ('source', 'coupler', 'detector'):
             self.client.register({'id': part, 'driver': __name__ + ':Part', 'config': {'part': part}})
         self.client.configure_platform(platform(SOURCE, PATH))
@@ -190,6 +200,42 @@ class ConditionsCase(unittest.TestCase):
         self.assertEqual(experiment.info()['in_doubt']['path.aligned']['outcome'], 'drifted')
         experiment.finish()
 
+    def tuned(self, **options):
+        knob = lambda axis: {'device': 'coupler', 'operation': 'set_' + axis, 'argument': 'position', 'step': 0.1,
+                             'resolution': 0.01, 'minimum': -1, 'maximum': 1,
+                             'read': {'device': 'coupler', 'operation': 'where', 'value': [axis]}}
+        return platform(SOURCE, {**PATH, 'correct': {'tune': [knob('x'), knob('y')], **options}})
+
+    def test_the_runtime_tunes_several_settings_jointly_until_the_value_is_best(self):
+        self.client.configure_platform(self.tuned(), expected_revision=1)
+        self.client.maintain('chain')
+        # The beam walked away in both directions: neither setting alone restores the coupling.
+        WORLD.update(x0=0.33, y0=-0.24)
+        report = self.client.maintain('chain', force=True)
+        entry = report['report'][-1]
+        self.assertEqual((entry['result'], entry['found'], entry['by']), ('corrected', 'drifted', 'tune coupler.position, coupler.position'))
+        self.assertGreater(entry['value'], 0.98)
+        self.assertLess(abs(WORLD['x'] - 0.33) + abs(WORLD['y'] + 0.24), 0.05)
+        record = self.client.condition('path.aligned')['records'][-1]
+        self.assertEqual((record['type'], record['restored'], record['tuned']['from']), ('corrected', True, [0.0, 0.0]))
+        self.assertLessEqual(record['tuned']['evaluations'], 40)
+        self.assertEqual(record['tuned']['to'], [WORLD['x'], WORLD['y']])
+
+    def test_tuning_can_stop_once_the_tolerance_is_met_and_never_leaves_its_range(self):
+        self.client.configure_platform(self.tuned(until='accept'), expected_revision=1)
+        self.client.maintain('chain')
+        WORLD.update(x0=0.33, y0=-0.24)
+        self.client.maintain('chain', force=True)
+        quick = self.client.condition('path.aligned')['records'][-1]['tuned']['evaluations']
+        self.assertLess(quick, 12)
+        self.assertGreaterEqual(self.client.condition('path.aligned')['value'], 0.8)
+        # The optimum is outside the allowed range: the search ends at the limit and the condition is lost.
+        WORLD.update(x0=3.0, y0=0.0)
+        report = self.client.maintain('chain', force=True)
+        self.assertEqual(report['report'][-1]['result'], 'lost')
+        self.assertAlmostEqual(WORLD['x'], 1)
+        self.assertLessEqual(WORLD['x'], 1)
+
     def test_a_monitored_reading_outside_its_limits_makes_conditions_due(self):
         current = self.client.device_history('source')[0]
         self.client.configure_platform({'schema_version': 1, 'id': 'chain', 'devices': ['source', 'coupler', 'detector']}, expected_revision=1)
@@ -226,12 +272,18 @@ class ExampleCase(unittest.TestCase):
         import json
         from pathlib import Path
         self.client.configure_platform(json.loads((Path(__file__).resolve().parents[2] / 'examples/iop/conditions.json').read_text()))
-        # At 45 degrees the meter sees nothing: the search goes to the stage, which is moved back.
-        self.client.invoke('stage', 'move_to', {'angle_deg': 45})
+        # At 30 degrees a quarter of the signal is left: the Runtime turns the stage until the meter reads it all.
+        self.client.invoke('stage', 'move_to', {'angle_deg': 30})
         report = self.client.maintain('demo-bench')
         self.assertEqual([(e['condition'], e['result']) for e in report['report']],
-                         [('stage.at_reference', 'corrected'), ('meter.signal', 'verified')])
-        self.assertEqual(self.client.condition('meter.signal')['reference'], {'power': 1.0})
+                         [('stage.in_range', 'verified'), ('meter.signal', 'corrected')])
+        self.assertEqual(report['report'][1]['by'], 'tune stage.angle_deg')
+        self.assertGreaterEqual(self.client.condition('meter.signal')['reference']['power'], 0.98)
+        # Outside its range the stage is brought back first; the signal is then verified without tuning.
+        self.client.invoke('stage', 'move_to', {'angle_deg': 60})
+        report = self.client.maintain('demo-bench', force=True)
+        self.assertEqual([(e['condition'], e['result']) for e in report['report']],
+                         [('stage.in_range', 'corrected'), ('meter.signal', 'verified')])
 
 
 class DefinitionCase(unittest.TestCase):
@@ -249,6 +301,16 @@ class DefinitionCase(unittest.TestCase):
             check([{**SOURCE, 'after': ['path.aligned']}, PATH])
         with self.assertRaisesRegex(ValueError, 'already defined on another platform'):
             check([SOURCE], taken={'source.stable'})
+        knob = {'device': 'coupler', 'operation': 'set_x', 'argument': 'position', 'step': 0.1, 'minimum': -1, 'maximum': 1,
+                'read': {'device': 'coupler', 'operation': 'where', 'value': ['x']}}
+        tuned = check([SOURCE, {**PATH, 'correct': {'tune': knob}}])[1]['correct'][0]
+        self.assertEqual((tuned['goal'], tuned['evaluations'], tuned['until'], tuned['tune'][0]['resolution']),
+                         ('maximize', 40, 'optimum', 0.00625))
+        for change, message in (({'minimum': 2}, 'minimum < maximum'), ({'step': 0}, 'step > 0'), ({'read': {}}, 'read is the operation')):
+            with self.assertRaisesRegex(ValueError, message):
+                check([SOURCE, {**PATH, 'correct': {'tune': {**knob, **change}}}])
+        with self.assertRaisesRegex(ValueError, 'numeric tolerance'):
+            check([{**SOURCE, 'accept': {'value': ['level'], 'equals': 1}, 'correct': {'tune': knob}}])
 
     def test_a_result_is_classified_in_three_ways(self):
         condition = check([SOURCE, PATH])[1]

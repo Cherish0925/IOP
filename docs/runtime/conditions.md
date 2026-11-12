@@ -63,13 +63,35 @@ Conditions are part of the platform description (`conditions`) and are saved wit
 | `accept` | The tolerance: `value` is the path into the result, with `minimum`, `maximum` or `equals` / 容差：`value` 是结果中的路径，配 `minimum`、`maximum` 或 `equals` |
 | `usable` | When this is not met the measurement means nothing and the search goes upstream / 不满足时测量本身无意义，转向上游 |
 | `reference` | Values of the accepted verification kept with the experiments that rely on it, such as a dark level used in the analysis / 通过核对时保留的数值，随依赖它的实验保存，例如分析时要扣除的暗计数 |
-| `correct` | Operations that restore the condition, tried in order, each followed by a verification. A step of a `manual` device asks a person / 恢复该条件的操作，按顺序尝试，每个之后核对一次；`manual` 设备的步骤交给人 |
+| `correct` | What restores the condition, tried in order, each followed by a verification: an operation, or [`tune`](#tuning--调节). A step of a `manual` device asks a person / 恢复该条件的做法，按顺序尝试，每个之后核对一次：一个操作，或 [`tune`](#tuning--调节)；`manual` 设备的步骤交给人 |
 | `settle` | Seconds between a correction and its verification / 校正之后到核对之前等待的秒数 |
 | `valid_for` | Seconds an accepted verification is trusted; without it only corrections and disturbances make it due / 一次通过的核对可信的秒数；不写则只有校正和扰动会使它待核对 |
 | `after` | Conditions of this platform that must hold first / 必须先成立的本平台条件 |
 | `kind`, `note` | The class above, and what a person would say in passing / 上表的类别，以及人会顺口交代的话 |
 
 A correction acts on the system. A `reference` acts on the data: the condition "the dark level was measured within the last half hour" has no correction beyond measuring again, and its value travels with every experiment that requires it. / 校正作用于系统；`reference` 作用于数据：“半小时内测过暗计数”这个条件的校正就是再测一次，它的数值随每个依赖它的实验保存。
+
+## Tuning / 调节
+
+Most corrections an experimentalist makes by hand have one form: change a setting a little, look at the reading, keep the change if it helped. `tune` lets the Runtime do this itself, for one setting or for several adjusted jointly. / 实验者手动做的校正大多是同一种形式：把某个设定改一点，看读数，变好就保留。`tune` 让运行服务自己做这件事，可以是一个设定，也可以是多个设定联合调节。
+
+```json
+"correct": {"tune": [
+   {"device": "mirror", "operation": "set_x", "argument": "position",
+    "read": {"device": "mirror", "operation": "where", "value": ["x"]},
+    "step": 0.1, "resolution": 0.01, "minimum": -1, "maximum": 1},
+   {"device": "mirror", "operation": "set_y", "argument": "position",
+    "read": {"device": "mirror", "operation": "where", "value": ["y"]},
+    "step": 0.1, "resolution": 0.01, "minimum": -1, "maximum": 1}],
+  "until": "optimum", "evaluations": 40}
+```
+
+- The value that is improved is the one `accept` looks at. `goal` is `maximize` when `accept` has only a minimum, `minimize` with only a maximum, and `center` with both. / 被优化的就是 `accept` 所看的数值。`accept` 只有下限时 `goal` 为 `maximize`，只有上限时为 `minimize`，两者都有时为 `center`。
+- The search steps one setting in the direction that improves the value, steps back when it does not, goes on to the next setting, and halves the step when no move helps, down to `resolution`. It needs no model of the system. / 搜索沿着变好的方向逐步改变一个设定，没有变好就退回，再换下一个设定；所有方向都无改善时步长减半，直到 `resolution`。不需要系统的模型。
+- It never leaves `[minimum, maximum]`, tries at most `evaluations` settings, and leaves the system at the best setting it saw. `until: "accept"` stops as soon as the tolerance is met. `gain` is the smallest improvement that counts when the reading is noisy. / 不会离开 `[minimum, maximum]`，最多尝试 `evaluations` 个设定，结束时停在见过的最好位置。`until: "accept"` 在满足容差后立即停止；读数有噪声时用 `gain` 给出算数的最小改善。
+- The record of the correction keeps where each setting started and ended and how many settings were tried. / 校正记录保留每个设定的起点、终点和尝试次数。
+
+`tune` and operations can be listed together: tune first, then a `manual` step when tuning cannot restore the condition. / `tune` 可以和操作一起列出：先调节，调不回来再交给 `manual` 步骤。
 
 On the demonstration devices: / 在演示设备上：
 

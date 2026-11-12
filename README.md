@@ -56,6 +56,7 @@ An experiment has its meaning only while the system is in its working state. A p
 | --- | --- |
 | **Three outcomes** | A verification holds, has drifted (correct this condition), or is unusable (look at what it depends on). |
 | **Order by cause** | Bringing a system up follows the dependencies forward; finding a fault follows them backward to the first condition that does not hold. |
+| **Tuning** | A correction can be an operation, or the Runtime adjusting one or several settings against the verification until the value is best. |
 | **Validity** | An accepted verification is trusted for a time, and no longer after a correction upstream or a disturbance. |
 | **Data carry it** | An experiment names what it relies on with `requires` and records it; data taken before a condition was found lost are marked in doubt. |
 

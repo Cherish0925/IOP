@@ -3,11 +3,14 @@ export type Endpoint = { device: string; port: string };
 export type Procedure = { steps: Step[]; resources?: string[] };
 export type ConditionStep = { device?: string; operation: string; arguments?: Record<string, unknown> };
 export type Tolerance = { value?: (string | number)[]; minimum?: number; maximum?: number; equals?: unknown };
+export type TunedSetting = { device: string; operation: string; argument: string; arguments?: Record<string, unknown>; read: ConditionStep & { device: string; value?: (string | number)[] }; step: number; resolution?: number; minimum: number; maximum: number };
+/** A correction the Runtime performs itself: adjust settings against the verification value until it is best. */
+export type Tuning = { tune: TunedSetting | TunedSetting[]; goal?: 'maximize' | 'minimize' | 'center'; evaluations?: number; until?: 'optimum' | 'accept'; gain?: number };
 /** What must hold on a platform for its experiments: how it is verified, its tolerance, what restores it and how long it stays valid. */
 export type Condition = {
   id: string; description: string; kind?: 'environment' | 'equilibrium' | 'reference' | 'calibration' | 'alignment' | 'lock' | 'operating_point' | 'signal';
   after?: string[]; verify: ConditionStep; accept: Tolerance; usable?: Tolerance; reference?: Record<string, (string | number)[]>;
-  correct?: ConditionStep | ConditionStep[]; settle?: number; valid_for?: number; note?: string;
+  correct?: ConditionStep | Tuning | (ConditionStep | Tuning)[]; settle?: number; valid_for?: number; note?: string;
 };
 export type ConditionState = { id: string; platform: string; description: string; kind?: string; after: string[]; state: 'holds' | 'due' | 'lost' | 'unknown'; reason?: string; value?: unknown; verified?: string; valid_until?: string; [key: string]: unknown };
 export type Maintenance = { id: string; platform: string; state: string; complete: boolean; holds?: boolean; run_id: string; report: { condition: string; result: 'held' | 'verified' | 'corrected' | 'lost' | 'blocked'; value?: unknown; by?: string; found?: string }[]; error?: string };

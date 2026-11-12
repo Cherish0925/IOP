@@ -8,7 +8,8 @@ these is a condition. A condition names
 - ``verify``: a short reference measurement, one device operation or saved operation;
 - ``accept``: the tolerance on its result; ``usable`` optionally says when the measurement itself
   means something, because an unusable result points at what the condition depends on;
-- ``correct``: operations that restore it, tried in order;
+- ``correct``: what restores it, tried in order: an operation, or ``tune``, where the Runtime
+  itself adjusts one or several settings against the verification until the value is best;
 - ``valid_for``: how long an accepted verification is trusted;
 - ``after``: the conditions it depends on.
 
@@ -78,7 +79,59 @@ def step(value, what):
     return value
 
 
+GOALS = ('maximize', 'minimize', 'center')
+
+
+def number(value):
+    return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+
+
+def tuning(value, accept, what):
+    """A correction the Runtime performs itself: adjust settings against the verification value."""
+    if value.keys() - {'tune', 'goal', 'evaluations', 'until', 'gain'}:
+        raise ValueError(what + ': tune takes goal, evaluations, until and gain')
+    knobs = value['tune'] if isinstance(value['tune'], list) else [value['tune']]
+    if not knobs or any(not isinstance(k, dict) for k in knobs):
+        raise ValueError(what + ': tune lists the settings to adjust')
+    checked = []
+    for knob in knobs:
+        if knob.keys() - {'device', 'operation', 'argument', 'arguments', 'read', 'step', 'resolution', 'minimum', 'maximum'}:
+            raise ValueError(what + ': a setting has device, operation, argument, read, step, minimum, maximum and resolution')
+        if any(not isinstance(knob.get(key), str) or not knob[key] for key in ('device', 'operation', 'argument')):
+            raise ValueError(what + ': a setting names the device, the operation that sets it and its argument')
+        if not isinstance(knob.get('arguments', {}), dict) or knob['argument'] in knob.get('arguments', {}):
+            raise ValueError(what + ': arguments holds the other, fixed arguments of the setting operation')
+        read = knob.get('read')
+        if (not isinstance(read, dict) or read.keys() - {'device', 'operation', 'arguments', 'value'}
+                or any(not isinstance(read.get(key), str) or not read[key] for key in ('device', 'operation'))
+                or not isinstance(read.get('value', ['value']), list)):
+            raise ValueError(what + ': read is the operation that returns the present setting, with value as the path to it')
+        if not all(number(knob.get(key)) for key in ('step', 'minimum', 'maximum')) or knob['step'] <= 0 \
+                or knob['minimum'] >= knob['maximum']:
+            raise ValueError(what + ': a setting needs step > 0 and minimum < maximum; the Runtime never leaves that range')
+        resolution = knob.get('resolution', knob['step'] / 16)
+        if not number(resolution) or not 0 < resolution <= knob['step']:
+            raise ValueError(what + ': resolution is the smallest step worth taking, at most step')
+        checked.append({**knob, 'resolution': resolution, 'read': {**read, 'value': read.get('value', ['value'])}})
+    if 'equals' in accept or not {'minimum', 'maximum'} & accept.keys():
+        raise ValueError(what + ': tune needs a numeric tolerance (minimum or maximum) to improve on')
+    goal = value.get('goal', 'center' if {'minimum', 'maximum'} <= accept.keys() else 'maximize' if 'minimum' in accept else 'minimize')
+    if goal not in GOALS:
+        raise ValueError(what + ': goal is one of ' + ', '.join(GOALS))
+    evaluations = value.get('evaluations', 40)
+    if isinstance(evaluations, bool) or not isinstance(evaluations, int) or not 1 <= evaluations <= 1000:
+        raise ValueError(what + ': evaluations is the number of settings that may be tried, 1 to 1000')
+    if value.get('until', 'optimum') not in ('optimum', 'accept'):
+        raise ValueError(what + ': until is optimum, or accept to stop once the tolerance is met')
+    if not number(value.get('gain', 0)) or value.get('gain', 0) < 0:
+        raise ValueError(what + ': gain is the smallest improvement that counts, above the noise of the verification')
+    return {'tune': checked, 'goal': goal, 'evaluations': evaluations, 'until': value.get('until', 'optimum'),
+            'gain': value.get('gain', 0)}
+
+
 def label(item):
+    if 'tune' in item:
+        return 'tune ' + ', '.join(f"{k['device']}.{k['argument']}" for k in item['tune'])
     return (item['device'] + '.' if 'device' in item else '') + item['operation']
 
 
@@ -116,10 +169,12 @@ def check(definitions, taken=()):
                 raise ValueError(f'{what}: {key} is a duration in seconds')
         if not isinstance(condition.get('note', ''), str):
             raise ValueError(what + ': note is text')
+        accept = criterion(condition.get('accept'), what + ' accept')
         checked.append({**condition, 'after': after, 'verify': step(condition.get('verify'), what + ' verify'),
-                        'accept': criterion(condition.get('accept'), what + ' accept'),
+                        'accept': accept,
                         **({'usable': criterion(condition['usable'], what + ' usable')} if 'usable' in condition else {}),
-                        'correct': [step(item, what + ' correct') for item in corrections]})
+                        'correct': [tuning(item, accept, what + ' correct') if isinstance(item, dict) and 'tune' in item
+                                    else step(item, what + ' correct') for item in corrections]})
     order(checked, names)
     return checked
 
@@ -252,6 +307,9 @@ class Conditions:
     def _devices(self, condition):
         devices = set()
         for item in [condition['verify']] + condition['correct']:
+            if 'tune' in item:
+                devices.update(d for knob in item['tune'] for d in (knob['device'], knob['read']['device']))
+                continue
             try:
                 devices.update(s['device'] for s in library.expand([{'id': 'step', **item}], self.engine.library.get)[0])
             except ValueError:
@@ -265,6 +323,15 @@ class Conditions:
         conditions = check(definition.get('conditions', []), taken)
         for condition in conditions:
             for item in [condition['verify']] + condition['correct']:
+                if 'tune' in item:
+                    for knob in item['tune']:
+                        if {knob['device'], knob['read']['device']} - set(definition['devices']):
+                            raise ValueError(f"Condition {condition['id']}: tuned devices must belong to the platform")
+                        # Both ends of the range must be values the setting operation accepts.
+                        for bound in (knob['minimum'], knob['maximum']):
+                            engine._operation('prepare', self._set(knob, bound))
+                        engine._operation('prepare', {k: v for k, v in knob['read'].items() if k != 'value'})
+                    continue
                 if 'device' not in item and 'program' in (engine.library.get(item['operation']) or {}):
                     raise ValueError(f"Condition {condition['id']}: {item['operation']} is a program; a program runs as its own experiment")
                 for flat in library.expand([{'id': 'step', **item}], engine.library.get)[0]:
@@ -385,11 +452,11 @@ class Conditions:
             engine.store.record_condition(condition_id, saved, record, 'condition.' + result, run_id=run_id, value=value,
                                           **({'in_doubt': doubtful} if doubtful else {}))
 
-    def corrected(self, condition_id, by, restored, before, after, run_id, error=None):
+    def corrected(self, condition_id, by, restored, before, after, run_id, error=None, tuned=None):
         with self.engine.lock:
             saved, time = self._state(condition_id), now()
             record = {'type': 'corrected', 'time': time, 'by': by, 'restored': restored, 'before': before, 'after': after,
-                      'run_id': run_id, **({'error': error} if error else {})}
+                      'run_id': run_id, **({'error': error} if error else {}), **({'tuned': tuned} if tuned else {})}
             if restored:
                 saved['corrected'] = time
             self.engine.store.record_condition(condition_id, saved, record, 'condition.corrected', run_id=run_id, by=by,
@@ -563,16 +630,19 @@ class Conditions:
             return self._report(job, done, entry)
         entry['found'] = result
         for item in condition['correct']:
-            before = value
+            before, tuned = value, None
             try:
-                self._execute(job, 'correct', item)
+                if 'tune' in item:
+                    tuned = self._tune(job, condition, item, value)
+                else:
+                    self._execute(job, 'correct', item)
             except StepFailed as error:
                 self.corrected(condition_id, label(item), False, before, None, job['run_id'], str(error))
                 continue
             if self.stopping.wait(condition.get('settle', 0)):
                 raise Stopped()
             result, value = self._verify(job, condition)
-            self.corrected(condition_id, label(item), result == 'holds', before, value, job['run_id'])
+            self.corrected(condition_id, label(item), result == 'holds', before, value, job['run_id'], tuned=tuned)
             if result == 'holds':
                 entry.update(result='corrected', by=label(item), value=value)
                 return self._report(job, done, entry)
@@ -599,6 +669,69 @@ class Conditions:
         found, value, kept = outcome(condition, result)
         self.verified(condition['id'], found, value, kept, job['run_id'])
         return found, value
+
+    @staticmethod
+    def _set(knob, position):
+        return {'device': knob['device'], 'operation': knob['operation'],
+                'arguments': {**knob.get('arguments', {}), knob['argument']: position}}
+
+    def _tune(self, job, condition, item, value):
+        """Adjust the settings one at a time against the verification value, halving the step when no move helps.
+
+        A bounded search without derivatives: each setting is stepped in the direction that improves the
+        value and stepped back when it does not, so the system is left at the best setting that was seen.
+        """
+        knobs, goal, gain = item['tune'], item['goal'], item['gain']
+        accept = condition['accept']
+        middle = (accept['minimum'] + accept['maximum']) / 2 if goal == 'center' else None
+
+        def score(reading):
+            if not number(reading):
+                return -math.inf
+            return reading if goal == 'maximize' else -reading if goal == 'minimize' else -abs(reading - middle)
+
+        positions = []
+        for knob in knobs:
+            present = self._execute(job, 'read', {k: v for k, v in knob['read'].items() if k != 'value'})
+            try:
+                for key in knob['read']['value']:
+                    present = present[key]
+            except (KeyError, IndexError, TypeError):
+                present = None
+            if not number(present):
+                raise StepFailed(f"{knob['read']['device']}.{knob['read']['operation']} did not return the present setting")
+            positions.append(min(max(present, knob['minimum']), knob['maximum']))
+        start, steps = list(positions), [knob['step'] for knob in knobs]
+        best, used, met = score(value), 0, False
+        while used < item['evaluations'] and not met:
+            moved = False
+            for index, knob in enumerate(knobs):
+                for direction in (1, -1):
+                    advanced = False
+                    while used < item['evaluations'] and not met:
+                        candidate = min(max(positions[index] + direction * steps[index], knob['minimum']), knob['maximum'])
+                        if candidate == positions[index]:
+                            break
+                        self._execute(job, 'set', self._set(knob, candidate))
+                        if self.stopping.wait(condition.get('settle', 0)):
+                            raise Stopped()
+                        found, reading, _ = outcome(condition, self._execute(job, 'verify', condition['verify']))
+                        used += 1
+                        if score(reading) > best + gain:
+                            positions[index], best, advanced, moved = candidate, score(reading), True, True
+                            met = item['until'] == 'accept' and found == 'holds'
+                        else:
+                            self._execute(job, 'set', self._set(knob, positions[index]))
+                            break
+                    if advanced or met:
+                        break
+                if met:
+                    break
+            if not moved:
+                steps = [size / 2 for size in steps]
+                if all(size < knob['resolution'] for size, knob in zip(steps, knobs)):
+                    break
+        return {'evaluations': used, 'from': start, 'to': positions}
 
     def _execute(self, job, name_, item):
         """Run one operation inside the experiment of this pass and return its result."""

@@ -322,13 +322,23 @@
                 "$ref": "#/$defs/conditionStep"
               },
               {
+                "$ref": "#/$defs/conditionTuning"
+              },
+              {
                 "type": "array",
                 "items": {
-                  "$ref": "#/$defs/conditionStep"
+                  "oneOf": [
+                    {
+                      "$ref": "#/$defs/conditionStep"
+                    },
+                    {
+                      "$ref": "#/$defs/conditionTuning"
+                    }
+                  ]
                 }
               }
             ],
-            "description": "Operations that restore the condition, tried in order; each is followed by a verification."
+            "description": "What restores the condition, tried in order; each is followed by a verification. An operation, or tune."
           },
           "settle": {
             "type": "number",
@@ -419,6 +429,139 @@
           "type": "number"
         },
         "equals": {}
+      }
+    },
+    "conditionTuning": {
+      "type": "object",
+      "required": [
+        "tune"
+      ],
+      "additionalProperties": false,
+      "description": "A correction the Runtime performs itself: it adjusts the settings one at a time against the verification value, steps back from a setting that does not improve it, and halves the step when no move helps.",
+      "properties": {
+        "tune": {
+          "description": "One setting, or several adjusted jointly.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/tunedSetting"
+            },
+            {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/tunedSetting"
+              }
+            }
+          ]
+        },
+        "goal": {
+          "enum": [
+            "maximize",
+            "minimize",
+            "center"
+          ],
+          "description": "Default: maximize with only a minimum in accept, minimize with only a maximum, center with both."
+        },
+        "evaluations": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000,
+          "default": 40,
+          "description": "Settings that may be tried."
+        },
+        "until": {
+          "enum": [
+            "optimum",
+            "accept"
+          ],
+          "default": "optimum",
+          "description": "accept stops once the tolerance is met."
+        },
+        "gain": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0,
+          "description": "Smallest improvement that counts, above the noise of the verification."
+        }
+      }
+    },
+    "tunedSetting": {
+      "type": "object",
+      "required": [
+        "device",
+        "operation",
+        "argument",
+        "read",
+        "step",
+        "minimum",
+        "maximum"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "device": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operation": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The operation that sets the value."
+        },
+        "argument": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Its argument that is adjusted."
+        },
+        "arguments": {
+          "type": "object",
+          "description": "Other, fixed arguments of that operation."
+        },
+        "read": {
+          "type": "object",
+          "required": [
+            "device",
+            "operation"
+          ],
+          "additionalProperties": false,
+          "description": "The operation that returns the present setting.",
+          "properties": {
+            "device": {
+              "type": "string"
+            },
+            "operation": {
+              "type": "string"
+            },
+            "arguments": {
+              "type": "object"
+            },
+            "value": {
+              "type": "array",
+              "items": {
+                "type": [
+                  "string",
+                  "integer"
+                ]
+              }
+            }
+          }
+        },
+        "step": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "First step size."
+        },
+        "resolution": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Smallest step worth taking; default step / 16."
+        },
+        "minimum": {
+          "type": "number"
+        },
+        "maximum": {
+          "type": "number",
+          "description": "The search never leaves [minimum, maximum]."
+        }
       }
     }
   }
