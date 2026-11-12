@@ -148,9 +148,10 @@ def signal(value):
 
 
 def timing(definition):
-    """Signal connections as a graph: an order in which to arm receivers before their sources.
+    """Describe wiring and, where possible, a receiver-before-source order.
 
-    A loop of signal connections is refused, since no device could then be armed first.
+    Wiring may contain feedback loops or bidirectional handshakes. Such a platform has no
+    inferred linear order; its experiment program supplies the device-specific initialization.
     """
     edges = [c for c in definition.get('connections', []) if 'signal' in c]
     if not edges:
@@ -159,21 +160,22 @@ def timing(definition):
     for edge in edges:
         if edge['from']['device'] != edge['to']['device']:
             targets.setdefault(edge['from']['device'], set()).add(edge['to']['device'])
-    order, state = [], {}
-
-    def visit(device, path):
-        if state.get(device) == 'done':
-            return
-        if state.get(device) == 'visiting':
-            raise ValueError('Signal connections form a loop: ' + ' → '.join(path + [device]))
-        state[device] = 'visiting'
-        for target in sorted(targets.get(device, ())):
-            visit(target, path + [device])
-        state[device] = 'done'
+    devices = {e['from']['device'] for e in edges} | {e['to']['device'] for e in edges}
+    remaining = {device: len(targets.get(device, ())) for device in devices}
+    sources = {device: [] for device in devices}
+    for source, receivers in targets.items():
+        for receiver in receivers:
+            sources[receiver].append(source)
+    ready = deque(sorted(device for device, count in remaining.items() if not count))
+    order = []
+    while ready:
+        device = ready.popleft()
         order.append(device)
-    for device in sorted({e['from']['device'] for e in edges} | {e['to']['device'] for e in edges}):
-        visit(device, [])
-    return {'arm_order': order,
+        for source in sorted(sources[device]):
+            remaining[source] -= 1
+            if not remaining[source]:
+                ready.append(source)
+    return {'arm_order': order if len(order) == len(devices) else None,
             'signals': [{'from': f"{e['from']['device']}.{e['from']['port']}", 'to': f"{e['to']['device']}.{e['to']['port']}",
                          **e['signal']} for e in edges]}
 

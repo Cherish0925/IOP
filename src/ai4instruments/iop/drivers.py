@@ -416,7 +416,7 @@ class SCPI(Driver):
                         raise TimeoutError("Completion response did not arrive")
                     if cancelled.wait(float(completion.get("interval", 0.1))):
                         raise CancelledError('Operation cancelled')
-        except (CancelledError, Refused):
+        except Refused:
             raise
         except Exception as error:
             # Once a change command has left this computer, a lost reply does not show

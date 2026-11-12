@@ -10,6 +10,7 @@ import dataclasses
 import datetime
 import enum
 import importlib
+import inspect
 import queue
 import threading
 import time
@@ -190,8 +191,11 @@ class PythonObject(Driver):
         return target() if 'call' in spec else target
 
     def _run(self, operation, spec, arguments, cancelled):
+        if cancelled is not None and cancelled.is_set():
+            raise CancelledError(f'{operation} cancelled before invocation')
         change = spec.get('effect', 'observe' if 'get' in spec else 'change') != 'observe'
         started = False
+        stopped = False
         try:
             if 'get' in spec:
                 value = walk(self.device, path(spec['get'], 'get'))
@@ -210,8 +214,15 @@ class PythonObject(Driver):
                         break
                     leading.append(arguments[name])
                 keywords = {name: value for name, value in arguments.items() if name not in order[:len(leading)]}
+                keywords.update(spec.get('fixed', {}))
+                try:
+                    signature = inspect.signature(function)
+                except (TypeError, ValueError):
+                    signature = None  # Some native SDK methods do not expose a Python signature.
+                if signature is not None:
+                    signature.bind(*leading, **keywords)
                 started = True
-                value = function(*leading, **keywords, **spec.get('fixed', {}))
+                value = function(*leading, **keywords)
             completion = spec.get('completion')
             if completion:
                 deadline = time.monotonic() + completion.get('timeout', 30)
@@ -221,12 +232,14 @@ class PythonObject(Driver):
                     if cancelled is not None and cancelled.wait(completion.get('interval', 0.1)):
                         if 'on_cancel' in spec:
                             walk(self.device, path(spec['on_cancel']['call'], 'on_cancel'))()
+                            stopped = plain(self._read(completion)) == completion.get('equals', True)
                         raise CancelledError(f'{operation} cancelled')
-        except CancelledError:
-            raise
         except Exception as error:
-            # An argument error is raised before the library acts; anything else may have reached the hardware.
-            if change and started and self.unconfirmed == 'hold' and not isinstance(error, (TypeError, ValueError)):
+            if isinstance(error, CancelledError) and stopped:
+                raise
+            # Exceptions inside an SDK may follow an action, including TypeError and ValueError.
+            # Argument binding above happens before the method starts and never holds the device.
+            if change and started and self.unconfirmed == 'hold':
                 raise UnconfirmedChange(f'{operation} raised {type(error).__name__}: {error}') from error
             raise
         result = spec.get('result', {})

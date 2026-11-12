@@ -27,10 +27,18 @@ class SignalCase(unittest.TestCase):
         self.assertEqual(timing['signals'][0], {'from': 'stage.in_position', 'to': 'meter.trigger_in', 'type': 'trigger',
                                                 'edge': 'rising', 'delay_s': 2e-6, 'level_v': 3.3})
 
-    def test_loops_and_invalid_values_are_refused(self):
+    def test_feedback_wiring_is_preserved_without_inventing_an_arming_order(self):
+        definition = bench(
+            link(('stage', 'ref_out'), ('meter', 'ref_in'), type='reference', frequency_hz=10e6),
+            link(('meter', 'ready'), ('stage', 'enable'), type='gate'))
+        self.client.configure_platform(definition)
+        platform = self.client.platform('timing-bench')
+        self.assertIsNone(platform['timing']['arm_order'])
+        self.assertEqual(platform['definition']['connections'], definition['connections'])
+        self.assertEqual(len(platform['timing']['signals']), 2)
+
+    def test_invalid_signal_values_are_refused(self):
         for connections, message in (
-                ([link(('stage', 'out'), ('meter', 'in'), type='trigger'), link(('meter', 'out'), ('stage', 'in'), type='trigger')],
-                 'loop: meter → stage → meter'),
                 ([link(('stage', 'out'), ('meter', 'in'), type='pulse')], 'signal.type'),
                 ([link(('stage', 'out'), ('meter', 'in'), type='gate', width_s=0)], 'width_s must be a positive'),
                 ([link(('stage', 'out'), ('meter', 'in'), type='trigger', edge='up')], 'rising, falling or both')):

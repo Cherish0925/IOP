@@ -5,7 +5,8 @@ import importlib.util
 import threading
 import time
 import unittest
-from ai4instruments.iop.drivers import make_driver
+from concurrent.futures import CancelledError
+from ai4instruments.iop.drivers import make_driver, UnconfirmedChange
 from . import test_service as fixture
 
 numpy_available = importlib.util.find_spec('numpy') is not None
@@ -146,7 +147,8 @@ class PythonObjectCase(unittest.TestCase):
         self.assertTrue(bench.stopped)
         rejected = self.steps(('reject', 'reject', {'value': 1}))
         self.assertEqual(rejected.wait(10)['state'], 'failed')
-        self.assertNotIn('outcome_unknown', rejected.info()['operation_records'][0])
+        self.assertTrue(rejected.info()['operation_records'][0]['outcome_unknown'])
+        self.client.resolve_resources(['device:bench'], 'Read the stopped stage position')
         fault = self.steps(('fault', 'fault', {}))
         self.assertEqual(fault.wait(10)['state'], 'failed')
         self.assertTrue(fault.info()['operation_records'][0]['outcome_unknown'])
@@ -170,6 +172,55 @@ class PythonObjectCase(unittest.TestCase):
         self.assertTrue(bench.closed)
         with self.assertRaisesRegex(ConnectionError, 'closed'):
             driver.invoke('position', {}, threading.Event())
+
+    def test_cancelled_call_does_not_start_the_instrument(self):
+        driver = make_driver(record(unconfirmed_change='hold'), {})
+        self.addCleanup(driver.close)
+        cancelled = threading.Event()
+        cancelled.set()
+        with self.assertRaises(CancelledError):
+            driver.invoke('slow_move', {'position': 4}, cancelled)
+        self.assertEqual(created[-1].target, 0)
+
+    def test_cancellation_requires_observed_stop_before_releasing_a_change(self):
+        class CancelAtWait(threading.Event):
+            def wait(self, timeout=None):
+                self.set()
+                return True
+
+        for mode in ('hold', 'fail'):
+            driver = make_driver(record(unconfirmed_change=mode), {})
+            try:
+                error = UnconfirmedChange if mode == 'hold' else CancelledError
+                with self.assertRaises(error):
+                    driver.invoke('slow_move', {'position': 4}, CancelAtWait())
+                self.assertEqual(created[-1].target, 8)
+            finally:
+                driver.close()
+
+        driver = make_driver(record(unconfirmed_change='hold'), {})
+        try:
+            # Returning from stop() alone does not establish that the device has stopped.
+            created[-1].stop = lambda: None
+            with self.assertRaises(UnconfirmedChange):
+                driver.invoke('move', {'mm': 4, 'velocity': 2}, CancelAtWait())
+        finally:
+            driver.close()
+
+    def test_argument_binding_precedes_the_sdk_call_and_sdk_errors_keep_outcomes_open(self):
+        driver = make_driver(record(unconfirmed_change='hold'), {})
+        self.addCleanup(driver.close)
+        with self.assertRaises(TypeError):
+            driver.invoke('slow_move', {'unexpected': 4}, threading.Event())
+        self.assertEqual(created[-1].target, 0)
+
+        def acted_then_failed(value):
+            created[-1].target = value
+            raise ValueError('Cannot decode the position reply')
+        created[-1].reject = acted_then_failed
+        with self.assertRaises(UnconfirmedChange):
+            driver.invoke('reject', {'value': 4}, threading.Event())
+        self.assertEqual(created[-1].target, 4)
 
     def test_descriptions_are_checked(self):
         for change, message in (({'object': 'Bench'}, 'module:Class'),

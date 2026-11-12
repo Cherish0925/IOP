@@ -50,7 +50,7 @@ A step with `device` is a Basic Operation; a step without it uses a saved operat
 
 ## Research and learning
 
-Version 0.8.8 adds durable episode records to the existing experiment API. Python, TypeScript and MCP clients can save versioned task/policy identities, observations, rewards and termination information. Each transition links to completed operations in that experiment. Identical retries return the saved record; reconnection preserves the sequence. JSON Lines export supports downstream data processing and learning.
+Episode records retain the experiment trajectory alongside the three operation roles. Python, TypeScript and MCP clients can save versioned task/policy identities, observations, rewards and termination information. Each transition links to completed operations in that experiment. Identical retries return the saved record; reconnection preserves the sequence. JSON Lines export supports downstream data processing and learning.
 
 An episode does not reset equipment. Use an explicit preparation procedure and measured initial state. Parallel physical episodes require independent available resources. IOP provides execution and data; the research program defines the scientific task and the learning algorithm.
 

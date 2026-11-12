@@ -18,7 +18,7 @@ def instrument(answer_completion):
                     return
                 command = line.decode().strip(); commands.append(command)
                 if command == '*OPC?' and answer_completion:
-                    self.wfile.write(b'1\n')
+                    self.wfile.write(b'0\n' if answer_completion == 'busy' else b'1\n')
                 elif command == 'VOLT?':
                     self.wfile.write(b'3.000\n')
     server = socketserver.ThreadingTCPServer(('127.0.0.1', 0), Instrument); server.daemon_threads = True
@@ -121,6 +121,26 @@ class RuntimeCase(unittest.TestCase):
         op = self.engine.store.get('operations', self.engine.store.get('runs', run['id'])['operations'][0])
         self.assertNotIn('outcome_unknown', op)
         self.assertFalse(self.engine.resource_holds)
+
+    def test_cancelling_a_sent_change_keeps_its_unconfirmed_outcome(self):
+        server, commands = instrument(answer_completion='busy')
+        self.addCleanup(server.server_close); self.addCleanup(server.shutdown)
+        config = supply(server.server_address[1], 'hold')
+        config['operations']['set_voltage']['completion'].update(timeout=10, interval=0.2)
+        self.engine.register({'id': 'psu', 'driver': 'scpi', 'config': config})
+        run = self.engine.submit({'steps': [{'id': 'set', 'device': 'psu', 'operation': 'set_voltage',
+                                            'arguments': {'volts': 3}}]})
+        deadline = time.monotonic() + 3
+        while '*OPC?' not in commands and time.monotonic() < deadline:
+            time.sleep(0.005)
+        self.assertIn('*OPC?', commands)
+        self.engine.cancel(run['id'])
+        finished = self.finished(run['id'])
+        self.assertEqual(finished['state'], 'cancelled')
+        op = self.engine.store.get('operations', finished['operations'][0])
+        self.assertTrue(op['outcome_unknown'])
+        self.assertIn('device:psu', self.engine.resource_holds)
+        self.assertEqual(commands.count('VOLT 3'), 1)
 
 
 if __name__ == '__main__':

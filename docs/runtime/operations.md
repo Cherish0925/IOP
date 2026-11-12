@@ -12,6 +12,8 @@ IOP keeps the three roles of operations defined by AI4Instruments as three thing
 
 A step with `device` is a Basic Operation. A step without `device` uses a saved operation by name. The Runtime replaces it by its Basic Operations before scheduling, so reservation, calibration, monitors and holds apply to every one of them, and records each use. / 带 `device` 的步骤是基础操作；不带 `device` 的步骤按名称使用已保存的操作。运行服务在调度前把它展开为基础操作，预留、标定、监测和挂起对其中每一步照常生效，并记录每次使用。
 
+An Episode records an experiment trajectory; it does not replace a Standard Operation. / Episode 记录实验轨迹，不替代标准操作。
+
 A Workflow Operation that decides from results is a saved program and runs as its own experiment. Agents that decide interactively use a continuous experiment and call operations of all three roles there. / 根据结果决定的工作流操作以程序保存，作为独立实验运行；交互决策的 Agent 在连续实验中调用三类操作。
 
 ## Save an operation / 保存操作

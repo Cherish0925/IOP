@@ -23,7 +23,7 @@ A connection can carry `signal`: `type` (`trigger`, `gate`, `marker`, `clock`, `
  "signal": {"type": "trigger", "edge": "rising", "delay_s": 2e-6, "level_v": 3.3}}
 ```
 
-The platform description then includes `timing`: the signal list and `arm_order`, an order in which to arm every receiver before its source. A loop of signal connections is refused. The instruments generate and receive these signals; IOP records the wiring and its parameters so experiment programs and agents configure each device to match.
+The platform description includes `timing`: the signal list and a suggested receiver-before-source `arm_order` when the wiring permits one. Feedback and bidirectional connections are retained; their `arm_order` is `null`. Wiring alone does not establish initialization requirements: use the platform procedure and instrument manuals, including clock-lock and readiness conditions. Instruments generate and receive the signals; IOP records the connections and does not generate hardware timing.
 
 ## Run two platforms
 

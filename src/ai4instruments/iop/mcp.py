@@ -174,7 +174,7 @@ def create_server(client, *, http=False, selection=None):
 
     @tool(annotations=read_only)
     def describe_platform(platform: str) -> dict:
-        """Read a platform's devices, connections, shared resources, procedures and revision. Trigger and clock wiring appears under timing, with arm_order listing receivers before their sources."""
+        """Read a platform's devices, wiring, shared resources, procedures and revision. timing.arm_order is a receiver-before-source suggestion, or null for feedback wiring. Use the platform procedure and device requirements for initialization."""
         return client.platform(platform)
 
     @tool(annotations=read_only)
