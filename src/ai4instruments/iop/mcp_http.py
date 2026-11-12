@@ -1,8 +1,37 @@
 """Streamable HTTP for hosts without a local MCP process."""
 
+import asyncio
 import hmac
 import os
 import sys
+
+
+async def _unauthorized(receive, send):
+    body = b"Unauthorized"
+    await send({
+        "type": "http.response.start",
+        "status": 401,
+        "headers": [
+            (b"www-authenticate", b"Bearer"),
+            (b"content-length", str(len(body)).encode("ascii")),
+            (b"content-type", b"text/plain; charset=utf-8"),
+        ],
+    })
+    # Return the complete reply immediately, then finish receiving an in-flight
+    # upload before closing. Closing over unread data can reset a Windows socket.
+    await send({"type": "http.response.body", "body": body, "more_body": True})
+
+    async def discard():
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect" or not message.get("more_body", False):
+                return
+
+    try:
+        await asyncio.wait_for(discard(), timeout=1.0)
+    except asyncio.TimeoutError:
+        pass
+    await send({"type": "http.response.body", "body": b""})
 
 
 def application(client, token, selection=None):
@@ -19,14 +48,7 @@ def application(client, token, selection=None):
         if scope["type"] == "http":
             headers = [v for k, v in scope.get("headers", ()) if k == b"authorization"]
             if len(headers) != 1 or not hmac.compare_digest(headers[0], expected):
-                await send(
-                    {
-                        "type": "http.response.start",
-                        "status": 401,
-                        "headers": [(b"www-authenticate", b"Bearer")],
-                    }
-                )
-                await send({"type": "http.response.body", "body": b"Unauthorized"})
+                await _unauthorized(receive, send)
                 return
         await app(scope, receive, send)
 
