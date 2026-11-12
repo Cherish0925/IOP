@@ -4,6 +4,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from ai4instruments.iop import Client, IOPError
 from ai4instruments.iop.conditions import check, outcome, summary
 from ai4instruments.iop.config import initialize
@@ -105,7 +106,9 @@ class ConditionsCase(unittest.TestCase):
         self.assertEqual(described['statistics']['corrections'],
                          {'coupler.nudge': {'tried': 1, 'restored': 0}, 'coupler.peak_up': {'tried': 1, 'restored': 1}})
         self.assertEqual(described['statistics']['held']['count'], 1)
-        self.assertEqual([r['type'] for r in described['records']][-4:], ['verified', 'corrected', 'verified', 'corrected'])
+        attempts = [r for r in described['records'] if r['type'] == 'corrected']
+        self.assertEqual([r['restored'] for r in attempts], [False, True])
+        self.assertEqual(len([r for r in described['records'] if r['type'] == 'invalidated']), 2)
 
     def test_an_unusable_measurement_sends_the_search_upstream(self):
         self.client.maintain('chain')
@@ -128,7 +131,7 @@ class ConditionsCase(unittest.TestCase):
         self.client.maintain(conditions=['source.stable'], force=True)
         states = {row['id']: row for row in self.client.conditions()}
         self.assertEqual((states['path.aligned']['state'], states['path.aligned']['reason']),
-                         ('due', 'source.stable was corrected since'))
+                         ('due', 'dependency disturbed: correction started: source.stabilize'))
 
     def test_a_verification_is_trusted_for_a_time(self):
         self.client.configure_platform(platform(SOURCE, {**PATH, 'valid_for': 0.3}), expected_revision=1)
@@ -137,6 +140,143 @@ class ConditionsCase(unittest.TestCase):
         time.sleep(0.35)
         row = [r for r in self.client.conditions() if r['id'] == 'path.aligned'][0]
         self.assertEqual((row['state'], row['reason']), ('due', 'valid_for elapsed'))
+
+    def test_upstream_disturbance_stays_due_downstream_until_observed_again(self):
+        self.client.maintain('chain')
+        self.client.invalidate(['source.stable'], 'source was disconnected')
+        self.client.maintain(conditions=['source.stable'])
+        self.assertEqual(self.states(), {'source.stable': 'holds', 'path.aligned': 'due'})
+        self.client.maintain(conditions=['path.aligned'])
+        self.assertEqual(self.states()['path.aligned'], 'holds')
+
+    def test_revised_measurement_and_upstream_definition_require_new_observations(self):
+        method = {'id': 'signal.read', 'layer': 'standard', 'description': 'Read a signal',
+                  'steps': [{'id': 'read', 'device': 'detector', 'operation': 'read'}],
+                  'result': {'signal': {'step': 'read', 'path': ['signal']}}}
+        self.client.save_operation(method)
+        path = {**PATH, 'verify': {'operation': 'signal.read'}, 'reference': {}}
+        self.client.configure_platform(platform(SOURCE, path), expected_revision=1)
+        self.client.maintain('chain')
+        self.client.save_operation({**method, 'result': {'signal': {'step': 'read', 'path': ['dark']}}})
+        self.assertEqual(self.states()['path.aligned'], 'unknown')
+        self.client.configure_platform(platform(SOURCE, PATH), expected_revision=2)
+        self.client.maintain('chain')
+        self.client.configure_platform(platform({**SOURCE, 'accept': {'value': ['level'], 'minimum': 0.9}}, PATH),
+                                       expected_revision=3)
+        self.client.maintain(conditions=['source.stable'])
+        self.assertEqual(self.states()['path.aligned'], 'unknown')
+
+    def test_maintenance_request_cannot_be_reused_for_different_work(self):
+        first = self.client.maintain('chain', request_id='prepare-chain')
+        count = len(WORLD['log'])
+        again = self.client.maintain('chain', request_id='prepare-chain')
+        self.assertEqual((again['id'], len(WORLD['log'])), (first['id'], count))
+        with self.assertRaisesRegex(IOPError, 'different maintenance'):
+            self.client.maintain('chain', request_id='prepare-chain', force=True)
+
+    def test_maintenance_preserves_requirements_of_saved_corrections(self):
+        self.client.save_operation({'id': 'conditional.peak', 'layer': 'standard', 'description': 'Peak only with a reference',
+                                    'requires': ['reference.ready'],
+                                    'steps': [{'id': 'peak', 'device': 'coupler', 'operation': 'peak_up'}]})
+        reference = {**SOURCE, 'id': 'reference.ready', 'correct': []}
+        self.client.configure_platform(platform(SOURCE, reference, {**PATH, 'correct': {'operation': 'conditional.peak'}}),
+                                       expected_revision=1)
+        WORLD['alignment'] = 0.2
+        report = self.client.maintain(conditions=['path.aligned'])
+        self.assertFalse(report['holds'])
+        self.assertNotIn('coupler.peak_up', WORLD['log'])
+        self.client.maintain(conditions=['reference.ready'])
+        report = self.client.maintain(conditions=['path.aligned'])
+        self.assertTrue(report['holds'])
+
+    def test_active_maintenance_keeps_used_methods_while_unrelated_methods_can_change(self):
+        method = {'id': 'correct.peak', 'layer': 'standard', 'description': 'Restore coupling',
+                  'steps': [{'id': 'peak', 'device': 'coupler', 'operation': 'peak_up'}]}
+        self.client.save_operation(method)
+        self.client.configure_platform(platform(SOURCE, {**PATH, 'correct': {'operation': 'correct.peak'}}), expected_revision=1)
+        entered, release = threading.Event(), threading.Event()
+        driver = self.engine.devices['coupler']
+        original = driver.invoke
+        def blocked(operation, arguments, cancelled):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError('Correction was not released')
+            return original(operation, arguments, cancelled)
+        WORLD['alignment'] = 0.2
+        with patch.object(driver, 'invoke', blocked):
+            job = self.client.request('/v1/conditions/maintain', {'platform': 'chain'})
+            try:
+                self.assertTrue(entered.wait(3))
+                with self.assertRaisesRegex(IOPError, 'in use by active maintenance'):
+                    self.client.save_operation({**method, 'description': 'New method'})
+                self.client.save_operation({**method, 'id': 'other.peak'})
+            finally:
+                release.set()
+            self.assertTrue(self.client.request('/v1/maintenance/' + job['id'] + '?wait=5')['holds'])
+        self.client.save_operation({**method, 'description': 'New method'})
+
+    def test_correction_reserves_coupled_devices_but_not_independent_devices(self):
+        entered, release = threading.Event(), threading.Event()
+        driver = self.engine.devices['coupler']
+        original = driver.invoke
+        def blocked(operation, arguments, cancelled):
+            if operation == 'peak_up':
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError('Correction was not released')
+            return original(operation, arguments, cancelled)
+        WORLD['alignment'] = 0.3
+        with patch.object(driver, 'invoke', blocked):
+            job = self.client.request('/v1/conditions/maintain', {'platform': 'chain', 'request_id': 'coupled'})
+            try:
+                self.assertTrue(entered.wait(3))
+                competing = self.client.submit([{'id': 'change', 'device': 'source', 'operation': 'stabilize'}])
+                independent = self.client.submit([{'id': 'work', 'device': 'stage', 'operation': 'wait',
+                                                   'arguments': {'duration': 0}}])
+                independent.result(3)
+                self.assertEqual(competing.info()['operation_records'][0]['state'], 'queued')
+            finally:
+                release.set()
+            finished = self.client.request('/v1/maintenance/' + job['id'] + '?wait=5')
+            self.assertTrue(finished['holds'])
+            competing.result(5)
+            self.assertGreaterEqual(competing.info()['operation_records'][0]['started'], finished['ended'])
+
+    def test_a_queued_action_does_not_run_after_its_condition_is_disturbed(self):
+        self.client.maintain('chain')
+        hold = self.client.start_experiment(resources=['detector'])
+        hold.batch([{'id': 'read', 'device': 'detector', 'operation': 'read'}])
+        before = len(WORLD['log'])
+        waiting = self.client.submit([{'id': 'read', 'device': 'detector', 'operation': 'read'}], requires=['path.aligned'])
+        self.client.invalidate(['path.aligned'], 'sample changed')
+        hold.finish()
+        with self.assertRaises(IOPError):
+            waiting.result(5)
+        self.assertEqual(len(WORLD['log']), before)
+        op = waiting.info()['operation_records'][0]
+        self.assertEqual(op['state'], 'failed')
+        self.assertIn('path.aligned', op['error'])
+        self.assertNotIn('outcome_unknown', op)
+
+    def test_nested_maintenance_requires_its_full_resource_reservation(self):
+        self.client.maintain('chain')
+        experiment = self.client.start_experiment(resources=['detector'], requires=['path.aligned'])
+        before = len(WORLD['log'])
+        with self.assertRaises(IOPError) as refused:
+            experiment.maintain(force=True)
+        self.assertEqual(refused.exception.code, 'maintenance_resources')
+        self.assertEqual(len(WORLD['log']), before)
+        experiment.finish()
+
+    def test_disturbance_marks_active_data_without_marking_completed_earlier_work(self):
+        self.client.maintain('chain')
+        earlier = self.client.submit([{'id': 'read', 'device': 'detector', 'operation': 'read'}], requires=['path.aligned'])
+        earlier.result(5)
+        current = self.client.start_experiment(requires=['path.aligned'])
+        self.client.invalidate(['source.stable'], 'enclosure opened')
+        self.assertNotIn('in_doubt', earlier.info())
+        self.assertEqual(current.info()['in_doubt']['path.aligned']['outcome'], 'disturbed')
+        current.finish()
 
     def test_a_condition_without_a_working_correction_is_lost_and_blocks_what_depends_on_it(self):
         self.client.configure_platform(platform({k: v for k, v in SOURCE.items() if k != 'correct'}, PATH), expected_revision=1)
@@ -156,7 +296,7 @@ class ConditionsCase(unittest.TestCase):
         with self.assertRaisesRegex(IOPError, 'path.aligned is unknown') as refused:
             self.client.submit(steps, requires=['path.aligned'])
         self.assertEqual((refused.exception.code, list(refused.exception.details['conditions'])),
-                         ('conditions_not_held', ['path.aligned']))
+                         ('conditions_not_held', ['source.stable', 'path.aligned']))
         self.client.maintain('chain')
         run = self.client.submit(steps, requires=['path.aligned'])
         run.result(10)
@@ -230,11 +370,36 @@ class ConditionsCase(unittest.TestCase):
         self.assertLess(quick, 12)
         self.assertGreaterEqual(self.client.condition('path.aligned')['value'], 0.8)
         # The optimum is outside the allowed range: the search ends at the limit and the condition is lost.
+        # Even small signals are valid observations in this case.
+        definition = self.tuned(until='accept')
+        definition['conditions'][1].pop('usable')
+        self.client.configure_platform(definition, expected_revision=2)
         WORLD.update(x0=3.0, y0=0.0)
         report = self.client.maintain('chain', force=True)
         self.assertEqual(report['report'][-1]['result'], 'lost')
         self.assertAlmostEqual(WORLD['x'], 1)
         self.assertLessEqual(WORLD['x'], 1)
+
+    def test_tuning_applies_an_out_of_range_readback_before_using_that_position(self):
+        definition = self.tuned(evaluations=1)
+        definition['conditions'][1].pop('usable')
+        self.client.configure_platform(definition, expected_revision=1)
+        WORLD.update(x=1.5, x0=1.0)
+        report = self.client.maintain('chain')
+        self.assertTrue(report['holds'])
+        self.assertEqual(WORLD['x'], 1.0)
+        tuned = self.client.condition('path.aligned')['records'][-1]['tuned']
+        self.assertEqual((tuned['from'][0], tuned['to'][0], tuned['evaluations']), (1.5, 1.0, 1))
+
+    def test_tuning_does_not_prefer_an_unusable_larger_reading(self):
+        definition = self.tuned(evaluations=5)
+        definition['conditions'][1]['usable'] = {'value': ['valid'], 'equals': True}
+        self.client.configure_platform(definition, expected_revision=1)
+        driver = self.engine.devices['detector']
+        with patch.object(driver, 'invoke', lambda *args: {'signal': 10 + WORLD['x'], 'valid': False}):
+            report = self.client.maintain('chain')
+        self.assertFalse(report['holds'])
+        self.assertEqual((WORLD['x'], WORLD['y']), (0, 0))
 
     def test_a_monitored_reading_outside_its_limits_makes_conditions_due(self):
         current = self.client.device_history('source')[0]
@@ -250,7 +415,8 @@ class ConditionsCase(unittest.TestCase):
         rows = {row['id']: row for row in self.client.conditions()}
         self.assertEqual((rows['source.stable']['state'], rows['source.stable']['reason']),
                          ('due', 'monitor source.level left its limits'))
-        self.assertEqual((rows['path.aligned']['state'], rows['path.aligned']['reason']), ('due', 'source.stable does not hold'))
+        self.assertEqual(rows['path.aligned']['state'], 'due')
+        self.assertIn('monitor source.level', rows['path.aligned']['reason'])
 
     def test_states_and_records_survive_a_restart(self):
         self.client.maintain('chain')
@@ -292,11 +458,12 @@ class DefinitionCase(unittest.TestCase):
                 ({'after': ['missing']}, 'after names other conditions'),
                 ({'accept': {'value': ['signal']}}, 'set minimum, maximum or equals'),
                 ({'verify': {'operation': ''}}, 'verify is one operation'),
-                ({'kind': 'mood'}, 'kind is one of'),
+                ({'kind': ''}, 'kind'),
                 ({'valid_for': 0}, 'valid_for is a duration'),
                 ({'interval': 5}, 'unknown fields interval')):
             with self.assertRaisesRegex(ValueError, message):
                 check([SOURCE, {**PATH, **change}])
+        self.assertEqual(check([{**SOURCE, 'kind': 'sample_integrity'}])[0]['kind'], 'sample_integrity')
         with self.assertRaisesRegex(ValueError, 'cycle'):
             check([{**SOURCE, 'after': ['path.aligned']}, PATH])
         with self.assertRaisesRegex(ValueError, 'already defined on another platform'):

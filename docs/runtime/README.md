@@ -203,7 +203,7 @@ Each submission receives a `run_id`; each operation receives an `operation_id`. 
 
 After restart, work that never started remains queued. Previously started work without a complete ending becomes `interrupted`, with its existing data retained. Programs declaring resume support can continue under the same run ID from their saved progress. Resolve any unfinished physical action by reading the device state before continuing; completed calls retain their results under their original request IDs. See [program progress and continuation](../../iop/continuity.md#saved-program-progress).
 
-Defaults are eight device workers and four package processes. Adjust `workers` and `package_workers` in `config.json` and restart. Choose these counts for the computer, instruments and experiments. The service does not independently change experimental algorithms, device parameters or completion conditions.
+Defaults are eight device workers and four package processes. Adjust `workers` and `package_workers` in `config.json` and restart. Choose these counts for the computer, instruments and experiments. Research programs define experimental algorithms and completion conditions. Explicit maintenance requests can run the platform's declared corrections, including bounded numerical tuning; ordinary scheduling does not invent or change them.
 
 ## Clients and servers
 

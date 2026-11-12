@@ -9,7 +9,7 @@ A service manages its computer's instruments. Platforms describe how those instr
 | Optical, fluid, electrical, trigger or sample connections | Platform `connections` | Document actual devices and ports; do not infer commands or synchronization from a connection label. |
 | Shared instruments, samples, buses, vessels or spatial regions | Platform `resources` | Order conflicting operations. Resource IDs are global within one service. |
 | Dependencies for this experiment | Experiment or procedure `steps[].after` | Wait for predecessors; run compatible independent branches concurrently. |
-| What must hold for experiments to mean something | Platform `conditions` | Verified, corrected in dependency order and trusted for a time; experiments that name them with `requires` are accepted while they hold. See [operating conditions](../docs/runtime/conditions.md). |
+| Conditions required by the selected experiment | Platform `conditions` | Verified, corrected in dependency order and trusted for a time; experiments name them with `requires`; their recorded state is checked before dependent operations. See [operating conditions](../docs/runtime/conditions.md). |
 
 A resource lists the devices that use it. Its optional `operations` mapping restricts that use to named operations, for example `{"stage":["move_to"],"meter":["measure"]}`, allowing meter configuration alongside motion. Without a selection, all operations on that device use the resource.
 

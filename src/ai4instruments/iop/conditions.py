@@ -1,24 +1,10 @@
-"""Operating conditions: what must hold on a platform for its experiments, kept true over time.
+"""Platform-defined operating conditions, observations and bounded correction procedures.
 
-An experiment has its meaning only while the system is in its working state: the environment is
-within bounds, instruments have settled, references and calibrations are current, the signal path
-is aligned, loops are locked, the operating point is set and the end-to-end signal is good. Each of
-these is a condition. A condition names
-
-- ``verify``: a short reference measurement, one device operation or saved operation;
-- ``accept``: the tolerance on its result; ``usable`` optionally says when the measurement itself
-  means something, because an unusable result points at what the condition depends on;
-- ``correct``: what restores it, tried in order: an operation, or ``tune``, where the Runtime
-  itself adjusts one or several settings against the verification until the value is best;
-- ``valid_for``: how long an accepted verification is trusted;
-- ``after``: the conditions it depends on.
-
-Keeping a system in its working state is one loop run in dependency order: verify, compare,
-correct, verify again. It runs when a platform is brought up, when a verification has expired and
-when something disturbed the system. The procedure follows Kelly et al., "Physical qubit
-calibration on a directed acyclic graph" (arXiv:1803.03226), stated for any platform.
+Dependencies and acceptable measurements are supplied by the experimenter. Maintenance uses
+ordinary operations and the existing scheduler; it does not infer physical causality. The
+dependency-graph approach is informed by Kelly et al., arXiv:1803.03226.
 """
-import hashlib
+import copy
 import math
 import statistics
 import threading
@@ -29,7 +15,7 @@ from .errors import RequestError
 from .platforms import name, strings
 from .store import dumps, now
 
-# From the outside in: each kind presupposes the ones before it.
+# Suggested labels. Dependencies come from each platform's explicit `after` relationships.
 KINDS = ('environment', 'equilibrium', 'reference', 'calibration', 'alignment', 'lock', 'operating_point', 'signal')
 OUTCOMES = ('holds', 'drifted', 'unusable')
 FIELDS = {'id', 'description', 'kind', 'after', 'verify', 'accept', 'usable', 'reference', 'correct', 'settle',
@@ -54,6 +40,8 @@ def criterion(value, what):
             raise ValueError(f'{what}: {key} must be a finite number')
     if not {'minimum', 'maximum', 'equals'} & value.keys():
         raise ValueError(what + ': set minimum, maximum or equals')
+    if 'minimum' in value and 'maximum' in value and value['minimum'] > value['maximum']:
+        raise ValueError(what + ': minimum must not exceed maximum')
     return {**value, 'value': path}
 
 
@@ -118,6 +106,8 @@ def tuning(value, accept, what):
     goal = value.get('goal', 'center' if {'minimum', 'maximum'} <= accept.keys() else 'maximize' if 'minimum' in accept else 'minimize')
     if goal not in GOALS:
         raise ValueError(what + ': goal is one of ' + ', '.join(GOALS))
+    if goal == 'center' and not {'minimum', 'maximum'} <= accept.keys():
+        raise ValueError(what + ': center needs both minimum and maximum in accept')
     evaluations = value.get('evaluations', 40)
     if isinstance(evaluations, bool) or not isinstance(evaluations, int) or not 1 <= evaluations <= 1000:
         raise ValueError(what + ': evaluations is the number of settings that may be tried, 1 to 1000')
@@ -149,8 +139,8 @@ def check(definitions, taken=()):
             raise ValueError(what + ' is already defined on another platform')
         if not isinstance(condition.get('description'), str) or not condition['description'].strip():
             raise ValueError(what + ': describe what must hold')
-        if 'kind' in condition and condition['kind'] not in KINDS:
-            raise ValueError(what + ': kind is one of ' + ', '.join(KINDS))
+        if 'kind' in condition:
+            name(condition['kind'], what + ' kind')
         after = strings(condition.get('after', []), what + ' after')
         if set(after) - set(names) or condition['id'] in after:
             raise ValueError(what + ': after names other conditions of this platform')
@@ -203,11 +193,6 @@ def order(definitions, targets):
     return result
 
 
-def signature(condition):
-    """Changes when the meaning of an accepted verification changes."""
-    return hashlib.sha256(dumps([condition['verify'], condition['accept'], condition.get('usable')]).encode()).hexdigest()[:16]
-
-
 def outcome(condition, result):
     """Classify a verification result: holds, drifted (measurable but out of tolerance) or unusable."""
     value, kept = None, {}
@@ -243,17 +228,17 @@ def summary(condition, rows):
             if row['outcome'] == 'holds':
                 start = start or row['time']
             elif start:
-                # It held from the first accepted verification of the stretch until this one found it lost.
+                # Observation interval, not a measurement of the actual instant of failure.
                 spans.append(seconds(row['time']) - seconds(start))
                 start = None
         elif row['type'] == 'invalidated':
             start = None
+            last_correction = row['time']
         elif row['type'] == 'corrected':
             entry = corrections.setdefault(row['by'], {'tried': 0, 'restored': 0})
             entry['tried'] += 1
             entry['restored'] += bool(row['restored'])
-            if row['restored']:
-                last_correction = row['time']
+            last_correction = row['time']
     if spans:
         result['held'] = {'count': len(spans), 'median_s': round(statistics.median(spans), 3), 'shortest_s': round(min(spans), 3)}
     if corrections:
@@ -273,8 +258,11 @@ def summary(condition, rows):
         bound = condition['accept'].get('maximum' if slope > 0 else 'minimum')
         if slope and bound is not None:
             crossing = (bound - intercept) / slope
-            if crossing > xs[-1]:
-                trend['expected_until'] = datetime.fromtimestamp(origin + crossing, timezone.utc).isoformat()
+            if crossing > xs[-1] and math.isfinite(crossing):
+                try:
+                    trend['expected_until'] = datetime.fromtimestamp(origin + crossing, timezone.utc).isoformat()
+                except (OverflowError, ValueError, OSError):
+                    pass
         result['trend'] = trend
     return result
 
@@ -316,6 +304,48 @@ class Conditions:
                 pass
         return devices
 
+    def basis(self, condition):
+        """Keep the actual measurement definition and the versions that give it meaning."""
+        result = self._measurement_basis(condition)
+        result['dependencies'] = {c: self._measurement_basis(self.definitions[c])
+                                  for c in self.closure(condition['after'])}
+        return result
+
+    def _measurement_basis(self, condition):
+        result = {k: condition[k] for k in ('verify', 'accept', 'usable', 'after', 'reference') if k in condition}
+        try:
+            steps, calls = library.expand([{'id': 'verify', **condition['verify']}], self.engine.library.get)
+            result['operations'] = {c['operation']: c['revision'] for c in calls.values()}
+            result['devices'] = {s['device']: self.engine.descriptions.get(s['device'], {}).get('revision') for s in steps}
+        except ValueError:
+            result['unavailable'] = True
+        return copy.deepcopy(result)
+
+    def closure(self, names):
+        return order(list(self.definitions.values()), names)
+
+    def requirements(self, names):
+        """Resources used together during observation, correction and confirmation."""
+        engine, amounts, revisions = self.engine, {}, {}
+        for condition_id in self.closure(names):
+            condition = self.definitions[condition_id]
+            items = [condition['verify']]
+            for correction in condition['correct']:
+                if 'tune' in correction:
+                    for knob in correction['tune']:
+                        items.extend([self._set(knob, knob['minimum']),
+                                      {k: v for k, v in knob['read'].items() if k != 'value'}])
+                else:
+                    items.append(correction)
+            for item in items:
+                expanded, calls = library.expand([{'id': 'step', **item}], engine.library.get)
+                revisions.update({c['operation']: c['revision'] for c in calls.values()})
+                for flat in expanded:
+                    op = engine._operation('prepare', flat)
+                    for key, count in engine._amounts(op, reserve=True).items():
+                        amounts[key] = max(amounts.get(key, 0), count)
+        return amounts, revisions
+
     def prepare(self, definition):
         """Check the conditions of a platform being saved against its devices and the saved operations."""
         engine = self.engine
@@ -345,7 +375,7 @@ class Conditions:
     def state(self, condition_id, at=None, visiting=()):
         condition, saved = self.definitions[condition_id], self.states.get(condition_id)
         at = at or seconds(now())
-        if not saved or saved.get('signature') != signature(condition) or 'verified' not in saved:
+        if not saved or saved.get('basis') != self.basis(condition) or 'verified' not in saved:
             return {'state': 'unknown'}
         shown = {key: saved[key] for key in ('verified', 'value', 'accepted', 'reference') if saved.get(key) not in (None, {})}
         if saved['outcome'] != 'holds':
@@ -402,6 +432,7 @@ class Conditions:
         for condition_id in names:
             if condition_id not in self.definitions:
                 raise ValueError('Unknown condition: ' + condition_id)
+        for condition_id in self.closure(names):
             state = self.state(condition_id)
             (relied if state['state'] == 'holds' else lacking)[condition_id] = state
         if lacking:
@@ -413,7 +444,7 @@ class Conditions:
 
     def rely(self, run_id, names):
         """Remember that this experiment's data depend on these conditions from now on."""
-        for condition_id in names:
+        for condition_id in self.closure(names):
             saved = self.states.get(condition_id)
             if saved is not None and run_id not in saved.setdefault('relying', []):
                 saved['relying'].append(run_id)
@@ -422,10 +453,10 @@ class Conditions:
     # Records.
 
     def _state(self, condition_id):
-        mark = signature(self.definitions[condition_id])
+        mark = self.basis(self.definitions[condition_id])
         saved = self.states.get(condition_id)
-        if not saved or saved.get('signature') != mark:
-            saved = {'signature': mark}
+        if not saved or saved.get('basis') != mark:
+            saved = {'basis': mark}
         self.states[condition_id] = saved
         return saved
 
@@ -451,6 +482,10 @@ class Conditions:
             saved.update(verified=time, outcome=result, value=value, error=error)
             engine.store.record_condition(condition_id, saved, record, 'condition.' + result, run_id=run_id, value=value,
                                           **({'in_doubt': doubtful} if doubtful else {}))
+            if result != 'holds':
+                downstream = [c for c, definition in self.definitions.items() if condition_id in definition['after']]
+                if downstream:
+                    self.invalidate(downstream, 'dependency no longer holds: ' + condition_id)
 
     def corrected(self, condition_id, by, restored, before, after, run_id, error=None, tuned=None):
         with self.engine.lock:
@@ -470,10 +505,22 @@ class Conditions:
             for condition_id in strings(names, 'Conditions'):
                 if condition_id not in self.definitions:
                     raise KeyError(condition_id)
-            for condition_id in names:
+            affected = set(names)
+            while True:
+                downstream = {c for c, definition in self.definitions.items() if affected.intersection(definition['after'])}
+                if downstream <= affected:
+                    break
+                affected.update(downstream)
+            for condition_id in affected:
                 saved = self._state(condition_id)
-                saved['invalidated'] = reason
-                self.engine.store.record_condition(condition_id, saved, {'type': 'invalidated', 'time': now(), 'reason': reason},
+                saved['invalidated'] = reason if condition_id in names else 'dependency disturbed: ' + reason
+                time = now()
+                for run_id in saved.get('relying', []):
+                    run = self.engine.runs.get(run_id)
+                    if run and condition_id not in run.setdefault('in_doubt', {}):
+                        run['in_doubt'][condition_id] = {'since': time, 'found': time, 'outcome': 'disturbed', 'reason': reason}
+                        self.engine.store.put('runs', run)
+                self.engine.store.record_condition(condition_id, saved, {'type': 'invalidated', 'time': time, 'reason': reason},
                                                    'condition.invalidated', reason=reason)
             return [row for row in self.listing() if row['id'] in names]
 
@@ -490,11 +537,15 @@ class Conditions:
     def maintain(self, platform=None, conditions=None, run_id=None, request_id=None, force=False):
         engine = self.engine
         with engine.lock:
+            request = {'platform': platform, 'conditions': sorted(strings(conditions, 'Conditions')) if conditions else None,
+                       'run_id': run_id, 'force': bool(force)}
             if request_id is not None:
                 if not isinstance(request_id, str) or not request_id.strip():
                     raise ValueError('request_id is a nonempty string')
                 previous = engine.store.maintenance(request_id=request_id)
                 if previous:
+                    if previous.get('request') != request:
+                        raise ValueError('request_id already names a different maintenance request')
                     return self.job(previous['id'])
             if not conditions and platform is None and run_id in engine.runs:
                 # Inside an experiment the default is what that experiment relies on.
@@ -520,20 +571,32 @@ class Conditions:
             from .engine import identifier
             job = {'id': identifier('maintenance'), 'request_id': request_id, 'platform': platform, 'conditions': targets,
                    'force': bool(force), 'state': 'running', 'started': now(), 'report': [], 'steps': 0,
-                   'run_id': run_id, 'own_run': run_id is None}
+                   'run_id': run_id, 'own_run': run_id is None, 'request': request}
+            amounts, job['operation_revisions'] = self.requirements(targets)
             if run_id is None:
-                # Steps take their devices one at a time, so other experiments are not held for the whole pass.
+                # Keep coupled devices together through the complete correction cycle.
                 job['run_id'] = engine.submit({'kind': 'external', 'name': 'Maintain ' + platform, 'platform': platform,
+                                               'resources': sorted(k[7:] for k in amounts if k.startswith(('device:', 'shared:'))),
+                                               'requirements': {k[5:]: n for k, n in amounts.items() if k.startswith('pool:')},
                                                'request_id': job['id']})['id']
             else:
                 run = engine.runs.get(run_id)
                 if not run or not (run['kind'] == 'external' and run['state'] in {'queued', 'running'} or
                                    run['kind'] == 'package' and run['state'] == 'running'):
                     raise ValueError('Maintenance inside an experiment requires an active experiment program')
+                if engine.remaining.get(run_id, 0):
+                    raise RequestError('maintenance_busy', 'Wait for this experiment\'s current operations before maintenance.',
+                                       run_id=run_id)
+                reserved = engine._amounts(run, reserve=True)
+                missing = {k: n for k, n in amounts.items() if n > reserved.get(k, 0)}
+                if missing:
+                    raise RequestError('maintenance_resources',
+                        'Reserve the devices and resource quantities used by maintenance when starting this experiment.',
+                        resources=missing, run_id=run_id)
             self.jobs[job['id']] = job
             engine.store.save_maintenance(job)
             thread = threading.Thread(target=self._work, args=(job,), name='iop-maintenance', daemon=True)
-            self.threads.append(thread)
+            self.threads = [t for t in self.threads if t.is_alive()] + [thread]
             thread.start()
             return self._public(job)
 
@@ -556,7 +619,7 @@ class Conditions:
 
     @staticmethod
     def _public(job):
-        return {**{k: v for k, v in job.items() if k not in ('steps', 'own_run', 'force')}, 'complete': job['state'] != 'running'}
+        return {**{k: v for k, v in job.items() if k not in ('steps', 'own_run', 'force', 'request')}, 'complete': job['state'] != 'running'}
 
     def _work(self, job):
         engine = self.engine
@@ -575,6 +638,8 @@ class Conditions:
                 for condition_id in job['conditions']:
                     self._ensure(job, condition_id, done, investigated)
             job['holds'] = all(done[c] == 'holds' for c in job['conditions'])
+            with engine.lock:
+                job['holds'] = job['holds'] and all(self.state(c)['state'] == 'holds' for c in job['conditions'])
             job['state'] = 'completed'
         except Stopped:
             job['state'] = 'interrupted'
@@ -599,6 +664,11 @@ class Conditions:
             job.setdefault('error', f'{type(error).__name__}: {error}')
         with self.changed:
             self.changed.notify_all()
+        engine.wake.set()
+        with engine.lock:
+            completed = [key for key, value in self.jobs.items() if value['state'] != 'running']
+            for key in completed[:-RECORDS]:
+                self.jobs.pop(key, None)
 
     def _ensure(self, job, condition_id, done, investigated, investigate=False):
         """Bring one condition to hold: dependencies first, then verify, then correct."""
@@ -631,9 +701,10 @@ class Conditions:
         entry['found'] = result
         for item in condition['correct']:
             before, tuned = value, None
+            self.invalidate([condition_id], 'correction started: ' + label(item))
             try:
                 if 'tune' in item:
-                    tuned = self._tune(job, condition, item, value)
+                    tuned = self._tune(job, condition, item, value, result)
                 else:
                     self._execute(job, 'correct', item)
             except StepFailed as error:
@@ -675,7 +746,7 @@ class Conditions:
         return {'device': knob['device'], 'operation': knob['operation'],
                 'arguments': {**knob.get('arguments', {}), knob['argument']: position}}
 
-    def _tune(self, job, condition, item, value):
+    def _tune(self, job, condition, item, value, initial_outcome):
         """Adjust the settings one at a time against the verification value, halving the step when no move helps.
 
         A bounded search without derivatives: each setting is stepped in the direction that improves the
@@ -700,12 +771,26 @@ class Conditions:
                 present = None
             if not number(present):
                 raise StepFailed(f"{knob['read']['device']}.{knob['read']['operation']} did not return the present setting")
-            positions.append(min(max(present, knob['minimum']), knob['maximum']))
+            positions.append(present)
         start, steps = list(positions), [knob['step'] for knob in knobs]
-        best, used, met = score(value), 0, False
+        for index, knob in enumerate(knobs):
+            bounded = min(max(positions[index], knob['minimum']), knob['maximum'])
+            if bounded != positions[index]:
+                self._execute(job, 'set', self._set(knob, bounded))
+                positions[index] = bounded
+        used = 0
+        if positions != start:
+            if self.stopping.wait(condition.get('settle', 0)):
+                raise Stopped()
+            initial_outcome, value, _ = outcome(condition, self._execute(job, 'verify', condition['verify']))
+            used += 1
+        best, met = score(value) if initial_outcome != 'unusable' else -math.inf, False
+        met = item['until'] == 'accept' and initial_outcome == 'holds'
         while used < item['evaluations'] and not met:
             moved = False
             for index, knob in enumerate(knobs):
+                if steps[index] < knob['resolution']:
+                    continue
                 for direction in (1, -1):
                     advanced = False
                     while used < item['evaluations'] and not met:
@@ -717,8 +802,9 @@ class Conditions:
                             raise Stopped()
                         found, reading, _ = outcome(condition, self._execute(job, 'verify', condition['verify']))
                         used += 1
-                        if score(reading) > best + gain:
-                            positions[index], best, advanced, moved = candidate, score(reading), True, True
+                        candidate_score = score(reading) if found != 'unusable' else -math.inf
+                        if candidate_score > best + gain:
+                            positions[index], best, advanced, moved = candidate, candidate_score, True, True
                             met = item['until'] == 'accept' and found == 'holds'
                         else:
                             self._execute(job, 'set', self._set(knob, positions[index]))

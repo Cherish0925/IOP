@@ -50,17 +50,9 @@ A step with `device` is a Basic Operation; a step without it uses a saved operat
 
 ## Operating conditions
 
-An experiment has its meaning only while the system is in its working state. A platform states that state as conditions: what must hold, how it is verified, its tolerance, what restores it and how long it stays valid. The Runtime keeps them true with one loop, run in dependency order when the platform is brought up, when a verification has expired and when something disturbed the system.
+A platform describes the conditions required by its experiments: observations, tolerances, dependencies, correction methods and optional validity periods. `maintain` runs these methods using the same operations and scheduler as experiments. Corrections reserve the coupled devices together; independent platforms can keep working.
 
-| | |
-| --- | --- |
-| **Three outcomes** | A verification holds, has drifted (correct this condition), or is unusable (look at what it depends on). |
-| **Order by cause** | Bringing a system up follows the dependencies forward; finding a fault follows them backward to the first condition that does not hold. |
-| **Tuning** | A correction can be an operation, or the Runtime adjusting one or several settings against the verification until the value is best. |
-| **Validity** | An accepted verification is trusted for a time, and no longer after a correction upstream or a disturbance. |
-| **Data carry it** | An experiment names what it relies on with `requires` and records it; data taken before a condition was found lost are marked in doubt. |
-
-The records show which conditions drift, how fast, and what restores them, so experience with one system accumulates there. See [operating conditions](docs/runtime/conditions.md).
+Experiments name their conditions with `requires`. The Runtime checks their recorded state before each dependent operation, keeps the observations with the results, and marks relevant intervals when a later observation reveals drift. Bounded `tune` provides a local numerical search; saved operations and programs express other methods. Classification and dependencies remain configurable for each platform. See [operating conditions](docs/runtime/conditions.md).
 
 ## Research and learning
 

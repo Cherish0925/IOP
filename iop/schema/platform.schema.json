@@ -273,17 +273,9 @@
             "minLength": 1
           },
           "kind": {
-            "enum": [
-              "environment",
-              "equilibrium",
-              "reference",
-              "calibration",
-              "alignment",
-              "lock",
-              "operating_point",
-              "signal"
-            ],
-            "description": "From the outside in; each kind presupposes the ones before it."
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+            "description": "Optional, extensible category. Dependencies are defined only by after."
           },
           "after": {
             "type": "array",
