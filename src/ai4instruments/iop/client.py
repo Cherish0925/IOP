@@ -390,6 +390,15 @@ class Run:
     def resume(self, request_id=None):
         return self.client.request('/v1/runs/' + self.id + '/resume', {'request_id': request_id or str(uuid.uuid4())})
 
+    def read_array(self, field=None, *, request_id=None, along=None, at=None, start=None, stop=None, low=None,
+                   high=None, points=None):
+        """What an array this experiment's result holds says, such as what a sweep gathered; with
+        ``request_id``, an array in the results of that batch. The options are those of Client.read_array."""
+        query = view_query(field=field, along=along, at=at, start=start, stop=stop, low=low, high=high, points=points)
+        if request_id is not None:
+            query += ('&' if query else '?') + urlencode({'request_id': request_id})
+        return self.client.request('/v1/runs/' + self.id + '/array' + query)
+
     def streams(self):
         """The data streams of this experiment with their descriptions, chunk counts and sizes."""
         return self.client.request('/v1/runs/' + self.id + '/streams')
@@ -452,11 +461,13 @@ class Run:
             raise IOPError('Operation batch did not complete', details=result)
         return result['operations']
 
-    def call(self, operation, arguments=None, *, request_id=None, timeout=None, maintain=False):
-        """Use a saved Standard or Workflow Operation in this experiment and return its named result."""
+    def call(self, operation, arguments=None, *, sweep=None, request_id=None, timeout=None, maintain=False):
+        """Use a saved Standard or Workflow Operation in this experiment and return its named result. With
+        ``sweep``, such as {"angle": {"start": -10, "stop": 10, "points": 21}}, it is used at each point and
+        its named results return gathered into arrays over the sweep."""
         request_id = request_id or uuid.uuid4().hex
-        self.batch([{'id': 'call', 'operation': operation, 'arguments': arguments or {}}], request_id=request_id,
-                   timeout=timeout, maintain=maintain)
+        step = {'id': 'call', 'operation': operation, 'arguments': arguments or {}, **({'sweep': sweep} if sweep else {})}
+        self.batch([step], request_id=request_id, timeout=timeout, maintain=maintain)
         return self.client.request('/v1/runs/' + self.id + '/batches?' + urlencode({'request_id': request_id}))['results']['call']
 
     def begin_episode(self, episode_id, *, task, observation, policy=None, seed=None, info=None):

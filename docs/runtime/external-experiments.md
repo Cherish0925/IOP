@@ -28,7 +28,7 @@ The inner context finishes normally or requests cancellation on an exception. Cl
 
 ## Sequence, parallel branches and shared instruments
 
-Within a batch, omitting `after` means follow the previous step. `after=[]` starts an independent branch; `after=['a','b']` waits for both. Result bindings also create dependencies. All steps are checked and recorded before any starts: the entire batch is accepted or none is. This does not undo physical actions if a later step fails; completed results remain and pending steps are cancelled.
+Within a batch, omitting `after` means follow the previous step. `after=[]` starts an independent branch; `after=['a','b']` waits for both. Result bindings also create dependencies. A step with `sweep` runs at each value of its parameters in turn; the batch results hold what it gathered, and `run.call(operation, arguments, sweep=...)` returns a saved operation's named results gathered into arrays ([sweeps](operations.md#sweeps--扫描)). All steps are checked and recorded before any starts: the entire batch is accepted or none is. This does not undo physical actions if a later step fails; completed results remain and pending steps are cancelled.
 
 Reserve **all mutually dependent devices and shared physical resources** in `start_experiment(resources=[...])`. Reservations span gaps between batches and last until finish or completed cancellation. Without a reservation, another experiment can run between calls or batch steps. Independent platforms remain available. Device clocks and hardware triggers provide precise synchronization; software dependencies specify completion order.
 

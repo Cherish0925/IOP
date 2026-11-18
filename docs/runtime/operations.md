@@ -42,7 +42,7 @@ A Workflow Operation that decides from results is a saved program and runs as it
 | `description`, `conditions` | What it achieves, and when the result has that meaning / 作用，以及结果成立的条件 |
 | `requires` | Names of [platform conditions](conditions.md) that must hold when the operation is used; an experiment using it is accepted while they hold / 使用该操作时必须成立的[平台条件](conditions.md)名称；条件成立时使用它的实验才被受理 |
 | `parameters` | Described like operation parameters; arguments are checked before anything runs / 与操作参数格式相同，执行前校验 |
-| `steps` | Run in the order written; `after: []` starts a parallel branch and `after: [ids]` joins branches. `"${name}"` in `arguments` or `device` inserts a parameter with its type / 按书写顺序执行；`after: []` 开始并行分支，`after: [ids]` 汇合。`"${name}"` 按类型代入参数 |
+| `steps` | Run in the order written; `after: []` starts a parallel branch and `after: [ids]` joins branches. `"${name}"` in `arguments`, `device` or `sweep` inserts a parameter with its type; `sweep` runs a step at each value of some of its parameters (see [Sweeps](#sweeps--扫描)) / 按书写顺序执行；`after: []` 开始并行分支，`after: [ids]` 汇合。`"${name}"` 在 `arguments`、`device` 或 `sweep` 中按类型代入参数；`sweep` 让一步按参数的各个取值依次运行（见[扫描](#sweeps--扫描)） |
 | `result` | Names the values returned: a step and an optional path into its result, or into a `view` of an array it returned / 为返回值命名：取自某一步结果中的路径，或该步所返回数组的 `view` 中的路径 |
 
 Save with `POST /v1/library` `{"definition": {...}}`, Python `save_operation`, MCP `saved_operations(definition)`, or `iop operations --save file.json`. Saving the same name creates a new revision; earlier revisions stay readable at `/v1/library/{id}/history`, and each experiment records the revision it used. [operations.json](../../examples/iop/operations.json) holds the three operations of this page for the demonstration devices. / 同名保存产生新版本，旧版本仍可读取，每次实验记录所用版本。
@@ -95,6 +95,23 @@ A named result or a binding can read through a `view` of an array the step retur
 These views are computed once, when the step that returned the array completes, and kept in its operation record as `derived`; the value does not change when it is read again. A view reads an array a device operation returned, so a binding to a saved operation takes one of its named results. / 这些视图在返回数组的那一步完成时计算一次，记入其操作记录的 `derived`，之后再读也不会变。视图只作用于设备操作返回的数组；绑定已保存操作时取其具名结果。
 
 `GET /v1/library` lists the saved operations with their layer, description, parameters and use counts; `GET /v1/library/{id}` returns one with its steps, so a method can be read, changed and saved again. The laboratory overview lists the names by role, which is what an agent sees first. / 列表给出每个操作的角色、说明、参数和使用次数；单个查询返回其步骤，方法可以读出、修改后再保存。实验室概况按角色列出名称，Agent 连接后首先看到的就是这些。
+
+## Sweeps / 扫描
+
+A step with `sweep` runs once at each value of the parameters it names, one point after another; the first name changes slowest. A list gives the values (numbers, or strings such as channel names); `start`, `stop` and `points` give evenly spaced numbers. A sweep has at most 10,000 points, and each point is an ordinary operation, or use of a saved operation, with its own record. / 带 `sweep` 的步骤按所列参数的每个取值依次运行一次，第一个参数变化最慢。列表给出取值（数值，或通道名等字符串）；`start`、`stop`、`points` 给出等间隔的数值。每次扫描最多 10,000 个点，每个点都是普通的操作或已保存操作的一次使用，有自己的记录。
+
+```json
+{"steps": [
+  {"id": "scan", "operation": "axis.measure", "arguments": {"axis": "stage"},
+   "sweep": {"angle": {"start": -40, "stop": 40, "points": 81}}},
+  {"id": "best", "device": "stage", "operation": "move_to", "after": ["scan"],
+   "bindings": {"angle_deg": {"step": "scan", "view": {"field": "power"}, "path": ["summary", "max_at"]}}}
+]}
+```
+
+What the points return is gathered under the step. Numbers in the same place become an array over the sweep, with one axis for each swept parameter carrying its values and unit; a `unit` beside a single number, as in `{"value": 0.25, "unit": "V"}`, becomes the array's unit. Arrays of one shape in the same place combine into one array with the sweep's axes in front: from the values the records hold, or, when every point saved its array in a file, from those files read in order without copying them. Spectra swept over a bias thus read as a map, and so does a sweep of a saved operation that sweeps. Other values are kept when they are the same at every point; the rest stay in the record of each point. The experiment result holds what the sweep gathered in place of the points. / 各点的返回值汇集在该步骤名下。同一位置的数值成为随扫描变化的数组，每个扫描参数一个坐标轴，带取值和单位；与单个数值并列的 `unit`（如 `{"value": 0.25, "unit": "V"}`）成为该数组的单位。同一位置、形状相同的数组合并为一个数组，扫描的轴在前：数值在记录中时直接合并；各点都把数组存成文件时，按顺序读取这些文件，不复制。随偏压扫描的谱线因此读作二维图，扫描一个本身含扫描的已保存操作也是如此。其他值在各点相同时保留；其余的值留在各点的记录里。实验结果中给出汇集后的内容，不再逐点列出。
+
+Bindings and named results read what a sweep gathered by path or through a `view`, so a saved operation can scan and then go to the best point; `"points": "${points}"` takes the number of points from a parameter. `read_array` with `run_id` and `field`, `Run.read_array` and `readArray` view these arrays, with `request_id` for a batch of a continuous experiment; there `run.call(operation, arguments, sweep=...)` returns the named results gathered. / 绑定和具名结果可按路径或经 `view` 读取扫描汇集的内容，已保存的操作因此可以先扫描、再转到最佳点；`"points": "${points}"` 从参数取点数。`read_array`（`run_id` 与 `field`）、`Run.read_array` 和 `readArray` 读取这些数组，连续实验中的批次另加 `request_id`；在连续实验中，`run.call(操作, 参数, sweep=...)` 返回汇集后的具名结果。
 
 ## Record of use / 使用记录
 

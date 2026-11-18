@@ -22,33 +22,39 @@ PYTHON_LIMIT = 4_000_000
 COMPONENTS = ['re', 'im']
 
 
-def arrays_in(result, prefix=''):
-    """Paths of the arrays in an operation result: '' for the result itself, else e.g. 'items.trace'."""
-    found = []
+def _arrays(result, keys=()):
+    """The keys leading to each array in a result."""
     if isinstance(result, dict):
         data = result.get('data')
         if isinstance(data, dict) and isinstance(data.get('dtype'), str) and isinstance(data.get('shape'), list):
-            found.append(prefix)
+            yield keys
         for key, value in result.items():
             if key not in ('data', 'values') and isinstance(value, dict):
-                found += arrays_in(value, f'{prefix}.{key}' if prefix else key)
-    return found
+                yield from _arrays(value, keys + (key,))
+
+
+def arrays_in(result):
+    """Paths of the arrays in a result: '' for the result itself, else e.g. 'items.trace'."""
+    return ['.'.join(keys) for keys in _arrays(result)]
 
 
 def select(result, field=None):
-    """The array a field names; a result that holds one array needs no field."""
-    paths = arrays_in(result)
-    shown = ', '.join(repr(p) for p in paths)
+    """The array a field names; a result that holds one array needs no field. Keys may hold dots, as the
+    steps of a saved operation do in an experiment's result."""
+    found = {}
+    for keys in _arrays(result):
+        found.setdefault('.'.join(keys), keys)
+    shown = ', '.join(repr(p) for p in found)
     if field is None:
-        if not paths:
-            raise ValueError('This operation result holds no array')
-        if len(paths) > 1:
+        if not found:
+            raise ValueError('This result holds no array')
+        if len(found) > 1:
             raise ValueError('This result holds several arrays; name one with field: ' + shown)
-        field = paths[0]
-    if field not in paths:
+        field = next(iter(found))
+    if field not in found:
         raise ValueError(f'No array at {field!r}; this result holds: {shown or "none"}')
     holder = result
-    for key in field.split('.') if field else []:
+    for key in found[field]:
         holder = holder[key]
     return field, holder
 
@@ -83,7 +89,7 @@ def _coordinates(axis, size):
         return None
     if _number(axis.get('step')) and axis['step']:
         return float(axis['start']), float(axis['step'])
-    if _number(axis.get('stop')) and size > 1:
+    if _number(axis.get('stop')) and size > 1 and axis['stop'] != axis['start']:
         return float(axis['start']), (float(axis['stop']) - float(axis['start'])) / (size - 1)
     return None
 
@@ -439,15 +445,29 @@ def options(query):
             'points': integer('points') if 'points' in query else POINTS}
 
 
-def read(result, folder, field=None, **options):
-    """The view of an array in an operation's result, read from the file the operation saved in folder."""
+def read(result, folder, field=None, output=None, **options):
+    """The view of an array in a result: from the file its operation saved in folder, from the files the points
+    of a sweep saved in the experiment's ``output`` folder, or from the values the record holds."""
     from .engine import relative_path
     field, holder = select(result or {}, field)
-    name, path = holder['data'].get('file'), None
-    if name:
+    data, name, path = holder['data'], holder['data'].get('file'), None
+    if isinstance(data.get('files'), list) and holder.get('values') is None:
+        if output is None:
+            raise ValueError("This array is read from the files of a sweep's points; read it with the experiment ID")
+        size, segments = data['bytes'] // len(data['files']), []
+        for item in data['files']:
+            path = output / relative_path(item)
+            if not path.resolve().is_relative_to(output.resolve()) or not path.is_file():
+                raise ValueError('The array file of a point of this sweep is missing')
+            segments.append([str(path), size])
+        return view(holder, segments, field=field, **options)
+    if name and folder is not None:
         path = folder / relative_path(name)
         if not path.resolve().is_relative_to(folder.resolve()) or not path.is_file():
             raise ValueError('The array file of this operation is missing')
+    elif holder.get('values') is None:
+        raise ValueError('This array is kept in the file of the operation that returned it; read it with that '
+                         'operation ID')
     return view(holder, path, field=field, **options)
 
 
@@ -458,6 +478,19 @@ def operation_array(engine, operation_id, field=None, **options):
         raise ValueError('Arrays are read from completed operations')
     folder = engine.home / 'runs' / op['run_id'] / 'output' / 'operations' / operation_id
     return {'operation_id': operation_id, **read(op.get('result'), folder, field, **options)}
+
+
+def result_array(engine, run_id, request_id=None, field=None, **options):
+    """The view of an array an experiment's result holds, such as what a sweep gathered; with ``request_id``,
+    one the results of that batch hold."""
+    if request_id is None:
+        held = engine.store.get('runs', run_id).get('result')
+    else:
+        from .batches import describe
+        held = describe(engine, run_id, request_id).get('results')
+    output = engine.home / 'runs' / run_id / 'output'
+    return {'run_id': run_id, **({'request_id': request_id} if request_id else {}),
+            **read(held, None, field, output=output, **options)}
 
 
 # A step binding or a saved operation's named result can take its value through a view of an array:

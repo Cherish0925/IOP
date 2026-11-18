@@ -517,6 +517,31 @@ sys.stdout.buffer.write(b.getvalue())`,
       style: "#toast{visibility:hidden}",
     });
   await page.click("#modal-close");
+  // A sweep gathers what each point returned into an array over the swept parameter.
+  const turned = await api("runs", {
+    name: "Turned axis",
+    steps: [
+      {
+        id: "turn",
+        device: "sim-axis",
+        operation: "move_to",
+        arguments: { duration: 0 },
+        sweep: { angle_deg: { start: -45, stop: 45, points: 19 } },
+      },
+    ],
+  });
+  await page.evaluate(
+    (id) => document.dispatchEvent(new CustomEvent("iop:run", { detail: id })),
+    turned.id,
+  );
+  await page.waitForSelector("#run-detail-summary .badge.completed");
+  await page.click('[data-detail-tab="results"]');
+  await page.waitForSelector("#detail-results .array-plot svg polyline");
+  assert.match(
+    await page.locator("#detail-results .array-plot").innerText(),
+    /turn\.angle_actual · 19 · deg[\s\S]*angle_deg/,
+  );
+  await page.click("#modal-close");
   // A numeric data stream is drawn per channel from its view.
   const streamed = await api("runs", {
     kind: "external",
@@ -586,7 +611,7 @@ sys.stdout.buffer.write(b.getvalue())`,
   assert.equal(continued.state, "completed", JSON.stringify(continued));
   assert.deepEqual(errors, []);
   console.log(
-    "Interface passed: discovery, registration, topology, workflow, results, resources, search, language, themes, mobile, program ZIP, file download, manual steps, held resources, saved operations, operating conditions, array and stream views and service continuity.",
+    "Interface passed: discovery, registration, topology, workflow, results, resources, search, language, themes, mobile, program ZIP, file download, manual steps, held resources, saved operations, operating conditions, array and stream views, sweeps and service continuity.",
   );
 } finally {
   if (browser) await browser.close();

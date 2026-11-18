@@ -6,12 +6,13 @@ parameters, stated conditions and a named result. A **Workflow Operation** organ
 devices, in sequence and in parallel, or, when it decides from results, as a saved program.
 Standard and Workflow Operations are saved here, can be read and revised, and are used as one step
 of any experiment: a step without ``device`` names one. The Runtime replaces such a step by its
-Basic Operations before scheduling, or runs the program, and records every use.
+Basic Operations before scheduling, or runs the program, and records every use. Any step can sweep
+parameters: it then runs at each of their values and what it returns is gathered into arrays.
 """
 import copy
 import re
 from collections import deque
-from . import views
+from . import sweeps as sweeping, views
 from .drivers import parameters
 from .platforms import dependencies, name
 
@@ -93,7 +94,9 @@ def check(definition, lookup):
             raise ValueError(f"Step {step['id']}: device must be a name")
         if not isinstance(step.get('arguments', {}), dict):
             raise ValueError(f"Step {step['id']}: arguments must be an object")
-        used = placeholders(step.get('arguments', {})) | placeholders(step.get('device', ''))
+        if 'sweep' in step:
+            swept(step)
+        used = placeholders(step.get('arguments', {})) | placeholders(step.get('device', '')) | placeholders(step.get('sweep', {}))
         if used - declared.keys():
             raise ValueError(f"Step {step['id']}: describe parameter " + ', '.join(sorted(used - declared.keys())))
         if 'device' not in step:
@@ -136,21 +139,65 @@ def check(definition, lookup):
     return definition
 
 
-def expand(steps, lookup):
-    """Replace every step that uses a saved operation by its Basic Operations.
+def swept(step):
+    """The points, shape and axes of a step's sweep, or None while parameters still give its values."""
+    sweep = step['sweep']
+    if not isinstance(sweep, dict) or not sweep:
+        raise ValueError(f"Step {step['id']}: sweep maps parameters to the values they take")
+    if set(sweep) & (set(step.get('arguments', {})) | set(step.get('bindings', {}))):
+        raise ValueError(f"Step {step['id']}: a swept parameter is not also given in arguments or bindings")
+    if placeholders(sweep):
+        return None
+    try:
+        return sweeping.grid(sweep)
+    except ValueError as error:
+        raise ValueError(f"Step {step['id']}: {error}") from None
 
-    Returns the flat steps and, for each use, a record with the operation, its revision, the
-    arguments and where its named results are found. Dependencies on a replaced step become
-    dependencies on the steps that finish it.
+
+def expand(steps, lookup, describe=None):
+    """Replace every step that uses a saved operation by its Basic Operations, and every swept step by
+    its points, one after another.
+
+    Returns the flat steps; for each use, a record with the operation, its revision, the arguments and
+    where its named results are found; and, for each sweep that is not a point of another, how to
+    gather it. Dependencies on a replaced step become dependencies on the steps that finish it.
+    ``describe(device, operation)`` gives a device operation's description, for the units of its
+    swept parameters.
     """
     if not isinstance(steps, list) or any(not isinstance(step, dict) for step in steps):
         raise ValueError('Each step must be an object')
-    if all('device' in step for step in steps):
-        return derived(steps, {}), {}
+    if all('device' in step and 'sweep' not in step for step in steps):
+        return derived(steps, {}), {}, {}
     queue = deque((copy.deepcopy(step), []) for step in steps)
-    flat, calls, finishes = [], {}, {}
+    flat, calls, sweeps, finishes = [], {}, {}, {}
     while queue:
         step, enclosing = queue.popleft()
+        if 'sweep' in step:
+            sweep_id = step.get('id')
+            if not isinstance(sweep_id, str) or not sweep_id or not isinstance(step.get('operation'), str):
+                raise ValueError('Each step needs id and operation')
+            found = swept(step)
+            if found is None:
+                raise ValueError(f'Step {sweep_id}: give the values of the sweep; "${{name}}" takes them from the '
+                                 'parameters of a saved operation')
+            points, shape, axes = found
+            spec = (describe(step['device'], step['operation']) if describe else None) if 'device' in step \
+                else lookup(step['operation'])
+            for axis in axes:
+                unit = ((spec or {}).get('parameters') or {}).get(axis['name'], {}).get('unit')
+                if isinstance(unit, str) and unit:
+                    axis['unit'] = unit
+            base = {key: value for key, value in step.items() if key != 'sweep'}
+            previous, copies = list(step.get('after', [])), []
+            for index, values in enumerate(points):
+                point = copy.deepcopy(base)
+                point.update(id=f'{sweep_id}.{index}', arguments={**base.get('arguments', {}), **values}, after=previous)
+                previous = [point['id']]
+                copies.append((point, enclosing))
+            queue.extendleft(reversed(copies))
+            sweeps[sweep_id] = {'points': [point['id'] for point, _ in copies], 'shape': shape, 'axes': axes}
+            finishes[sweep_id] = [previous[0]]
+            continue
         if 'device' in step:
             if enclosing:
                 step['calls'] = enclosing
@@ -207,6 +254,11 @@ def expand(steps, lookup):
                 if placeholders(item['device']) & bound.keys():
                     raise ValueError(f'Step {call}: the device of {item_id} must be given as an argument')
                 item['device'] = fill(item['device'], arguments)
+            if 'sweep' in item:
+                if placeholders(item['sweep']) - arguments.keys():
+                    raise ValueError(f'Step {call}: the sweep of {item_id} takes its values from arguments, '
+                                     'not from bindings or omitted parameters')
+                item['sweep'] = fill(item['sweep'], arguments)
             for key in ('resources', 'requirements'):
                 if key in step and key not in item:
                     item[key] = copy.deepcopy(step[key])
@@ -226,7 +278,9 @@ def expand(steps, lookup):
         return [final for inner_id in finishes[step_id] for final in finished(inner_id, depth + 1)]
 
     def source(binding):
-        """Follow a binding into saved operations until it names a Basic Operation."""
+        """Follow a binding into saved operations until it names a Basic Operation or a sweep."""
+        if 'sweep' in binding:
+            return binding
         step_id, path, view = binding['step'], list(binding.get('path', [])), binding.get('view')
         while step_id in calls:
             if view is not None:
@@ -237,16 +291,46 @@ def expand(steps, lookup):
                 raise ValueError(f'{step_id} returns ' + (', '.join(named) or 'no named result') + '; bind one of them')
             inner = named[path[0]]
             step_id, path, view = inner['step'], inner['path'] + path[1:], inner.get('view')
-        return {'step': step_id, 'path': path, **({'view': view} if view is not None else {})}
+        found = {'step': step_id, 'path': path, **({'view': view} if view is not None else {})}
+        if step_id in sweeps:
+            # The value is read from what the sweep gathered, once its last point has finished.
+            found.update(step=finished(step_id)[-1], sweep=gathering(step_id))
+        return found
+
+    def gathering(sweep_id):
+        """How to gather a sweep: what each point returned, from its operation or its named results."""
+        record = sweeps[sweep_id]
+        points = [{'named': {key: source(item) for key, item in calls[point]['result'].items()}} if point in calls
+                  else {'step': point} for point in record['points']]
+        return {'id': sweep_id, 'shape': record['shape'], 'axes': record['axes'], 'points': points}
 
     for step in flat:
         step['after'] = list(dict.fromkeys(final for parent in step.get('after', []) for final in finished(parent)))
         if step.get('bindings'):
             step['bindings'] = {key: source(binding) for key, binding in step['bindings'].items()}
+            for binding in step['bindings'].values():
+                if 'sweep' in binding:
+                    step['after'] = list(dict.fromkeys(step['after'] + finished(binding['sweep']['id'])))
     for call, record in calls.items():
         record['result'] = {key: source(item) for key, item in record['result'].items()}
         record['steps'] = [step['id'] for step in flat if call in step.get('calls', [])]
-    return derived(flat, calls), calls
+    outer = {sweep_id: gathering(sweep_id) for sweep_id in sweeps if not within(sweep_id, sweeps)}
+    return derived(flat, calls), calls, outer
+
+
+def within(step_id, sweeps):
+    """Whether a step or use is a point of one of these sweeps, or part of one."""
+    return any(step_id.startswith(sweep_id + '.') for sweep_id in sweeps)
+
+
+def locate(source, ids):
+    """A binding with the steps of the sweep it reads replaced by their operation IDs."""
+    if 'sweep' in source:
+        sweep = source['sweep']
+        points = [{'named': {key: locate(item, ids) for key, item in point['named'].items()}} if 'named' in point
+                  else {**point, 'step': ids[point['step']]} for point in sweep['points']]
+        return {**source, 'step': ids[source['step']], 'sweep': {**sweep, 'points': points}}
+    return {**source, 'step': ids[source['step']]}
 
 
 def derived(flat, calls):
@@ -254,7 +338,8 @@ def derived(flat, calls):
     wanted = {}
     sources = [b for step in flat for b in step.get('bindings', {}).values() if isinstance(b, dict)]
     for item in sources + [s for record in calls.values() for s in record['result'].values()]:
-        if 'view' in item:
+        # A view of what a sweep gathered is read from its points' records when it is needed.
+        if 'view' in item and 'sweep' not in item:
             wanted.setdefault(item['step'], {})[views.key(item)] = {'view': item['view'], 'path': list(item.get('path', []))}
     if not wanted:
         return flat
@@ -298,15 +383,63 @@ def value(operation, source):
     return item
 
 
-def results(calls, by_step):
-    """The named result of each use, from the records of its completed steps."""
-    values = {}
-    for call, record in calls.items():
-        named = {}
-        for key, source in record['result'].items():
-            try:
-                named[key] = value(by_step[source['step']], source)
-            except (KeyError, IndexError, TypeError, ValueError):
-                named[key] = None
-        values[call] = named
-    return values
+def read(source, record, output=None, located=False):
+    """What a binding or named result takes; ``record`` returns the operation record of a step it names, and
+    ``output`` is the experiment's output folder, where the points of a sweep saved their files."""
+    if 'sweep' not in source:
+        operation = record(source['step'])
+        if operation is None:
+            raise KeyError(source['step'])
+        found = value(operation, source)
+        return _located(found, operation) if located else found
+    found = gathered(source['sweep'], record, output)
+    if 'view' in source:
+        found = views.read(found, None, output=output, **source['view'])
+    for part in source.get('path', []):
+        found = found[part]
+    return found
+
+
+def _located(found, operation):
+    """A value with the file of each array in it named from the experiment's output folder."""
+    if isinstance(found, list):
+        return [_located(item, operation) for item in found]
+    if not isinstance(found, dict):
+        return found
+    located = {key: item if key in ('data', 'values') else _located(item, operation) for key, item in found.items()}
+    data = found.get('data')
+    if isinstance(data, dict) and isinstance(data.get('dtype'), str) and isinstance(data.get('file'), str):
+        located['data'] = {**data, 'file': f"operations/{operation['id']}/{data['file']}"}
+    return located
+
+
+def gathered(sweep, record, output=None):
+    """What a sweep returns: the results of its points gathered into arrays over its axes."""
+    found = []
+    for point in sweep['points']:
+        if 'named' in point:
+            found.append(_named(point['named'], record, output, located=True))
+        else:
+            operation = record(point['step'])
+            found.append(_located(operation.get('result'), operation)
+                         if operation and operation.get('state') == 'completed' else None)
+    return sweeping.gather(found, sweep['shape'], sweep['axes'])
+
+
+def _named(sources, record, output=None, located=False):
+    named = {}
+    for key, source in sources.items():
+        try:
+            named[key] = read(source, record, output, located)
+        except (KeyError, IndexError, TypeError, ValueError):
+            named[key] = None
+    return named
+
+
+def results(calls, sweeps, by_step, output=None):
+    """The named result of each use and what each sweep gathered, from the records of completed steps. The
+    uses that are points of a sweep are part of what it gathered."""
+    found = {call: _named(record['result'], by_step.get, output) for call, record in calls.items()
+             if not within(call, sweeps)}
+    found.update({sweep_id: gathered(sweep, by_step.get, output) for sweep_id, sweep in sweeps.items()})
+    return found

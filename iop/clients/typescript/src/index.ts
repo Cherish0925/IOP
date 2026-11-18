@@ -1,4 +1,6 @@
-export type Step = { id: string; device?: string; operation: string; arguments?: Record<string, unknown>; after?: string[]; resources?: string[]; requirements?: Record<string, number>; bindings?: Record<string, { step: string; path?: (string | number)[]; view?: ArrayViewOptions }> };
+export type Step = { id: string; device?: string; operation: string; arguments?: Record<string, unknown>; after?: string[]; resources?: string[]; requirements?: Record<string, number>; bindings?: Record<string, { step: string; path?: (string | number)[]; view?: ArrayViewOptions }>; sweep?: Sweep };
+/** Parameters a step runs over, one point after another: a list of values, or evenly spaced numbers. */
+export type Sweep = Record<string, (number | string)[] | { start: number; stop: number; points: number }>;
 export type Endpoint = { device: string; port: string };
 export type Procedure = { steps: Step[]; resources?: string[] };
 export type ConditionStep = { device?: string; operation: string; arguments?: Record<string, unknown> };
@@ -29,9 +31,9 @@ export type ArtifactRecord = { id: string; run_id: string; name: string; size: n
 export type Event = { sequence: number; kind: string; run_id?: string; [key: string]: unknown };
 export type ManualTask = { operation_id: string; run_id: string | null; device: string; operation: string; instruction: string; arguments: Record<string, unknown>; readings: Record<string, Record<string, unknown>>; created: string };
 export type RunUpdates = { run: RunRecord; changes: Event[]; operations: OperationRecord[]; cursor: number; has_more: boolean };
-/** What an array an operation returned says: see Client.readArray. */
+/** What an array says: see Client.readArray. */
 export type ArrayView = {
-  operation_id: string; field: string; dtype: string; shape: number[]; unit?: string;
+  field: string; dtype: string; shape: number[]; unit?: string;
   along: { axis: string | number; start: number; stop: number; low?: number; high?: number; step?: number; coordinates?: number[]; unit?: string };
   at?: Record<string, string | number>; summarized?: (string | number)[];
   summary: { count: number; nonfinite?: number; min: number | null; max: number | null; mean: number | null; std: number | null;
@@ -122,7 +124,7 @@ export class IOP {
   }
   /** Summary, envelope or exact window of an array an operation returned, without moving all its values. */
   readArray(operationId: string, options: ArrayViewOptions = {}) {
-    return this.request<ArrayView>(`/v1/operations/${encodeURIComponent(operationId)}/array` + viewQuery(options));
+    return this.request<ArrayView & {operation_id: string}>(`/v1/operations/${encodeURIComponent(operationId)}/array` + viewQuery(options));
   }
   conditions(platform?: string) { return this.request<ConditionState[]>('/v1/conditions' + (platform ? '?' + new URLSearchParams({ platform }) : '')); }
   condition(id: string) { return this.request<Condition & ConditionState & { statistics: Record<string, unknown>; records: Record<string, unknown>[] }>('/v1/conditions/' + encodeURIComponent(id)); }
@@ -177,6 +179,12 @@ export class Run {
   checkpoints() { return this.client.request<Record<string, {name: string; revision: number; updated: string; state: unknown}>>(`/v1/runs/${encodeURIComponent(this.id)}/checkpoints`); }
   checkpoint(state: unknown, name = 'main') { return this.client.request(`/v1/runs/${encodeURIComponent(this.id)}/checkpoints`, { name, state }); }
   resume(requestId = crypto.randomUUID()) { return this.client.request<RunRecord>(`/v1/runs/${encodeURIComponent(this.id)}/resume`, { request_id: requestId }); }
+  /** What an array this experiment's result holds says, such as what a sweep gathered; with requestId, one in that batch's results. */
+  readArray(options: ArrayViewOptions & { requestId?: string } = {}) {
+    const { requestId, ...view } = options;
+    const query = viewQuery(view);
+    return this.client.request<ArrayView & {run_id: string; request_id?: string}>(`/v1/runs/${encodeURIComponent(this.id)}/array` + query + (requestId === undefined ? '' : (query ? '&' : '?') + new URLSearchParams({ request_id: requestId })));
+  }
   streams() { return this.client.request<{name: string; definition: Record<string, unknown>; chunks: number; bytes: number; next_sequence: number}[]>(`/v1/runs/${encodeURIComponent(this.id)}/streams`); }
   async stream(name: string, definition?: Record<string, unknown>) {
     const stream = new DataStream(this, name);
@@ -230,9 +238,10 @@ export class Run {
   maintain(conditions?: string[], options: { force?: boolean; signal?: AbortSignal } = {}) {
     return this.client.maintain({ conditions, runId: this.id, ...options });
   }
-  async call(operation: string, args: Record<string, unknown> = {}, options: { requestId?: string; signal?: AbortSignal } = {}) {
+  /** Use a saved operation and return its named result; with sweep, at each point, its named results gathered into arrays. */
+  async call(operation: string, args: Record<string, unknown> = {}, options: { requestId?: string; signal?: AbortSignal; sweep?: Sweep } = {}) {
     const requestId = options.requestId ?? crypto.randomUUID();
-    await this.batch([{ id: 'call', operation, arguments: args }], { requestId, signal: options.signal });
+    await this.batch([{ id: 'call', operation, arguments: args, ...(options.sweep ? { sweep: options.sweep } : {}) }], { requestId, signal: options.signal });
     const batch = await this.client.request<{ results: Record<string, Record<string, unknown>> }>(
       `/v1/runs/${encodeURIComponent(this.id)}/batches?` + new URLSearchParams({ request_id: requestId }), undefined, options.signal);
     return batch.results.call;

@@ -167,7 +167,7 @@ export function modal(title, html, eyebrow = "") {
   return $("#modal-body");
 }
 export const closeModal = () => $("#modal").close();
-// Arrays inside a result: [path, description] with path "" for the result itself, as the service names them.
+// Arrays inside a result: [path, description, holder] with path "" for the result itself, as the service names them.
 export function arraysIn(value, path = "") {
   if (!value || typeof value !== "object" || Array.isArray(value)) return [];
   const own =
@@ -175,7 +175,7 @@ export function arraysIn(value, path = "") {
     typeof value.data === "object" &&
     typeof value.data.dtype === "string" &&
     Array.isArray(value.data.shape)
-      ? [[path, value.data]]
+      ? [[path, value.data, value]]
       : [];
   return own.concat(
     ...Object.entries(value)

@@ -34,7 +34,7 @@ def submit(engine, run_id, steps, request_id, maintenance=False):
                 raise ValueError('request_id already names a different operation batch')
             return describe(engine, run_id, request_id)
         # A step without device uses a saved Standard or Workflow Operation.
-        steps, calls = library.expand(submitted, engine.library.get)
+        steps, calls, sweeps = library.expand(submitted, engine.library.get, engine._described)
         platforms.steps(steps)
         run = engine.runs.get(run_id)
         if engine.stopping or not run or not (run['kind'] == 'external' and run['state'] in {'queued', 'running'} or
@@ -68,6 +68,7 @@ def submit(engine, run_id, steps, request_id, maintenance=False):
             if op['device'] not in updated['devices']:
                 updated['devices'][op['device']] = copy.deepcopy(engine.descriptions[op['device']])
                 updated['device_configurations'][op['device']] = copy.deepcopy(engine.device_records[op['device']])
+        engine._locate(operations)
         ids = [op['id'] for op in operations]
         updated['operations'].extend(ids)
         updated['operation_count'] += len(ids)
@@ -80,6 +81,8 @@ def submit(engine, run_id, steps, request_id, maintenance=False):
         record = {'request_id': request_id, 'run_id': run_id, 'steps': submitted, 'operation_ids': ids}
         if calls:
             record['calls'] = calls
+        if sweeps:
+            record['sweeps'] = sweeps
         with engine.store.transaction():
             engine.store.db.execute('INSERT INTO operation_batches VALUES(?,?,?)', (request_id, run_id, dumps(record)))
             engine.store.put('runs', updated)
@@ -119,8 +122,10 @@ def describe(engine, run_id, request_id, wait=0):
             remaining = deadline - time.monotonic()
             if not pending or remaining <= 0:
                 receipt = {'request_id': request_id, 'run_id': run_id, 'complete': not pending, 'operations': operations}
-                if batch.get('calls'):
-                    # The named result of each saved operation used in this batch.
-                    receipt['results'] = library.results(batch['calls'], {op['step']: op for op in operations})
+                if batch.get('calls') or batch.get('sweeps'):
+                    # The named result of each saved operation used in this batch, and what each sweep gathered.
+                    receipt['results'] = library.results(batch.get('calls', {}), batch.get('sweeps', {}),
+                                                         {op['step']: op for op in operations},
+                                                         engine.home / 'runs' / run_id / 'output')
                 return receipt
             engine.store.changed.wait(remaining)

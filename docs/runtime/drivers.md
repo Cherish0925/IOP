@@ -104,7 +104,7 @@ The reply holds `summary` (count, minimum and maximum with their index and coord
  "envelope": {"position": [0, 16, ...], "coordinate": [1.0e9, 1.0016e9, ...], "min": [...], "max": [...], "mean": [...]}}
 ```
 
-Saved operations and step bindings can take a value through a view, such as the frequency of a resonance; see [operations](operations.md). A data stream of a numeric format reads the same way, as samples by channels; see [continuous data](../../iop/continuity.md#continuous-data). / 已保存操作和步骤绑定也可以经视图取值，例如谐振频率，见[操作](operations.md)。数值格式的数据流同样可读，形状为“采样 × 通道”，见[连续数据](../../iop/continuity.zh-CN.md#连续数据)。
+Saved operations and step bindings can take a value through a view, such as the frequency of a resonance; see [operations](operations.md). A data stream of a numeric format reads the same way, as samples by channels; see [continuous data](../../iop/continuity.md#continuous-data). `GET /v1/runs/{id}/array` reads an array an experiment's result holds, such as what a [sweep](operations.md#sweeps--扫描) gathered, and with `request_id` one in the results of a batch. / 已保存操作和步骤绑定也可以经视图取值，例如谐振频率，见[操作](operations.md)。数值格式的数据流同样可读，形状为“采样 × 通道”，见[连续数据](../../iop/continuity.zh-CN.md#连续数据)。`GET /v1/runs/{id}/array` 读取实验结果中的数组，例如[扫描](operations.md#sweeps--扫描)汇集的数组；加 `request_id` 则读取某个批次结果中的数组。
 
 `iop-execd --array-view` computes views in its own process and reads only the slabs that hold the selected positions; the service stays responsive while it reads large files. Without it, Python computes the same view when it reads at most 4,000,000 elements. / 视图由 `iop-execd` 在独立进程中计算，只读取所选位置所在的数据段，读取大文件时不占用运行服务；没有它时，Python 在读取不超过 400 万个元素时给出相同结果。
 

@@ -273,7 +273,7 @@ def create_server(client, *, http=False, selection=None):
     def submit_experiment(steps: list[dict], request_id: str, name: str = 'Experiment',
                           platform: str | None = None, resources: list[str] | None = None,
                           requirements: dict[str, int] | None = None, requires: list[str] | None = None) -> dict:
-        """Submit instrument operations with after dependencies and optional result bindings. Returns immediately. Reuse request_id only for the identical submission. requires names platform conditions that must hold for the experiment to be accepted."""
+        """Submit instrument operations with after dependencies and optional result bindings. A step with sweep, e.g. {"angle": {"start": -10, "stop": 10, "points": 21}} or {"axis": ["x", "y"]}, runs at each point in turn and its numbers return as arrays over the sweep; read them with read_array(run_id, field). Returns immediately. Reuse request_id only for the identical submission. requires names platform conditions that must hold for the experiment to be accepted."""
         return client.submit(steps, name=name, platform=platform, resources=resources or [],
                              requirements=requirements, request_id=request_id, requires=requires or ()).info(details=False)
 
@@ -301,11 +301,21 @@ def create_server(client, *, http=False, selection=None):
 
     @tool()
     def submit_operations(run_id: str, steps: list[dict], request_id: str, wait: float = 0) -> dict:
-        """Submit a batch within an existing experiment. Steps run in order by default. after=[] starts an independent branch; after=[IDs] joins branches. All steps are accepted together. With wait up to 25 seconds, the reply includes results of steps that finish in that time; complete tells whether all did."""
+        """Submit a batch within an existing experiment. Steps run in order by default. after=[] starts an independent branch; after=[IDs] joins branches. A step with sweep runs at each point in turn; results then hold its numbers as arrays over the sweep (read_array with run_id, request_id and field) and the reply counts its points by state. All steps are accepted together. With wait up to 25 seconds, the reply includes results of steps that finish in that time; complete tells whether all did."""
         batch = client.request('/v1/runs/' + quote(run_id, safe='') + '/batches' + waiting(wait),
                                {'steps':steps, 'request_id':request_id})
         batch = compact(batch)
-        return {**batch, 'operations': [summary(op) for op in batch.get('operations', [])]}
+        swept = [step['id'] for step in steps if isinstance(step, dict) and 'sweep' in step and isinstance(step.get('id'), str)]
+        points = {name: [op for op in batch.get('operations', []) if op['step'].startswith(name + '.')] for name in swept}
+        inside = {op['id'] for ops in points.values() for op in ops}
+        shown = {**batch, 'operations': [summary(op) for op in batch.get('operations', []) if op['id'] not in inside]}
+        if swept:
+            shown['sweeps'] = {}
+            for name, ops in points.items():
+                states, errors = [op['state'] for op in ops], [op['error'] for op in ops if op.get('error')]
+                shown['sweeps'][name] = {'points': {state: states.count(state) for state in dict.fromkeys(states)},
+                                         **({'error': errors[0]} if errors else {})}
+        return shown
 
     @tool()
     def save_acquisition(run_id: str, name: str, operation_ids: list[str],
@@ -387,16 +397,20 @@ def create_server(client, *, http=False, selection=None):
     def read_array(operation_id: str | None = None, field: str | None = None, along: str | int | None = None,
                    at: dict[str, str | int] | None = None, start: int | None = None, stop: int | None = None,
                    low: float | None = None, high: float | None = None, points: int = 32,
-                   run_id: str | None = None, stream: str | None = None) -> dict:
-        """Read what an array says without all its values: an array an operation returned (operation_id), or a numeric data stream of an experiment (run_id and stream, samples by channels). Returns count, min and max with their index and coordinate, mean and std; then exact values when each position holds one element and there are at most points positions, otherwise the min, max and mean of points buckets. along names the axis followed (default the first); at fixes other axes by index or label, e.g. {"channel": "x"}; complex values (axis labels re, im) read as abs unless at chooses re, im or arg. Zoom with start/stop (positions) or low/high (coordinates). field names the array when a result holds several."""
+                   run_id: str | None = None, stream: str | None = None, request_id: str | None = None) -> dict:
+        """Read what an array says without all its values: an array an operation returned (operation_id); an array an experiment's result holds, such as what a sweep gathered (run_id and field, with request_id for the results of a batch); or a numeric data stream of an experiment (run_id and stream, samples by channels). Returns count, min and max with their index and coordinate, mean and std; then exact values when each position holds one element and there are at most points positions, otherwise the min, max and mean of points buckets. along names the axis followed (default the first); at fixes other axes by index or label, e.g. {"channel": "x"}; complex values (axis labels re, im) read as abs unless at chooses re, im or arg. Zoom with start/stop (positions) or low/high (coordinates). field names the array when a result holds several."""
         options = dict(along=along, at=at, start=start, stop=stop, low=low, high=high, points=points)
+        if operation_id is not None:
+            if run_id is not None or stream is not None or request_id is not None:
+                raise ValueError('Read an operation array with operation_id alone, or an experiment array with run_id')
+            return client.read_array(operation_id, field, **options)
+        if run_id is None:
+            raise ValueError('Give operation_id, or run_id with field or stream')
         if stream is not None:
-            if run_id is None or operation_id is not None:
-                raise ValueError('Read a stream with run_id and stream, or an operation array with operation_id')
+            if field is not None or request_id is not None:
+                raise ValueError('A stream holds one array; give run_id and stream only')
             return client.run(run_id).stream(stream).read_array(**options)
-        if operation_id is None:
-            raise ValueError('Give operation_id, or run_id and stream')
-        return client.read_array(operation_id, field, **options)
+        return client.run(run_id).read_array(field, request_id=request_id, **options)
 
     @tool()
     def continue_program(run_id: str, request_id: str | None = None) -> dict:

@@ -314,7 +314,7 @@ class Conditions:
     def _measurement_basis(self, condition):
         result = {k: condition[k] for k in ('verify', 'accept', 'usable', 'after', 'reference') if k in condition}
         try:
-            steps, calls = library.expand([{'id': 'verify', **condition['verify']}], self.engine.library.get)
+            steps, calls, _ = library.expand([{'id': 'verify', **condition['verify']}], self.engine.library.get)
             result['operations'] = {c['operation']: c['revision'] for c in calls.values()}
             result['devices'] = {s['device']: self.engine.descriptions.get(s['device'], {}).get('revision') for s in steps}
         except ValueError:
@@ -338,7 +338,7 @@ class Conditions:
                 else:
                     items.append(correction)
             for item in items:
-                expanded, calls = library.expand([{'id': 'step', **item}], engine.library.get)
+                expanded, calls, _ = library.expand([{'id': 'step', **item}], engine.library.get)
                 revisions.update({c['operation']: c['revision'] for c in calls.values()})
                 for flat in expanded:
                     op = engine._operation('prepare', flat)

@@ -24,6 +24,7 @@ import {
   operationResult,
   drawArrays,
   arrayFigure,
+  arraysIn,
 } from "./core.js";
 import { parametersHTML, parameterValues } from "./devices.js";
 let query = "",
@@ -125,14 +126,31 @@ function streamFigures(id, streams) {
     })
     .join("");
 }
-function resultView(value) {
+// Arrays the result holds, such as what a sweep gathered from its points' values or files, are drawn from their views.
+function heldFigures(id, value) {
+  return arraysIn(value)
+    .filter(
+      ([, data, holder]) =>
+        holder.values !== undefined || Array.isArray(data.files),
+    )
+    .map(([path, data]) =>
+      arrayFigure(
+        `runs/${encodeURIComponent(id)}/array`,
+        path,
+        `${esc(path)} · ${esc(data.shape.join(" × "))}${data.unit ? " · " + esc(data.unit) : ""}`,
+        true,
+      ),
+    )
+    .join("");
+}
+function resultView(value, id) {
   if (value === null || value === undefined)
     return `<p class="inline-note">${t("此实验没有单独保存汇总结果，可查看每个操作的返回值和输出文件。", "No separate summary was saved. Operation results and output files are available below.")}</p>`;
   const entries =
     typeof value === "object" && !Array.isArray(value)
       ? Object.entries(value)
       : [["result", value]];
-  return `<div class="result-grid">${entries
+  return `${heldFigures(id, value)}<div class="result-grid">${entries
     .slice(0, 24)
     .map(
       ([key, v]) =>
@@ -195,8 +213,10 @@ export async function inspectRun(id) {
       `<p class="inline-note">${t("正在读取结果…", "Loading results…")}</p>`;
     try {
       const value = await api("runs/" + encodeURIComponent(id) + "/result");
-      if (body.isConnected && $("#modal").dataset.runDetail === id)
-        $("#detail-results").innerHTML = resultView(value);
+      if (body.isConnected && $("#modal").dataset.runDetail === id) {
+        $("#detail-results").innerHTML = resultView(value, id);
+        drawArrays($("#detail-results"));
+      }
     } catch (error) {
       resultLoaded = false;
       if (body.isConnected) toast(error.message, true);

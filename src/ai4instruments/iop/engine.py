@@ -499,7 +499,7 @@ class Engine:
     def _constituents(self, definition):
         """Check the steps against registered devices and saved operations, and that no operation uses itself."""
         for step in definition['steps']:
-            supplied = step.get('arguments', {}).keys() | step.get('bindings', {}).keys()
+            supplied = step.get('arguments', {}).keys() | step.get('bindings', {}).keys() | step.get('sweep', {}).keys()
             if 'device' not in step:
                 inner = self.library[step['operation']]
                 if supplied - inner.get('parameters', {}).keys():
@@ -545,7 +545,8 @@ class Engine:
             if operation is None:
                 problems.append(f"{step['device']}.{step['operation']}: no such operation")
                 continue
-            extra = (step.get('arguments', {}).keys() | step.get('bindings', {}).keys()) - operation.get('parameters', {}).keys()
+            extra = (step.get('arguments', {}).keys() | step.get('bindings', {}).keys() | step.get('sweep', {}).keys()) - \
+                operation.get('parameters', {}).keys()
             if extra:
                 problems.append(f"{step['device']}.{step['operation']}: no parameter " + ', '.join(sorted(extra)))
         found[operation_id] = list(dict.fromkeys(problems))
@@ -855,6 +856,22 @@ class Engine:
                 "device_revision":self.descriptions[device_id].get('revision'), **recorded,
                 **({'derive': step['derive']} if step.get('derive') else {})}
 
+    def _described(self, device, operation):
+        """A registered device operation's description, or None."""
+        return self.descriptions.get(device, {}).get('operations', {}).get(operation)
+
+    @staticmethod
+    def _locate(operations):
+        """Bindings to what a sweep gathered name the operations of its points by ID."""
+        ids = {op['step']: op['id'] for op in operations}
+        for op in operations:
+            if any('sweep' in binding for binding in op['bindings'].values()):
+                op['bindings'] = {key: library.locate(binding, ids) if 'sweep' in binding else binding
+                                  for key, binding in op['bindings'].items()}
+
+    def _recorded(self, operation_id):
+        return self.operations.get(operation_id) or self.store.get('operations', operation_id)
+
     def submit(self, spec, package=None):
         with self.lock:
             if self.stopping:
@@ -904,8 +921,8 @@ class Engine:
             if program:
                 run['program_call'] = program
             if kind == 'workflow':
-                # A step without device uses a saved Standard or Workflow Operation.
-                steps, calls = library.expand(spec.get("steps", []), self.library.get)
+                # A step without device uses a saved Standard or Workflow Operation; a swept step runs at each point.
+                steps, calls, sweeps = library.expand(spec.get("steps", []), self.library.get, self._described)
                 platform_model.steps(steps)
                 operations = [self._operation(run_id, s) for s in steps]
                 if calls:
@@ -913,6 +930,9 @@ class Engine:
                     for op, step in zip(operations, steps):
                         if 'calls' in step:
                             op['calls'] = step['calls']
+                if sweeps:
+                    run['sweeps'] = sweeps
+                self._locate(operations)
                 if platform and any(op['device'] not in platform['definition']['devices'] for op in operations):
                     raise ValueError('Workflow devices must belong to the selected platform')
                 if run["resources"] or run['requirements']:
@@ -1433,11 +1453,15 @@ class Engine:
                     self._finish(run, run.get('end_state', 'cancelled'))
                 elif run['kind'] == 'workflow' or process is not None:
                     if run['kind'] == 'workflow':
-                        run['result'] = {self.operations[oid]['step']: self.operations[oid].get('result') for oid in run['operations']}
-                        if run.get('calls'):
-                            # Each saved operation used as a step returns its named result under that step.
-                            run['result'].update(library.results(
-                                run['calls'], {self.operations[oid]['step']: self.operations[oid] for oid in run['operations']}))
+                        by_step = {self.operations[oid]['step']: self.operations[oid] for oid in run['operations']}
+                        sweeps = run.get('sweeps', {})
+                        # Each saved operation used as a step returns its named result under that step, and each
+                        # sweep what it gathered; the operations of a sweep's points stay in their records.
+                        run['result'] = {step: op.get('result') for step, op in by_step.items()
+                                         if not library.within(step, sweeps)}
+                        if run.get('calls') or sweeps:
+                            run['result'].update(library.results(run.get('calls', {}), sweeps, by_step,
+                                                                 self.home / 'runs' / run['id'] / 'output'))
                     self._finish(run, 'completed')
         if self.stopping:
             return
@@ -1509,9 +1533,11 @@ class Engine:
                 if op.get('bindings'):
                     args = dict(op['arguments'])
                     for name, binding in op['bindings'].items():
+                        if 'sweep' in binding:
+                            args[name] = library.read(binding, self._recorded, self.home / 'runs' / rid / 'output')
+                            continue
                         source = op.get('binding_ids', {}).get(name) or self.step_ids[rid][binding['step']]
-                        args[name] = library.value(self.operations.get(source) or self.store.get('operations', source),
-                                                   binding)
+                        args[name] = library.value(self._recorded(source), binding)
                     op['arguments'] = parameters(self.descriptions[op['device']]['operations'][op['operation']], args)
                 error = None
             except Exception as error:

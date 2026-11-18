@@ -270,6 +270,10 @@ class Handler(BaseHTTPRequestHandler):
                         engine, parts[2], parts[4], query.get('after', -1), query.get('limit', 100))
                 else:
                     raise KeyError(url.path)
+            elif len(parts) == 4 and parts[:2] == ['v1', 'runs'] and parts[3] == 'array' and method == 'GET':
+                from . import views
+                options = views.options({key: value for key, value in query.items() if key != 'request_id'})
+                result = views.result_array(engine, parts[2], query.get('request_id'), **options)
             elif len(parts) == 4 and parts[:2] == ['v1', 'runs'] and parts[3] == 'streams' and method == 'GET':
                 from .streams import listing
                 result = listing(engine, parts[2])

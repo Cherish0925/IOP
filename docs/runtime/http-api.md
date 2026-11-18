@@ -186,7 +186,7 @@ An instrument's `id` may be omitted on registration. The service generates and s
 
 `GET /v1/operations/{id}?wait=25` waits for that operation to finish, or returns its current state after at most 25 seconds. Python and TypeScript clients use this path for calls inside experiment programs; they do not read the experiment's entire event history for each operation.
 
-Use `GET /v1/runs?details=false` and `GET /v1/runs/{id}?details=false` for summaries. Results, operation lists, experiment definitions and full platform definitions are excluded before the response enters the application. Read `/result` and cursor-paged `/operations` only when needed.
+Use `GET /v1/runs?details=false` and `GET /v1/runs/{id}?details=false` for summaries. Results, operation lists, the uses of saved operations and sweeps, experiment definitions and full platform definitions are excluded before the response enters the application. Read `/result` and cursor-paged `/operations` only when needed.
 
 ## Instrument discovery records
 
@@ -206,6 +206,7 @@ The list of required fields uses `protocol`, `communication_parameters`, `contro
 | GET | `/v1/runs/{id}/checkpoints` | — | Named program progress, state and revisions |
 | POST | `/v1/runs/{id}/checkpoints` | `name` (default `main`), `state` | Saved progress after this program's instrument operations finish |
 | POST | `/v1/runs/{id}/resume` | `request_id` | Requeue the same run with a new attempt; requires package `resume:true` and saved progress |
+| GET | `/v1/runs/{id}/array` | `field`, optional `request_id`, view options | An array the experiment's result holds, or with `request_id` one in that batch's results, such as what a sweep gathered |
 | GET | `/v1/runs/{id}/streams` | — | The experiment's streams with description, bytes and chunk count |
 | GET / POST | `/v1/runs/{id}/streams/{name}` | POST: `definition` with `format` | Data description, bytes, chunk count and next sequence |
 | GET | `/v1/runs/{id}/streams/{name}/chunks` | `after=-1`, `limit=100` | Ordered chunk descriptions and cursor |
