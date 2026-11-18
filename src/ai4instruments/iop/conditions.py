@@ -8,12 +8,18 @@ An instrument's own conditions (warm-up, references, overloads, self-calibration
 device record, or to the model description that supplies it, and are named ``<device>.<id>``. They
 use only that instrument's operations, so they travel with the model to every laboratory; platform
 conditions may depend on them.
+
+A platform that declares ``upkeep`` has its conditions kept by the Runtime: when its instruments
+are idle, a pass starts for what is unknown, due, about to expire, forecast to leave its tolerance,
+or lost and due for another attempt. Each pass is recorded like any other, with ``automatic`` and
+its reasons, and never runs a step that asks a person.
 """
 import copy
 import math
 import re
 import statistics
 import threading
+import uuid
 from collections import deque
 from datetime import datetime, timezone
 from . import batches, library
@@ -201,6 +207,24 @@ def check(definitions, taken=(), external=()):
     return checked
 
 
+def upkeep(value, names):
+    """The upkeep a platform declares; ``names`` are the conditions of the platform and its instruments."""
+    if not isinstance(value, dict) or value.keys() - {'conditions', 'ahead_s', 'retry_s', 'correct'}:
+        raise ValueError('upkeep takes conditions, ahead_s, retry_s and correct')
+    for key, minimum in (('ahead_s', 0), ('retry_s', 1e-9)):
+        if key in value and (isinstance(value[key], bool) or not isinstance(value[key], (int, float))
+                             or not math.isfinite(value[key]) or value[key] < minimum):
+            raise ValueError(f'upkeep {key} is a duration in seconds')
+    if not isinstance(value.get('correct', True), bool):
+        raise ValueError('upkeep correct is true, or false to observe without correcting')
+    kept = strings(value.get('conditions', list(names)), 'upkeep conditions')
+    if set(kept) - set(names):
+        raise ValueError('upkeep conditions name conditions of this platform or its instruments: ' +
+                         ', '.join(sorted(set(kept) - set(names))))
+    return {'conditions': kept, 'ahead_s': float(value.get('ahead_s', 0)), 'retry_s': float(value.get('retry_s', 1800)),
+            'correct': value.get('correct', True)}
+
+
 def instrument(device_id, definitions):
     """The conditions of one instrument, named ``<device>.<id>`` in the laboratory.
 
@@ -375,6 +399,9 @@ class Conditions:
         self.jobs, self.threads = {}, []
         self.changed = threading.Condition()
         self.stopping = threading.Event()
+        # Per platform: when each condition was last attempted automatically, and what the last pass found.
+        self.attempts, self.waiting = {}, {}
+        self.wake = threading.Event()
         self.index()
 
     def index(self):
@@ -392,6 +419,8 @@ class Conditions:
                 self.definitions[condition['id']] = {**condition, 'platform': platform_id}
         for condition_id, condition in self.definitions.items():
             self.devices[condition_id] = self._devices(condition)
+        if hasattr(self, 'wake'):
+            self.wake.set()
 
     def scope(self, platform_id):
         """The conditions of a platform and of its instruments."""
@@ -464,6 +493,8 @@ class Conditions:
         taken = {c for c, d in self.definitions.items() if d.get('platform') != definition['id']}
         external = {c for c, d in self.definitions.items() if d.get('device') in definition['devices']}
         conditions = check(definition.get('conditions', []), taken, external)
+        if 'upkeep' in definition:
+            definition['upkeep'] = upkeep(definition['upkeep'], [c['id'] for c in conditions] + sorted(external))
         for condition in conditions:
             for item in [condition['verify']] + condition['correct']:
                 if 'tune' in item:
@@ -525,6 +556,9 @@ class Conditions:
         for dependency in condition['after']:
             if dependency not in visiting and self.state(dependency, at, (*visiting, condition_id))['state'] != 'holds':
                 return {'state': 'due', 'reason': dependency + ' does not hold', **shown}
+        if saved.get('forecast'):
+            # When the straight line through the accepted values reaches the tolerance.
+            shown['forecast'] = saved['forecast']
         return {'state': 'holds', **shown}
 
     def listing(self, platform=None, device=None):
@@ -616,6 +650,13 @@ class Conditions:
                         doubtful.append(other)
             saved['relying'] = [other for other in relying if other in engine.runs]
             saved.update(verified=time, outcome=result, value=value, error=error)
+            saved.pop('forecast', None)
+            if result == 'holds':
+                for attempts in self.attempts.values():
+                    attempts.pop(condition_id, None)
+                trend = summary(self.definitions[condition_id], engine.store.condition_records(condition_id) + [record]).get('trend', {})
+                if trend.get('expected_until'):
+                    saved['forecast'] = trend['expected_until']
             engine.store.record_condition(condition_id, saved, record, 'condition.' + result, run_id=run_id, value=value,
                                           **({'in_doubt': doubtful} if doubtful else {}))
             if result != 'holds':
@@ -630,6 +671,7 @@ class Conditions:
                       'run_id': run_id, **({'error': error} if error else {}), **({'tuned': tuned} if tuned else {})}
             if restored:
                 saved['corrected'] = time
+                saved.pop('forecast', None)
             self.engine.store.record_condition(condition_id, saved, record, 'condition.corrected', run_id=run_id, by=by,
                                                restored=restored)
 
@@ -650,6 +692,7 @@ class Conditions:
             for condition_id in affected:
                 saved = self._state(condition_id)
                 saved['invalidated'] = reason if condition_id in names else 'dependency disturbed: ' + reason
+                saved.pop('forecast', None)
                 time = now()
                 for run_id in saved.get('relying', []):
                     run = self.engine.runs.get(run_id)
@@ -670,7 +713,8 @@ class Conditions:
 
     # Maintenance: the loop.
 
-    def maintain(self, platform=None, conditions=None, run_id=None, request_id=None, force=False, device=None):
+    def maintain(self, platform=None, conditions=None, run_id=None, request_id=None, force=False, device=None,
+                 automatic=None):
         engine = self.engine
         with engine.lock:
             request = {'platform': platform, 'conditions': sorted(strings(conditions, 'Conditions')) if conditions else None,
@@ -713,11 +757,15 @@ class Conditions:
             job = {'id': identifier('maintenance'), 'request_id': request_id, 'platform': platform,
                    **({'device': device} if device is not None else {}), 'conditions': targets, 'closure': closure,
                    'force': bool(force), 'state': 'running', 'started': now(), 'report': [], 'steps': 0,
-                   'run_id': run_id, 'own_run': run_id is None, 'request': request}
+                   'run_id': run_id, 'own_run': run_id is None, 'request': request,
+                   # An automatic pass records why it started; it renews what is about to expire and never asks a person.
+                   **({'automatic': True, 'reasons': automatic['reasons'], 'renew': automatic['renew'],
+                       'observe_only': not automatic['correct']} if automatic else {})}
             amounts, job['operation_revisions'] = self.requirements(targets)
             if run_id is None:
                 # Keep coupled devices together through the complete correction cycle.
-                job['run_id'] = engine.submit({'kind': 'external', 'name': 'Maintain ' + (platform or device),
+                job['run_id'] = engine.submit({'kind': 'external', 'name': 'Maintain ' + (platform or device) +
+                                                       (' (upkeep)' if automatic else ''),
                                                **({'platform': platform} if platform is not None else {}),
                                                'resources': sorted(k[7:] for k in amounts if k.startswith(('device:', 'shared:'))),
                                                'requirements': {k[5:]: n for k, n in amounts.items() if k.startswith('pool:')},
@@ -762,7 +810,8 @@ class Conditions:
 
     @staticmethod
     def _public(job):
-        return {**{k: v for k, v in job.items() if k not in ('steps', 'own_run', 'force', 'request', 'closure')},
+        return {**{k: v for k, v in job.items() if k not in ('steps', 'own_run', 'force', 'request', 'closure', 'renew',
+                                                             'observe_only')},
                 'complete': job['state'] != 'running'}
 
     def _work(self, job):
@@ -826,7 +875,7 @@ class Conditions:
                 return self._report(job, done, entry)
         with self.engine.lock:
             held = self.state(condition_id)
-        if held['state'] == 'holds' and not job['force'] and not investigate:
+        if held['state'] == 'holds' and not job['force'] and condition_id not in job.get('renew', ()) and not investigate:
             entry.update(result='held', **{k: held[k] for k in ('value', 'verified') if k in held})
             return self._report(job, done, entry)
         investigated.add(condition_id)
@@ -843,8 +892,15 @@ class Conditions:
             entry['result'] = 'verified'
             return self._report(job, done, entry)
         entry['found'] = result
+        if job.get('observe_only') and condition['correct']:
+            entry.update(result='lost', value=value, not_corrected='upkeep observes only')
+            return self._report(job, done, entry)
+        left = []
         for item in condition['correct']:
             before, tuned = value, None
+            if job.get('automatic') and self._asks_person(item):
+                left.append(label(item))
+                continue
             self.invalidate([condition_id], 'correction started: ' + label(item))
             try:
                 if 'tune' in item:
@@ -861,7 +917,7 @@ class Conditions:
             if result == 'holds':
                 entry.update(result='corrected', by=label(item), value=value)
                 return self._report(job, done, entry)
-        entry.update(result='lost', value=value)
+        entry.update(result='lost', value=value, **({'left_for_a_person': left} if left else {}))
         return self._report(job, done, entry)
 
     def _report(self, job, done, entry):
@@ -886,6 +942,147 @@ class Conditions:
         return found, value
 
     _set = staticmethod(setting)
+
+    def _asks_person(self, item):
+        """Whether a correction includes a step that a person performs."""
+        if 'tune' in item:
+            return False
+        try:
+            steps = library.expand([{'id': 'step', **item}], self.engine.library.get)[0]
+        except ValueError:
+            return False
+        return any(self.engine.device_records.get(s['device'], {}).get('driver') == 'manual' for s in steps)
+
+    # Upkeep: the Runtime keeps the conditions of platforms that declare it.
+
+    def start(self):
+        thread = threading.Thread(target=self._keep, name='iop-upkeep', daemon=True)
+        self.threads.append(thread)
+        thread.start()
+
+    def _keep(self):
+        while not self.stopping.is_set():
+            self.wake.wait(float(self.engine.config.get('upkeep_interval_s', 2)))
+            self.wake.clear()
+            if self.stopping.is_set() or self.engine.stopping:
+                return
+            for platform_id in list(self.engine.platforms):
+                try:
+                    self._upkeep(platform_id)
+                except Exception as error:
+                    with self.engine.lock:
+                        self._wait(platform_id, f'{type(error).__name__}: {error}')
+
+    def plan(self, platform_id, at=None):
+        """What an automatic pass would maintain now and why, and when the next one is foreseen."""
+        settings = self.engine.platforms[platform_id]['definition'].get('upkeep')
+        if settings is None:
+            return None
+        at = at or seconds(now())
+        reasons, renew, upcoming = {}, [], []
+        attempts = self.attempts.get(platform_id, {})
+        for condition_id in settings['conditions']:
+            if condition_id not in self.definitions:
+                continue
+            state, reason = self.state(condition_id, at), None
+            if state['state'] in ('unknown', 'lost'):
+                reason = state['state']
+            elif state['state'] == 'due':
+                reason = 'due: ' + state.get('reason', '')
+            else:
+                # The forecast decides when to look again, never what to change: one observation ahead_s before
+                # the drift line reaches the tolerance and one when it does. Each moment triggers once, since an
+                # observation made after it moves accepted past it.
+                accepted = seconds(state['accepted'])
+                moments = []
+                if state.get('valid_until'):
+                    moments.append((seconds(state['valid_until']) - settings['ahead_s'], 'validity ends'))
+                if state.get('forecast'):
+                    crossing = seconds(state['forecast'])
+                    moments += [(crossing - settings['ahead_s'], 'forecast reaches the tolerance'),
+                                (crossing, 'forecast reaches the tolerance')]
+                for when, why in moments:
+                    if accepted < when <= at:
+                        reason = reason or why
+                    elif when > at:
+                        upcoming.append(when)
+            if reason is None:
+                continue
+            # An attempt that did not end with the condition held is repeated only after retry_s.
+            retry = attempts.get(condition_id, -math.inf) + settings['retry_s']
+            if at < retry:
+                upcoming.append(retry)
+                continue
+            reasons[condition_id] = reason
+            if state['state'] == 'holds':
+                renew.append(condition_id)
+        stamp = lambda t: datetime.fromtimestamp(t, timezone.utc).isoformat()
+        return {'reasons': reasons, 'renew': renew, 'correct': settings['correct'],
+                'next': stamp(min(upcoming)) if upcoming and not reasons else None}
+
+    def _busy(self, keys):
+        """An active experiment or a held resource that uses these devices or shared objects."""
+        engine = self.engine
+        for run in engine.runs.values():
+            used = set(run.get('involved_resources', [])) | {'device:' + d for d in run.get('devices', {})}
+            if run['state'] not in ('completed', 'failed', 'cancelled', 'interrupted') and used & keys:
+                return 'experiment ' + run['id']
+        held = keys & engine.resource_holds.keys()
+        if held:
+            return 'held resource ' + sorted(held)[0].split(':', 1)[1]
+        return None
+
+    def _wait(self, platform_id, reason):
+        if self.waiting.get(platform_id) != reason:
+            self.waiting[platform_id] = reason
+            if reason:
+                with self.engine.store.transaction():
+                    self.engine.store.event('upkeep.waiting', platform=platform_id, reason=reason)
+
+    def _upkeep(self, platform_id):
+        engine = self.engine
+        with engine.lock:
+            if platform_id not in engine.platforms or engine.stopping:
+                return
+            plan = self.plan(platform_id)
+            if not plan or not plan['reasons']:
+                self._wait(platform_id, None)
+                return
+            targets = list(plan['reasons'])
+            closure = set(self.closure(targets))
+            if any(job['state'] == 'running' and closure & set(job['closure']) for job in self.jobs.values()):
+                return
+            amounts, _ = self.requirements(targets)
+            reason = self._busy({k for k in amounts if k.startswith(('device:', 'shared:'))})
+            if reason:
+                self._wait(platform_id, 'waiting for ' + reason)
+                return
+            self._wait(platform_id, None)
+            time = seconds(now())
+            for condition_id in targets:
+                self.attempts.setdefault(platform_id, {})[condition_id] = time
+            job = self.maintain(platform_id, targets, request_id=f'upkeep.{platform_id}.{uuid.uuid4().hex[:12]}',
+                                automatic=plan)
+            with engine.store.transaction():
+                engine.store.event('upkeep.started', job['run_id'], platform=platform_id, maintenance=job['id'],
+                                   conditions=targets)
+
+    def upkeep_status(self, platform=None):
+        """For each platform that declares upkeep: its settings, the next foreseen pass, what it waits for, the last pass."""
+        with self.engine.lock:
+            rows = []
+            for platform_id in sorted(self.engine.platforms):
+                settings = self.engine.platforms[platform_id]['definition'].get('upkeep')
+                if settings is None or platform not in (None, platform_id):
+                    continue
+                plan = self.plan(platform_id)
+                last = max((j for j in self.jobs.values() if j.get('automatic') and j['platform'] == platform_id),
+                           key=lambda j: j['started'], default=None)
+                rows.append({'platform': platform_id, 'upkeep': settings, 'next': plan['next'],
+                             'pending': plan['reasons'], **({'waiting': self.waiting[platform_id]} if self.waiting.get(platform_id) else {}),
+                             **({'last': {k: last[k] for k in ('id', 'state', 'started', 'ended', 'holds', 'run_id') if k in last}}
+                                if last else {})})
+            return rows
 
     def _tune(self, job, condition, item, value, initial_outcome):
         """Adjust the settings one at a time against the verification value, halving the step when no move helps.
@@ -987,5 +1184,6 @@ class Conditions:
 
     def stop(self):
         self.stopping.set()
+        self.wake.set()
         for thread in self.threads:
             thread.join(timeout=10)

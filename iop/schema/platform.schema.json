@@ -347,6 +347,38 @@
           }
         }
       }
+    },
+    "upkeep": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Declared, the Runtime keeps the platform's conditions: while the instruments a pass needs are idle, it starts a pass for conditions that are unknown, due, lost, about to expire or forecast to leave their tolerance. Each automatic pass is recorded with automatic: true and its reasons, and never runs a step that asks a person.",
+      "properties": {
+        "conditions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true,
+          "description": "Conditions to keep; default all of the platform's and its instruments'."
+        },
+        "ahead_s": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0,
+          "description": "Observe this long before validity ends or the drift forecast reaches the tolerance."
+        },
+        "retry_s": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 1800,
+          "description": "Wait before another attempt at a condition the last attempt did not bring to hold."
+        },
+        "correct": {
+          "type": "boolean",
+          "default": true,
+          "description": "false: observe and record only; nothing is corrected."
+        }
+      }
     }
   },
   "$defs": {

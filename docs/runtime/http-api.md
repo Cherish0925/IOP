@@ -55,6 +55,7 @@ Base URL: `http://127.0.0.1:8765`. API bodies are JSON objects. Requests to `/v1
 | GET | `/v1/conditions/{id}` | — | One condition: definition, state, statistics (how long it holds, what restores it, drift) and latest records |
 | POST | `/v1/conditions/maintain` | `{"platform": id}`, `{"device": id}` or `{"conditions": [...]}`, optional `run_id`, `request_id`, `force`; `wait=0..25` | Verify what is due and correct what drifted, dependencies first; a platform's pass includes its instruments' conditions; returns the pass with its report, `complete` and `holds` |
 | GET | `/v1/maintenance/{id}` | `wait=0..25` | A pass of maintenance: state, report and the experiment it ran in |
+| GET | `/v1/upkeep` | `platform=id` optional | Platforms that declare upkeep: settings, pending reasons, the next foreseen observation, what upkeep waits for and the last automatic pass |
 | POST | `/v1/conditions/invalidate` | `{"conditions": [...], "reason": "..."}` | Record a disturbance; those conditions are verified again before they are relied on |
 | GET | `/v1/manual-tasks` | — | Steps of `manual` devices waiting for a person: instruction, arguments and readings to report |
 | POST | `/v1/manual-tasks/{operation_id}` | `{"status":"done","readings":{},"note":"","by":""}`; status `done`, `failed` or `unsure` | `{"operation_id":"...","status":"done"}`; invalid readings leave the step waiting |

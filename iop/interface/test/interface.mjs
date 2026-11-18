@@ -490,6 +490,19 @@ sys.stdout.buffer.write(b.getvalue())`,
   const conditions = await api("conditions");
   assert.equal(conditions.find((c) => c.id === "axis.in_range").state, "holds");
   assert.ok(conditions.some((c) => c.id.endsWith(".reference_locked")));
+  // Declared upkeep: the card says the Runtime keeps these conditions.
+  const kept = (await api("platforms")).find((p) => p.id === "bench-01");
+  await api("platforms", {
+    definition: { ...kept.definition, upkeep: { ahead_s: 60 } },
+    expected_revision: kept.revision,
+  });
+  await page.click("#refresh-button");
+  await page.waitForFunction(() =>
+    /自动保持|Upkeep/.test(
+      document.querySelector('[data-maintain="bench-01"]')?.parentElement
+        ?.textContent || "",
+    ),
+  );
   const lasting = await api("runs", {
     name: "Continues after browser closes",
     steps: [

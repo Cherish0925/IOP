@@ -146,14 +146,23 @@ def laboratory(engine, refresh=False, detail='summary'):
             names = sorted(set(names) & lacking.keys())
             if names:
                 covered.update(names)
+                upkept = engine.platforms[platform_id]['definition'].get('upkeep') is not None
                 result['next_steps'].append({'action': 'maintain_conditions', 'platform': platform_id,
-                                             'conditions': names[:CONDITIONS], 'submit': '/v1/conditions/maintain'})
+                                             'conditions': names[:CONDITIONS], 'submit': '/v1/conditions/maintain',
+                                             **({'upkeep': 'the Runtime maintains these when the platform is idle'} if upkept else {})})
         for condition_id, row in sorted(lacking.items()):
             if condition_id not in covered and 'device' in row:
                 alone.setdefault(row['device'], []).append(condition_id)
         for device_id, names in sorted(alone.items()):
             result['next_steps'].append({'action': 'maintain_conditions', 'device': device_id,
                                          'conditions': names[:CONDITIONS], 'submit': '/v1/conditions/maintain'})
+    # Platforms whose conditions the Runtime keeps: the next foreseen pass, what it waits for, the last one.
+    upkept = engine.conditions.upkeep_status()
+    if upkept:
+        result['setup']['upkeep'] = {row['platform']: {**{k: row[k] for k in ('next', 'waiting') if row.get(k)},
+                                                       **({'pending': sorted(row['pending'])} if row['pending'] else {}),
+                                                       **({'last': row['last']} if 'last' in row else {})}
+                                     for row in upkept}
     unavailable = {o['id']: o['unavailable'] for o in saved if o.get('unavailable')}
     if unavailable:
         result['setup']['unavailable_operations'] = unavailable

@@ -121,6 +121,7 @@ class Engine:
     def start(self):
         self.thread.start()
         self.monitors.start()
+        self.conditions.start()
         interval = float(self.config.get("discovery_interval", 30))
         if interval > 0:
             def inventory_loop():

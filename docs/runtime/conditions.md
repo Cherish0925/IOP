@@ -6,7 +6,7 @@
 
 A platform can state the operating conditions required by a particular measurement: what to observe, which values are acceptable, how to restore them, and when to observe again. The researcher or agent supplies this knowledge; the Runtime executes it using the existing Basic, Standard and Workflow Operations. / 平台可以写明一次测量需要的工作条件：观察什么、什么数值可接受、怎样恢复、何时重新观察。研究者或 Agent 提供这些知识，Runtime 用现有的基础、标准和工作流操作执行。
 
-The cycle is **observe → compare → correct when needed → observe again**. `maintain` starts a pass; it does not run an undisclosed background optimizer. / 循环是**观察 → 比较 → 必要时校正 → 再次观察**。调用 `maintain` 才开始一轮，不会在后台自行改变实验设定。
+The cycle is **observe → compare → correct when needed → observe again**. `maintain` starts a pass. Without `upkeep` the Runtime never starts one by itself; a platform that declares [`upkeep`](#upkeep--自主保持) has passes started by the Runtime while its instruments are idle, each recorded with its reasons. / 循环是**观察 → 比较 → 必要时校正 → 再次观察**。调用 `maintain` 开始一轮。未声明 `upkeep` 时，运行服务不会自行开始；声明了 [`upkeep`](#upkeep--自主保持) 的平台，由运行服务在设备空闲时开始，每一轮连同原因一起记录。
 
 - **Outcomes:** `holds` is within the stated tolerance; `drifted` is a usable reading outside it; `unusable` cannot support this decision. An unusable reading may arise from the measurement itself, a local fault or a dependency. / **结果：** `holds` 满足所设容差；`drifted` 是可用但超出容差的读数；`unusable` 无法支持这次判断，可能来自测量本身、本地故障或依赖项。
 - **Dependencies:** `after` declares which conditions must hold first. The Runtime follows this graph and can revisit dependencies when a reading is unusable. It does not discover causal relationships from wiring or labels. / **依赖：** `after` 明确哪些条件需要先成立；读数不可用时可回看依赖。运行服务不会从接线或分类名称推断因果关系。
@@ -170,7 +170,34 @@ Every verification and correction is recorded. `GET /v1/conditions/{id}` returns
 | `corrections` | For each correction, how often it was tried and how often it restored the condition / 每种校正尝试了几次、恢复了几次 |
 | `trend` | A straight line through the accepted values since the last correction or reported disturbance: `per_hour`, the number of `points`, the `residual`, and `expected_until`, when the line reaches the tolerance / 自上次校正或已报告扰动以来通过值的直线拟合：每小时变化、点数、残差，以及到达容差的时间 `expected_until` |
 
-Statistics use the latest 1,000 records. A linear extrapolation is descriptive and does not change expiry times or settings automatically. This is where experience accumulates: which conditions drift, how fast, and what restores them, measured on this system. / 统计使用最近 1,000 条记录；直线外推不会自动改变有效期或设备设定。经验在这里积累：哪些条件会漂、漂多快、什么能恢复，都是在这套系统上测出来的。
+Statistics use the latest 1,000 records. A linear extrapolation does not change expiry times or settings; with upkeep it only decides when to observe again. The state of a held condition shows it as `forecast`. This is where experience accumulates: which conditions drift, how fast, and what restores them, measured on this system. / 统计使用最近 1,000 条记录；直线外推不会改变有效期或设备设定，在自主保持中只决定何时再次观察；成立状态中以 `forecast` 给出。经验在这里积累：哪些条件会漂、漂多快、什么能恢复，都是在这套系统上测出来的。
+
+## Upkeep / 自主保持
+
+A platform can declare that the Runtime keeps its conditions. / 平台可以声明由运行服务来保持它的条件。
+
+```json
+"upkeep": {"ahead_s": 300, "retry_s": 1800, "correct": true}
+```
+
+The Runtime plans every `upkeep_interval_s` (2 s by default, in the service configuration). When a condition needs a pass and the instruments that pass would use are idle, it starts one for the conditions concerned. / 运行服务每隔 `upkeep_interval_s`（默认 2 秒，在服务配置中设置）安排一次：有条件需要处理、且这一轮要用的设备空闲时，就为这些条件开始一轮。
+
+| A pass starts for a condition that is / 何时开始 | Reason recorded / 记录的原因 |
+| --- | --- |
+| Never observed, or its basis changed / 从未观察或依据已变 | `unknown` |
+| Due: validity elapsed, a dependency corrected, a disturbance / 待核对：过期、依赖被校正、受扰动 | `due: <reason>` |
+| Still held, `ahead_s` before its validity ends / 仍成立，有效期结束前 `ahead_s` | `validity ends` |
+| Still held, `ahead_s` before the drift forecast reaches the tolerance, and again when it does / 仍成立，漂移预测到达容差前 `ahead_s`，以及到达时 | `forecast reaches the tolerance` |
+| Lost / 不成立 | `lost` |
+
+- **Idle.** No active experiment uses or reserves a device or shared resource the pass needs, and none of them is held. Otherwise upkeep waits; its status names the experiment or resource. A queued experiment goes first. / **空闲。** 没有进行中的实验使用或预留这一轮所需的设备和共享资源，也没有处于挂起状态的。否则等待，状态中写明在等哪个实验或资源；排队中的实验优先。
+- **One observation per moment.** A foreseen moment triggers once, because the observation moves the accepted time past it. The forecast decides when to look again, never what to change. / **每个时刻观察一次。** 观察之后通过时间越过该时刻，所以不会重复。预测只决定何时再看，不决定改变什么。
+- **Retry.** An attempt that does not end with the condition held is repeated only after `retry_s`. / **重试。** 未能使条件成立的尝试，`retry_s` 之后才再进行。
+- **No steps for a person.** An automatic pass skips corrections that ask a person; such a condition ends `lost` with `left_for_a_person`, for an explicit `maintain` or the operator. / **不安排人工步骤。** 自动的一轮跳过需要人来做的校正，该条件以 `lost` 结束并给出 `left_for_a_person`，留给显式的 `maintain` 或操作者。
+- **Observe only.** With `correct: false`, drifted conditions are recorded as lost with `not_corrected`, and nothing is changed. / **只观察。** `correct: false` 时，漂移的条件记为不成立并注明 `not_corrected`，不做任何改变。
+- **Disclosed.** Each automatic pass is an ordinary maintenance in its own experiment, named `Maintain <platform> (upkeep)`, with `automatic: true` and `reasons` in its record. `conditions` limits upkeep to some of the platform's conditions and its instruments'. Remove `upkeep` from the platform to stop. / **公开记录。** 每一轮都是普通的保持，在自己的实验中进行，名称为 `Maintain <platform> (upkeep)`，记录中有 `automatic: true` 和 `reasons`。`conditions` 可把自主保持限定在部分条件上；从平台中删除 `upkeep` 即停止。
+
+Experiments in progress are not interrupted: inside a continuous experiment, maintain with `run.maintain()` or `maintain=True`. The status is in `GET /v1/upkeep`, `lab_context.setup.upkeep` and on the platform card: the next foreseen observation, pending reasons, what it waits for and the last pass. / 进行中的实验不会被打断：连续实验内部用 `run.maintain()` 或 `maintain=True`。状态见 `GET /v1/upkeep`、`lab_context.setup.upkeep` 和平台卡片：下一次预计观察、待处理的原因、正在等待什么，以及上一轮。
 
 ## Writing the conditions of a platform / 为一个平台写条件
 
@@ -188,7 +215,7 @@ Settling times, warm-up times and safe ranges come from the instrument manuals; 
 
 | | Read / 读取 | Maintain / 保持 | Disturbance / 扰动 |
 | --- | --- | --- | --- |
-| HTTP | `GET /v1/conditions?platform=&device=`, `GET /v1/conditions/{id}` | `POST /v1/conditions/maintain?wait=`, `GET /v1/maintenance/{id}?wait=` | `POST /v1/conditions/invalidate` |
+| HTTP | `GET /v1/conditions?platform=&device=`, `GET /v1/conditions/{id}`, `GET /v1/upkeep` | `POST /v1/conditions/maintain?wait=`, `GET /v1/maintenance/{id}?wait=` | `POST /v1/conditions/invalidate` |
 | Python | `client.conditions()`, `client.condition(id)` | `client.maintain(platform)`, `client.maintain(device=...)`, `run.maintain()` | `client.invalidate(names, reason)` |
 | TypeScript | `conditions()`, `condition(id)` | `maintain({platform})`, `run.maintain()` | `invalidate(names, reason)` |
 | MCP | `operating_conditions()` | `operating_conditions(maintain=true, ...)` | `operating_conditions(invalidate=..., conditions=[...])` |

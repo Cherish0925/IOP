@@ -13,6 +13,9 @@ export type Condition = {
   correct?: ConditionStep | Tuning | (ConditionStep | Tuning)[]; settle?: number; valid_for?: number; note?: string;
 };
 export type ConditionState = { id: string; platform?: string; device?: string; description: string; kind?: string; after: string[]; state: 'holds' | 'due' | 'lost' | 'unknown'; reason?: string; value?: unknown; verified?: string; valid_until?: string; [key: string]: unknown };
+/** Declared on a platform: the Runtime maintains these conditions when the platform is idle. */
+export type Upkeep = { conditions?: string[]; ahead_s?: number; retry_s?: number; correct?: boolean };
+export type UpkeepStatus = { platform: string; upkeep: Required<Upkeep>; next: string | null; pending: Record<string, string>; waiting?: string; last?: { id: string; state: string; started: string; ended?: string; holds?: boolean; run_id: string } };
 export type Maintenance = { id: string; platform: string | null; device?: string; state: string; complete: boolean; holds?: boolean; run_id: string; report: { condition: string; result: 'held' | 'verified' | 'corrected' | 'lost' | 'blocked'; value?: unknown; by?: string; found?: string }[]; error?: string };
 export type PlatformDefinition = {
   schema_version: 1; id: string; name?: string; description?: string; devices: string[];
@@ -20,6 +23,7 @@ export type PlatformDefinition = {
   connections?: { from: Endpoint; to: Endpoint; kind: string; description?: string }[];
   procedures?: Record<string, Procedure>;
   conditions?: Condition[];
+  upkeep?: Upkeep;
 };
 export type Platform = { id: string; revision: number; updated: string; definition: PlatformDefinition; active_runs?: string[]; missing_devices?: string[] };
 export type RunRecord = { id: string; state: string; result?: unknown; error?: string; platform?: Platform; [key: string]: unknown };
@@ -117,6 +121,8 @@ export class IOP {
     while (!job.complete) job = await this.request<Maintenance>(`/v1/maintenance/${encodeURIComponent(job.id)}?wait=25`, undefined, options.signal);
     return job;
   }
+  /** Platforms whose conditions the Runtime keeps: settings, pending reasons, the next foreseen pass and the last one. */
+  upkeep(platform?: string) { return this.request<UpkeepStatus[]>('/v1/upkeep' + (platform ? '?' + new URLSearchParams({ platform }) : '')); }
   invalidate(conditions: string[], reason: string) { return this.request<ConditionState[]>('/v1/conditions/invalidate', { conditions, reason }); }
   platforms() { return this.request<Platform[]>('/v1/platforms'); }
   platform(id: string) { return this.request<Platform>('/v1/platforms/' + encodeURIComponent(id)); }

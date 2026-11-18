@@ -54,7 +54,9 @@ A platform describes the conditions required by its experiments: observations, t
 
 Experiments name their conditions with `requires`. The Runtime checks their recorded state before each dependent operation, keeps the observations with the results, and marks relevant intervals when a later observation reveals drift. Bounded `tune` provides a local numerical search; saved operations and programs express other methods. Classification and dependencies remain configurable for each platform.
 
-An instrument's own conditions, such as warm-up, overload or reference lock, belong to its record and can come with its model description, so every instrument of that model starts with them; platform conditions build on them. See [operating conditions](docs/runtime/conditions.md).
+An instrument's own conditions, such as warm-up, overload or reference lock, belong to its record and can come with its model description, so every instrument of that model starts with them; platform conditions build on them.
+
+A platform that declares `upkeep` is kept by the Runtime: while its instruments are idle, it observes what is unknown, due, about to expire or forecast to drift out of tolerance, and corrects what drifted. Each automatic pass is recorded with its reasons and never runs a step that asks a person. See [operating conditions](docs/runtime/conditions.md).
 
 ## Research and learning
 

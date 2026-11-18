@@ -264,6 +264,10 @@ class Client:
             job = self.request('/v1/maintenance/' + job['id'] + '?' + urlencode({'wait': wait}))
         return job
 
+    def upkeep(self, platform=None):
+        """Platforms whose conditions the Runtime keeps: settings, pending reasons, the next foreseen pass and the last one."""
+        return self.request('/v1/upkeep' + ('?' + urlencode({'platform': platform}) if platform else ''))
+
     def invalidate(self, conditions, reason):
         """Record that something disturbed the system; these conditions are verified again before use."""
         return self.request('/v1/conditions/invalidate', {'conditions': conditions, 'reason': reason})

@@ -67,7 +67,7 @@ def description(value, devices):
         raise ValueError('Platform description must be an object')
     value = json.loads(json.dumps(value, allow_nan=False))
     allowed = {'schema_version', 'id', 'name', 'description', 'devices', 'resources', 'connections', 'procedures',
-               'conditions'}
+               'conditions', 'upkeep'}
     if value.keys() - allowed:
         raise ValueError('Unknown platform fields: ' + ', '.join(sorted(value.keys() - allowed)))
     name(value.get('id'), 'Platform ID')
