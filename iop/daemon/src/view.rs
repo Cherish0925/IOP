@@ -3,9 +3,11 @@
 //! One axis is followed, or two for a map or an image; every other axis is either fixed at one index
 //! or summarized. The result holds the statistics of the selected elements and, per bucket of
 //! consecutive positions along the followed axes, their count, extremes and mean. A last axis of
-//! re/im pairs can be read as the modulus or the argument of the complex values. The bytes of the
-//! array are one file or, as for a data stream or the points of a sweep, several files in order;
-//! only the range that holds the selected positions of the first axis is read.
+//! re/im pairs can be read as the modulus or the argument of the complex values. Along one axis with
+//! every other axis fixed, the line at the highest or lowest value is found too: its sub-sample
+//! position, its value, the opposite extreme as its base, and where it falls halfway to the base.
+//! The bytes of the array are one file or, as for a data stream or the points of a sweep, several
+//! files in order; only the range that holds the selected positions of the first axis is read.
 use serde_json::{json, Value};
 use std::{
     error::Error,
@@ -85,6 +87,13 @@ enum Complex {
     Argument,
 }
 
+/// A line read at the highest value, or at the lowest for a dip.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Peak {
+    Max,
+    Min,
+}
+
 /// An axis followed: the positions selected, start to stop, in a number of buckets.
 #[derive(Clone, Copy, Debug)]
 struct Followed {
@@ -105,10 +114,13 @@ struct Request {
     along: Vec<Followed>,
     fixed: Vec<Option<usize>>,
     complex: Option<Complex>,
+    peak: Option<Peak>,
 }
 
 /// Buckets of a view, at most: a map of 2000 by 2000.
 const CELLS: usize = 4_000_000;
+/// Positions a line is read over, at most; their values are kept while it is found.
+const TRACE: usize = 20_000_000;
 
 fn invalid(message: impl Into<String>) -> Box<dyn Error> {
     Box::new(io::Error::new(io::ErrorKind::InvalidInput, message.into()))
@@ -221,6 +233,26 @@ fn parse(request: &Value) -> Result<Request, Box<dyn Error>> {
         }
         fixed[axis] = Some(index);
     }
+    let peak = match request["peak"].as_str() {
+        None if request["peak"].is_null() => None,
+        Some("max") => Some(Peak::Max),
+        Some("min") => Some(Peak::Min),
+        _ => return Err(invalid("peak is max, or min for a dip")),
+    };
+    if peak.is_some() {
+        let one =
+            along.len() == 1 && (0..shape.len()).all(|d| d == along[0].axis || fixed[d].is_some());
+        if !one {
+            return Err(invalid(
+                "A peak is read along one axis, with every other axis fixed",
+            ));
+        }
+        if along[0].stop - along[0].start > TRACE {
+            return Err(invalid(format!(
+                "A peak is read over at most {TRACE} positions; select fewer with start and stop"
+            )));
+        }
+    }
     Ok(Request {
         segments,
         kind,
@@ -229,6 +261,7 @@ fn parse(request: &Value) -> Result<Request, Box<dyn Error>> {
         along,
         fixed,
         complex,
+        peak,
     })
 }
 
@@ -359,6 +392,12 @@ fn view(r: &Request) -> Result<Value, Box<dyn Error>> {
         min_index: Vec::new(),
         max_index: Vec::new(),
     };
+    // Along one axis with the others fixed, positions are read in order: the trace a line is found in.
+    let mut trace = Vec::with_capacity(if r.peak.is_some() {
+        r.along[0].stop - r.along[0].start
+    } else {
+        0
+    });
     let mut index = vec![0usize; dims];
     index[0] = low;
     let per_chunk = (1 << 20) / unit.max(1) + 1;
@@ -395,6 +434,9 @@ fn view(r: &Request) -> Result<Value, Box<dyn Error>> {
                         + ((index[f.axis] - f.start) as u128 * f.points as u128
                             / (f.stop - f.start) as u128) as usize
                 });
+                if r.peak.is_some() {
+                    trace.push(value);
+                }
                 let b = &mut buckets[cell];
                 b.count += 1;
                 s.count += 1;
@@ -438,7 +480,7 @@ fn view(r: &Request) -> Result<Value, Box<dyn Error>> {
         })
         .collect();
     let finite = s.finite > 0;
-    Ok(json!({
+    let mut found = json!({
         "count": s.count,
         "finite": s.finite,
         "min": if finite { number(s.min) } else { Value::Null },
@@ -456,7 +498,75 @@ fn view(r: &Request) -> Result<Value, Box<dyn Error>> {
             "mean": buckets.iter().map(|b| if b.finite > 0 { number(b.sum / b.finite as f64) } else { Value::Null })
                 .collect::<Vec<_>>(),
         }
-    }))
+    });
+    if let Some(peak) = r.peak {
+        found["peak"] = line(&trace, r.along[0].start, peak);
+    }
+    Ok(found)
+}
+
+/// The line at the extreme of a trace that starts at position `first`: the first highest value (lowest
+/// for a dip) and its position, refined between its neighbours by the parabola through the three; the
+/// opposite extreme as the base; and the positions, interpolated, where the trace on either side first
+/// falls halfway from the line's value to the base. Values that are not finite are passed over.
+fn line(trace: &[f64], first: usize, peak: Peak) -> Value {
+    let sign = if peak == Peak::Max { 1.0 } else { -1.0 };
+    let mut top: Option<usize> = None;
+    let mut base = f64::NAN;
+    for (i, &y) in trace.iter().enumerate() {
+        if y.is_finite() {
+            if top.is_none_or(|t| sign * y > sign * trace[t]) {
+                top = Some(i);
+            }
+            if base.is_nan() || sign * y < sign * base {
+                base = y;
+            }
+        }
+    }
+    let Some(i) = top else {
+        return Value::Null;
+    };
+    let y1 = trace[i];
+    let (mut offset, mut value) = (0.0, y1);
+    if i > 0 && i + 1 < trace.len() && trace[i - 1].is_finite() && trace[i + 1].is_finite() {
+        let (y0, y2) = (trace[i - 1], trace[i + 1]);
+        let curvature = y0 - 2.0 * y1 + y2;
+        if curvature != 0.0 {
+            offset = 0.5 * (y0 - y2) / curvature;
+            value = y1 - 0.25 * (y0 - y2) * offset;
+        }
+    }
+    let half = (value + base) / 2.0;
+    // From the line outward, the first value at or past half height, between it and the last one inside.
+    let crossing = |positions: &mut dyn Iterator<Item = usize>| -> Value {
+        if sign * (value - base) <= 0.0 {
+            return Value::Null;
+        }
+        let mut inside = i;
+        for j in positions {
+            let y = trace[j];
+            if !y.is_finite() {
+                continue;
+            }
+            if sign * (y - half) > 0.0 {
+                inside = j;
+                continue;
+            }
+            let k = inside;
+            return number(
+                (first + j) as f64 + (half - y) / (trace[k] - y) * (k as f64 - j as f64),
+            );
+        }
+        Value::Null
+    };
+    json!({
+        "index": first + i,
+        "position": number((first + i) as f64 + offset),
+        "value": number(value),
+        "base": number(base),
+        "left": crossing(&mut (0..i).rev()),
+        "right": crossing(&mut (i + 1..trace.len())),
+    })
 }
 
 /// Read one request from standard input and write the view, or an error, as one JSON line.
@@ -644,6 +754,67 @@ mod tests {
                              "fixed": [[1, 1]], "start": 1, "stop": 6, "points": 8});
         let v = view(&parse(&request).unwrap()).unwrap();
         assert_eq!(v["buckets"]["mean"], json!([3.0, 5.0, 7.0, 9.0, 11.0]));
+    }
+
+    fn peak_of(name: &str, shape: &[usize], extra: Value) -> Value {
+        view(&parse(&request(name, shape, extra)).unwrap()).unwrap()["peak"].clone()
+    }
+
+    #[test]
+    fn a_line_is_found_between_samples_with_its_width_at_half_height() {
+        // A Lorentzian of half width 3.2 at 41.3 on a base of 0.5, sampled at each position.
+        let values: Vec<f64> = (0..100)
+            .map(|x| 0.5 + 1.0 / (1.0 + ((x as f64 - 41.3) / 3.2).powi(2)))
+            .collect();
+        let (_keep, name) = file(&values);
+        let peak = peak_of(&name, &[100], json!({"peak": "max"}));
+        assert_eq!(peak["index"], json!(41));
+        let at = |key: &str| peak[key].as_f64().unwrap();
+        assert!((at("position") - 41.3).abs() < 0.05);
+        assert!((at("right") - at("left") - 6.4).abs() < 0.2);
+        assert_eq!(peak["base"], json!(values[99]));
+        // A dip in a window: positions count from the start of the array.
+        let dip: Vec<f64> = values.iter().map(|v| -v).collect();
+        let (_dip, name) = file(&dip);
+        let found = peak_of(
+            &name,
+            &[100],
+            json!({"peak": "min", "start": 20, "stop": 60}),
+        );
+        assert_eq!(found["index"], json!(41));
+        assert!((found["position"].as_f64().unwrap() - 41.3).abs() < 0.05);
+    }
+
+    #[test]
+    fn a_line_at_an_edge_or_across_missing_values() {
+        let (_keep, name) = file(&[3.0, 2.0, f64::NAN, 1.0, 0.0]);
+        let peak = peak_of(&name, &[5], json!({"peak": "max"}));
+        // At the first position nothing lies before it; the missing value is passed over.
+        assert_eq!(peak["position"], json!(0.0));
+        assert_eq!(
+            (peak["left"].clone(), peak["right"].clone()),
+            (Value::Null, json!(2.0))
+        );
+        let (_flat, name) = file(&[1.0, 1.0, 1.0]);
+        let flat = peak_of(&name, &[3], json!({"peak": "min"}));
+        assert_eq!(
+            (flat["left"].clone(), flat["right"].clone()),
+            (Value::Null, Value::Null)
+        );
+        let (_image, name) = file(&[0.0; 6]);
+        assert!(parse(&request(&name, &[2, 3], json!({"peak": "max"}))).is_err());
+        assert!(parse(&request(
+            &name,
+            &[2, 3],
+            json!({"peak": "max", "fixed": [[1, 0]]})
+        ))
+        .is_ok());
+        assert!(parse(&request(
+            &name,
+            &[2, 3],
+            json!({"peak": "top", "fixed": [[1, 0]]})
+        ))
+        .is_err());
     }
 
     #[test]

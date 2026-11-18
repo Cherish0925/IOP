@@ -47,6 +47,8 @@ export type ArrayView = {
   values?: (number | null)[] | (number | null)[][];
   envelope?: { position: number[] | number[][]; coordinate?: number[] | (number[] | null)[]; min: (number | null)[] | (number | null)[][];
     max: (number | null)[] | (number | null)[][]; mean: (number | null)[] | (number | null)[][] };
+  /** With peak: the line's center between samples, its width where it is halfway to the base, the coordinates there, its value and base. */
+  peak?: { center: number; width?: number; low?: number; high?: number; value: number; base: number; index: number } | null;
 };
 /** The URL query of an array view; at, and a list with one value per axis along, are sent as JSON. */
 function viewQuery(options: ArrayViewOptions) {
@@ -56,7 +58,7 @@ function viewQuery(options: ArrayViewOptions) {
 }
 type PerAxis<T> = T | (T | null)[];
 export type ArrayViewOptions = { field?: string; along?: string | number | (string | number)[]; at?: Record<string, string | number>;
-  start?: PerAxis<number>; stop?: PerAxis<number>; low?: PerAxis<number>; high?: PerAxis<number>; points?: number | number[] };
+  start?: PerAxis<number>; stop?: PerAxis<number>; low?: PerAxis<number>; high?: PerAxis<number>; points?: number | number[]; peak?: 'max' | 'min' };
 export type Submission = { name?: string; project?: string; experiment?: string; platform?: string; resources?: string[]; requirements?: Record<string, number>; parameters?: Record<string, unknown>; request_id?: string; requires?: string[] };
 export class IOPError extends Error {
   constructor(message: string, readonly status: number, readonly details: Record<string, unknown> = {}) { super(message); this.name = 'IOPError'; }

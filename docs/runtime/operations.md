@@ -88,8 +88,8 @@ A named result or a binding can read through a `view` of an array the step retur
 ```json
 {"id": "resonance.locate", "layer": "standard", "description": "Sweep and locate the resonance dip",
  "steps": [{"id": "sweep", "device": "vna", "operation": "read_trace"}],
- "result": {"f0": {"step": "sweep", "view": {"at": {"component": "abs"}}, "path": ["summary", "min_at"]},
-            "depth": {"step": "sweep", "view": {"at": {"component": "abs"}}, "path": ["summary", "min"]}}}
+ "result": {"f0": {"step": "sweep", "view": {"at": {"component": "abs"}, "peak": "min"}, "path": ["peak", "center"]},
+            "linewidth": {"step": "sweep", "view": {"at": {"component": "abs"}, "peak": "min"}, "path": ["peak", "width"]}}}
 ```
 
 These views are computed once, when the step that returned the array completes, and kept in its operation record as `derived`; the value does not change when it is read again. A view reads an array a device operation returned, so a binding to a saved operation takes one of its named results. / 这些视图在返回数组的那一步完成时计算一次，记入其操作记录的 `derived`，之后再读也不会变。视图只作用于设备操作返回的数组；绑定已保存操作时取其具名结果。
@@ -113,14 +113,14 @@ What the points return is gathered under the step. Numbers in the same place bec
 
 Bindings and named results read what a sweep gathered by path or through a `view`, so a saved operation can scan and then go to the best point; `"points": "${points}"` takes the number of points from a parameter. `read_array` with `run_id` and `field`, `Run.read_array` and `readArray` view these arrays, with `request_id` for a batch of a continuous experiment; there `run.call(operation, arguments, sweep=...)` returns the named results gathered. / 绑定和具名结果可按路径或经 `view` 读取扫描汇集的内容，已保存的操作因此可以先扫描、再转到最佳点；`"points": "${points}"` 从参数取点数。`read_array`（`run_id` 与 `field`）、`Run.read_array` 和 `readArray` 读取这些数组，连续实验中的批次另加 `request_id`；在连续实验中，`run.call(操作, 参数, sweep=...)` 返回汇集后的具名结果。
 
-An end of a range can come from an earlier step. `start`, `stop`, `center` and `span` each take a number or a source written as a binding is (`step`, `path`, `view`); the number of points stays fixed, and each point reads its value when it runs, after the steps it reads have finished. Here the fine sweep spans 2 degrees around the angle where the coarse sweep found most power: / 范围的端点可以取自之前的步骤。`start`、`stop`、`center`、`span` 各自可以是数值，或像绑定那样写出的来源（`step`、`path`、`view`）；点数固定，每个点在运行时、在所读的步骤完成之后取得自己的值。下例中，细扫以粗扫功率最大的角度为中心，跨 2 度：
+An end of a range can come from an earlier step. `start`, `stop`, `center` and `span` each take a number or a source written as a binding is (`step`, `path`, `view`); the number of points stays fixed, and each point reads its value when it runs, after the steps it reads have finished. Here the fine sweep spans 2 degrees around the line the coarse sweep found, its center placed between the coarse points: / 范围的端点可以取自之前的步骤。`start`、`stop`、`center`、`span` 各自可以是数值，或像绑定那样写出的来源（`step`、`path`、`view`）；点数固定，每个点在运行时、在所读的步骤完成之后取得自己的值。下例中，细扫以粗扫得到的谱线中心为中心（中心位于粗扫的点之间），跨 2 度：
 
 ```json
 {"steps": [
   {"id": "coarse", "operation": "axis.measure", "arguments": {"axis": "stage"},
    "sweep": {"angle": {"start": -40, "stop": 40, "points": 17}}},
   {"id": "fine", "operation": "axis.measure", "arguments": {"axis": "stage"},
-   "sweep": {"angle": {"center": {"step": "coarse", "view": {"field": "power"}, "path": ["summary", "max_at"]},
+   "sweep": {"angle": {"center": {"step": "coarse", "view": {"field": "power", "peak": "max"}, "path": ["peak", "center"]},
                        "span": 2, "points": 21}}}
 ]}
 ```

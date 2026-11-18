@@ -232,6 +232,31 @@ class ViewCase(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'lists 5 coordinates for its 41 positions'):
             self.view(response, {'dtype': 'float64', 'axes': [{'name': 'frequency', 'coordinates': hz[:5]}]})
 
+    def test_a_line_reads_as_its_center_width_and_depth(self):
+        trace = {'dtype': 'float64', 'axes': [FREQUENCY]}
+        line = self.view(DIP, trace, peak='min')['peak']
+        # Sampled at its center, the dip lies at 1.06 GHz; its base is the highest value, at the far end.
+        self.assertEqual((line['center'], line['value'], line['base'], line['index']), (1.06e9, DIP[600], DIP[0], 600))
+        self.assertAlmostEqual(line['width'], 4e6, delta=1e4)
+        self.assertAlmostEqual(line['high'] - 1.06e9, 1.06e9 - line['low'])
+        # Between samples, the parabola through the highest three places the line.
+        lorentz = [1 / (1 + ((i - 41.3) / 3.2) ** 2) for i in range(100)]
+        delay = {'dtype': 'float64', 'axes': [{'name': 'delay', 'unit': 's', 'start': 0, 'step': 0.5}]}
+        line = self.view(lorentz, delay, peak='max')['peak']
+        self.assertAlmostEqual(line['center'], 20.65, delta=0.02)
+        self.assertAlmostEqual(line['width'], 3.2, delta=0.05)
+        # Listed coordinates place it on the straight line between the two it lies between.
+        listed = {'dtype': 'float64', 'axes': [{'name': 'f', 'coordinates': [1, 2, 4, 8, 16]}]}
+        line = self.view([0, 2, 3, 1, 0], listed, peak='max')['peak']
+        self.assertAlmostEqual(line['center'], 2 + 2 * 5 / 6)
+        self.assertEqual(set(line), {'center', 'width', 'low', 'high', 'value', 'base', 'index'})
+        image = {'dtype': 'float64', 'shape': [2, 3], 'axes': [{'name': 'row'}, {'name': 'column'}]}
+        self.assertEqual(self.view([0, 5, 0, 1, 2, 3], image, along='column', at={'row': 0}, peak='max')['peak']['index'], 1)
+        for description, options, message in ((image, {'peak': 'max'}, 'fix the others with at: column'),
+                                              (trace, {'peak': 'top'}, 'max, or min for a dip')):
+            with self.assertRaisesRegex(ValueError, message):
+                self.view(DIP, description, **options) if description is trace else self.view([0] * 6, image, **options)
+
     def test_inline_values_are_viewed_without_a_file(self):
         holder = arrays.result(_payload(DIP[:100], {}), arrays.check_result({'dtype': 'float64'}), None)
         self.assertEqual(views.view(holder, points=4)['envelope']['position'], [0, 25, 50, 75])
@@ -253,6 +278,11 @@ class ViewCase(unittest.TestCase):
             (cube, {'dtype': 'float64', 'shape': [6, 7, 50], 'axes': [{'name': 'a'}, {'name': 'b'}, {'name': 'c'}]},
              {'along': ['c', 'a'], 'start': [3, None], 'stop': [47, 5], 'points': [9, 4]}),
             (nan_trace[:20000], {'dtype': 'float32', 'shape': [100, 200]}, {'along': [0, 1], 'points': [7, 30]}),
+            (nan_trace, {'dtype': 'float64'}, {'points': 37, 'peak': 'max'}),
+            (nan_trace, {'dtype': 'float32', 'byte_order': 'big'}, {'start': 101, 'stop': 4093, 'peak': 'min'}),
+            (DIP, {'dtype': 'float64', 'axes': [FREQUENCY]}, {'low': 1.05e9, 'high': 1.07e9, 'peak': 'min'}),
+            (cube, {'dtype': 'float64', 'shape': [6, 7, 50], 'axes': [{'name': 'a'}, {'name': 'b'}, {'name': 'c'}]},
+             {'along': 'c', 'at': {'a': 4, 'b': 2}, 'peak': 'max'}),
         ]
         compared = 0
         for values, description, options in cases:
@@ -273,6 +303,7 @@ class ViewCase(unittest.TestCase):
                     self.assertEqual(native['buckets'][key], python['buckets'][key], key)
                 for a, b in zip(native['buckets']['mean'], python['buckets']['mean']):
                     self.assertTrue(a is b is None or abs(a - b) <= 1e-9 * max(1.0, abs(b)))
+                self.assertEqual(native.get('peak'), python.get('peak'))
         # The chunks of a stream: the same values split across files at arbitrary byte boundaries.
         holder, path = saved(folder, nan_trace, {'dtype': 'float64'})
         payload, parts = path.read_bytes(), []
@@ -317,10 +348,11 @@ class ServiceViewCase(unittest.TestCase):
         self.assertEqual(len(seen['envelope']['min']), 8)
         zoomed = self.client.read_array(sweep['id'], low=1.0598e9, high=1.0602e9)
         self.assertEqual(zoomed['values'], DIP[598:603])
+        self.assertEqual(self.client.read_array(sweep['id'], peak='min', points=2)['peak']['center'], 1.06e9)
         printed = subprocess.check_output([sys.executable, '-m', 'ai4instruments.iop', '--endpoint', self.client.endpoint,
-                                           'array', sweep['id'], '--low', '1.0598e9', '--high', '1.0602e9'],
+                                           'array', sweep['id'], '--low', '1.0598e9', '--high', '1.0602e9', '--peak', 'min'],
                                           env=dict(os.environ, IOP_TOKEN=self.config['token']), text=True)
-        self.assertEqual(json.loads(printed)['values'], DIP[598:603])
+        self.assertEqual((json.loads(printed)['values'], json.loads(printed)['peak']['center']), (DIP[598:603], 1.06e9))
         with self.assertRaisesRegex(IOPError, "several arrays.*'items.trace', 'items.reference'"):
             self.client.read_array(pair['id'])
         self.assertEqual(self.client.read_array(pair['id'], 'items.reference', points=2)['envelope']['max'], [1.0, 1.0])
@@ -337,7 +369,7 @@ class ServiceViewCase(unittest.TestCase):
         self.assertIn('read_array', mcp.TOOLSETS['experiments'])
         # The schema field is inputSchema in MCP SDK 1.x and input_schema in 2.x.
         schema = getattr(tools['read_array'], 'input_schema', None) or tools['read_array'].inputSchema
-        self.assertTrue({'operation_id', 'field', 'along', 'at', 'start', 'stop', 'low', 'high', 'points'}
+        self.assertTrue({'operation_id', 'field', 'along', 'at', 'start', 'stop', 'low', 'high', 'points', 'peak'}
                         <= set(schema['properties']))
         self.assertIn('read_array', tools['operation_result'].description)
 
@@ -401,7 +433,8 @@ class Resonator(Driver):
 
 LOCATE = {'id': 'resonance.locate', 'layer': 'standard', 'description': 'Sweep and locate the resonance dip',
           'steps': [{'id': 'sweep', 'device': 'resonator', 'operation': 'sweep'}],
-          'result': {'f0': {'step': 'sweep', 'view': {}, 'path': ['summary', 'min_at']},
+          'result': {'f0': {'step': 'sweep', 'view': {'peak': 'min'}, 'path': ['peak', 'center']},
+                     'width': {'step': 'sweep', 'view': {'peak': 'min'}, 'path': ['peak', 'width']},
                      'depth': {'step': 'sweep', 'view': {}, 'path': ['summary', 'min']}}}
 
 
@@ -465,6 +498,7 @@ class DerivedValueCase(unittest.TestCase):
         with self.client.start_experiment(resources=['resonator']) as run:
             found = run.call('resonance.locate')
         self.assertAlmostEqual(found['f0'], 1.06e9)
+        self.assertAlmostEqual(found['width'], 4e6, delta=1e4)
         self.assertAlmostEqual(found['depth'], 0.2)
         # A later step receives the value; the sweep keeps what was derived from it.
         follow = self.client.submit([
@@ -477,7 +511,7 @@ class DerivedValueCase(unittest.TestCase):
         self.assertAlmostEqual(result['find']['f0'], 1.06e9)
         self.assertEqual(result['band']['value'], 1.0e9)
         sweep = next(op for op in follow.operations()['operations'] if op['step'] == 'find.sweep')
-        self.assertEqual(len(sweep['derived']), 3)
+        self.assertEqual(len(sweep['derived']), 4)
         # A view that cannot be read fails the step that needs it, with the reason.
         failing = self.client.submit([
             {'id': 'sweep', 'device': 'resonator', 'operation': 'sweep'},

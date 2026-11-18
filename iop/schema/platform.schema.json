@@ -568,7 +568,7 @@
     },
     "view": {
       "type": "object",
-      "description": "Read the value from a view of an array the step returned: field, along, at, start, stop, low, high, points; path then selects inside the view. Along two axes, a map, along names both and the others give one value per axis (see docs/runtime/drivers.md, Reading arrays)",
+      "description": "Read the value from a view of an array the step returned: field, along, at, start, stop, low, high, points, peak; path then selects inside the view. Along two axes, a map, along names both and the others give one value per axis. peak max, or min for a dip, finds the line: path [\"peak\", \"center\"] or [\"peak\", \"width\"] (see docs/runtime/drivers.md, Reading arrays)",
       "additionalProperties": false,
       "properties": {
         "field": {
@@ -656,6 +656,12 @@
             "minimum": 1,
             "maximum": 2000
           }
+        },
+        "peak": {
+          "enum": [
+            "max",
+            "min"
+          ]
         }
       }
     },

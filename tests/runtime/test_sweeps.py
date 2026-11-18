@@ -164,6 +164,8 @@ class SweepCase(unittest.TestCase):
         self.assertEqual(result['fine']['power']['data']['axes'], [{'name': 'angle', 'start': -2, 'stop': 8, 'unit': 'deg'}])
         self.assertEqual(result['fine']['angle']['values'], list(range(-2, 9)))
         self.assertEqual(run.read_array('fine.power')['summary']['max_at'], 0)
+        # The line through the coarse points has its center between them, by the true peak.
+        self.assertAlmostEqual(run.read_array('coarse.power', peak='max')['peak']['center'], 0, delta=0.2)
         self.assertEqual(result['settle']['angle_actual']['values'], [-0.25, 0, 0.25])
         # Each point records the range it read and the value it took.
         turned = {op['step']: op for op in run.info()['operation_records']}['fine.4.turn']

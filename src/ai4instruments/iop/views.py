@@ -1,11 +1,13 @@
-"""Views of saved arrays: statistics, an envelope along one axis or a map along two, and exact values in
-a window.
+"""Views of saved arrays: statistics, an envelope along one axis or a map along two, exact values in a
+window, and the line at a peak or a dip.
 
 A trace, spectrum, image or buffer is read without moving all of its values. One axis is followed, or
 two for a map; every other axis is either fixed with ``at`` or summarized. A last axis of ``re``/``im``
-pairs is read as ``abs`` unless ``at`` chooses ``re``, ``im`` or ``arg``. iop-execd computes the view
-in its own process; without it, Python computes the same view when the elements read stay within
-``PYTHON_LIMIT``.
+pairs is read as ``abs`` unless ``at`` chooses ``re``, ``im`` or ``arg``. Along one axis with the others
+fixed, ``peak`` finds the line at the highest value, or the lowest for a dip: its center between samples,
+its value, the opposite extreme as its base, and its width where it is halfway to the base. iop-execd
+computes the view in its own process; without it, Python computes the same view when the elements read
+stay within ``PYTHON_LIMIT``.
 """
 import array
 import itertools
@@ -131,10 +133,10 @@ def _short(value):
     return None if value is None else float(f'{value:.7g}')
 
 
-def plan(data, along=None, at=None, start=None, stop=None, low=None, high=None, points=POINTS):
+def plan(data, along=None, at=None, start=None, stop=None, low=None, high=None, points=POINTS, peak=None):
     """Resolve axis names, labels and coordinates into the request iop-execd and Python compute. ``along``
     names one axis, or a list of two for a map; start, stop, low and high then give one value per axis
-    (None for none) and points a number for each axis or for both."""
+    (None for none) and points a number for each axis or for both. ``peak`` is max or min."""
     shape, axes = list(data['shape']), list(data.get('axes') or [])
     if len(axes) != len(shape) or any(not isinstance(a, dict) or not isinstance(a.get('name'), str) for a in axes):
         axes = []
@@ -212,6 +214,12 @@ def plan(data, along=None, at=None, start=None, stop=None, low=None, high=None, 
         request['complex'] = complex_mode
     summarized = [named(i) for i in range(len(shape)) if i not in fixed and i not in followed
                   and not (i == component and complex_mode)]
+    if peak is not None:
+        if peak not in ('max', 'min'):
+            raise ValueError('peak is max, or min for a dip')
+        if len(followed) > 1 or summarized:
+            raise ValueError('A peak is read along one axis; fix the others with at: ' + ', '.join(map(str, summarized)))
+        request['peak'] = peak
     return request, {'axes': axes, 'coordinates': coordinates, 'at': shown, 'summarized': summarized, 'fixed': fixed}
 
 
@@ -309,6 +317,7 @@ def python(request, values=None):
         else:
             seq = list(map(float, flat[first:end:step]))
         counted = [bounds[b + 1] - bounds[b] for b in range(points)]
+        line = _line(seq, start, request['peak']) if request.get('peak') else None
         clean = math.isfinite(sum(seq))
         parts = [seq[bounds[b] - start:bounds[b + 1] - start] for b in range(points)]
         if not clean:
@@ -327,7 +336,8 @@ def python(request, values=None):
         return {'count': n, 'finite': finite, **stats,
                 'buckets': {'start': [bounds[:-1]], 'count': counted, 'finite': [len(p) for p in parts],
                             'min': [min(p) if p else None for p in parts], 'max': [max(p) if p else None for p in parts],
-                            'mean': [math.fsum(p) / len(p) if p else None for p in parts]}}
+                            'mean': [math.fsum(p) / len(p) if p else None for p in parts]},
+                **({'peak': line} if request.get('peak') else {})}
 
     # Several elements per position, or two axes followed: walk the slabs read in storage order, as iop-execd does.
     count = finite = 0
@@ -375,6 +385,79 @@ def python(request, values=None):
                         'mean': [b[4] / b[1] if b[1] else None for b in buckets]}}
 
 
+def _finite(value):
+    return value if math.isfinite(value) else None
+
+
+def _line(seq, first, peak):
+    """The line at the extreme of a trace that starts at position ``first``, as iop-execd finds it: the first
+    highest value (lowest for a dip) and its position, refined between its neighbours by the parabola through
+    the three; the opposite extreme as the base; and the positions, interpolated, where the trace on either
+    side first falls halfway from the line's value to the base. Values that are not finite are passed over."""
+    sign = 1.0 if peak == 'max' else -1.0
+    top, base = None, math.nan
+    for i, y in enumerate(seq):
+        if math.isfinite(y):
+            if top is None or sign * y > sign * seq[top]:
+                top = i
+            if math.isnan(base) or sign * y < sign * base:
+                base = y
+    if top is None:
+        return None
+    i, y1 = top, seq[top]
+    offset, value = 0.0, y1
+    if 0 < i < len(seq) - 1 and math.isfinite(seq[i - 1]) and math.isfinite(seq[i + 1]):
+        y0, y2 = seq[i - 1], seq[i + 1]
+        curvature = y0 - 2.0 * y1 + y2
+        if curvature != 0.0:
+            offset = 0.5 * (y0 - y2) / curvature
+            value = y1 - 0.25 * (y0 - y2) * offset
+    half = (value + base) / 2.0
+
+    def crossing(positions):
+        # From the line outward, the first value at or past half height, between it and the last one inside.
+        if sign * (value - base) <= 0.0:
+            return None
+        inside = i
+        for j in positions:
+            y = seq[j]
+            if not math.isfinite(y):
+                continue
+            if sign * (y - half) > 0.0:
+                inside = j
+                continue
+            return _finite((first + j) + (half - y) / (seq[inside] - y) * (inside - j))
+        return None
+    return {'index': first + i, 'position': _finite((first + i) + offset), 'value': _finite(value),
+            'base': _finite(base), 'left': crossing(range(i - 1, -1, -1)), 'right': crossing(range(i + 1, len(seq)))}
+
+
+def _between(coordinates, position):
+    """The coordinate at a position that may lie between two, on the straight line through theirs."""
+    if not isinstance(coordinates, list):
+        start, step = coordinates
+        return start + position * step
+    if len(coordinates) == 1:
+        return coordinates[0]
+    lower = min(max(math.floor(position), 0), len(coordinates) - 2)
+    return coordinates[lower] + (position - lower) * (coordinates[lower + 1] - coordinates[lower])
+
+
+def _peak(found, coordinates):
+    """A line found in positions, given in the coordinates of its axis when it has them: its center, the width
+    between where it is at half height on either side, those two, its value and its base."""
+    place = (lambda p: p) if coordinates is None else (lambda p: _between(coordinates, p))
+    center = place(found['position'])
+    sides = [place(found[side]) for side in ('left', 'right') if found[side] is not None]
+    line = {'center': center}
+    if len(sides) == 2:
+        line['width'] = abs(sides[1] - sides[0])
+    for side in sorted(sides):
+        line['low' if side < center else 'high'] = side
+    line.update(value=found['value'], base=found['base'], index=found['index'])
+    return line
+
+
 def _flatten(values):
     if isinstance(values, list):
         for item in values:
@@ -384,20 +467,21 @@ def _flatten(values):
 
 
 def view(holder, source=None, along=None, at=None, start=None, stop=None, low=None, high=None, points=POINTS,
-         field='', use_native=True):
+         peak=None, field='', use_native=True):
     """What one array says: a summary, and exact values when each position holds one element within
     ``points`` positions, otherwise the minimum, maximum and mean of ``points`` buckets of positions. Along
-    two axes, the same over a map of buckets.
+    two axes, the same over a map of buckets. With ``peak``, the line at the highest or lowest value.
 
     ``source`` is the file that holds the array, or ``[[path, size], ...]`` for the chunks of a stream or
     the files of a sweep's points; without it the inline values are read.
     """
     data = holder['data']
-    request, context = plan(data, along, at, start, stop, low, high, points)
+    request, context = plan(data, along, at, start, stop, low, high, points, peak)
     if source is not None:
         request['segments'] = source if isinstance(source, list) else [[str(source), Path(source).stat().st_size]]
         computed = native(request) if use_native else None
-        if computed is None:
+        if computed is None or peak is not None and 'peak' not in computed:
+            # An iop-execd that does not find lines leaves them to Python.
             computed = python(request)
     else:
         inline = holder.get('values')
@@ -450,6 +534,8 @@ def view(holder, source=None, along=None, at=None, start=None, stop=None, low=No
     result = {'field': field, 'dtype': data['dtype'], 'shape': data['shape'], **({'unit': unit} if unit else {}),
               'along': following[0] if one else following, **({'at': context['at']} if context['at'] else {}),
               **({'summarized': context['summarized']} if context['summarized'] else {}), 'summary': summary}
+    if computed.get('peak'):
+        result['peak'] = _peak(computed['peak'], context['coordinates'][0])
     sizes = [len(starts) for starts in buckets['start']]
     shaped = (lambda values: values) if one else (lambda values: _nest(values, sizes))
     if exact:
@@ -498,12 +584,12 @@ def options(query):
             at = json.loads(query['at'])
         except ValueError:
             raise ValueError('at is a JSON object that maps axes to an index or a label') from None
-    unknown = set(query) - {'field', 'along', 'at', 'start', 'stop', 'low', 'high', 'points'}
+    unknown = set(query) - set(OPTIONS)
     if unknown:
         raise ValueError('Unknown view options: ' + ', '.join(sorted(unknown)))
     return {'field': query.get('field'), 'along': value('along', None), 'at': at, 'start': value('start', int),
             'stop': value('stop', int), 'low': value('low', float), 'high': value('high', float),
-            'points': value('points', int) if 'points' in query else POINTS}
+            'points': value('points', int) if 'points' in query else POINTS, 'peak': query.get('peak')}
 
 
 def _source(holder, folder=None, output=None):
@@ -646,7 +732,7 @@ def result_npy(engine, run_id, request_id=None, field=None):
 # A step binding or a saved operation's named result can take its value through a view of an array:
 # {"step": ..., "view": {...}, "path": [...]} reads path inside the view. These views are computed
 # once, when the operation that returned the array completes, and kept in its record as "derived".
-OPTIONS = ('field', 'along', 'at', 'start', 'stop', 'low', 'high', 'points')
+OPTIONS = ('field', 'along', 'at', 'start', 'stop', 'low', 'high', 'points', 'peak')
 
 
 def check(value, what):
@@ -654,10 +740,12 @@ def check(value, what):
     if not isinstance(value, dict) or set(value) - set(OPTIONS):
         raise ValueError(f'{what}: view takes ' + ', '.join(OPTIONS))
     kinds = {'field': (str,), 'along': (str, int), 'at': (dict,), 'start': (int,), 'stop': (int,),
-             'low': (int, float), 'high': (int, float), 'points': (int,)}
+             'low': (int, float), 'high': (int, float), 'points': (int,), 'peak': (str,)}
+    if value.get('peak', 'max') not in ('max', 'min'):
+        raise ValueError(f'{what}: view peak is max, or min for a dip')
     for key, item in value.items():
-        # Along two axes, the options other than field and at give one value per axis.
-        items = item if isinstance(item, list) and key not in ('field', 'at') else [item]
+        # Along two axes, the options other than field, at and peak give one value per axis.
+        items = item if isinstance(item, list) and key not in ('field', 'at', 'peak') else [item]
         if any(isinstance(i, bool) or not (isinstance(i, kinds[key]) or i is None and key in ('start', 'stop', 'low', 'high'))
                for i in items) or not items:
             raise ValueError(f'{what}: view {key} has the wrong type')

@@ -104,6 +104,12 @@ The reply holds `summary` (count, minimum and maximum with their index and coord
  "envelope": {"position": [0, 16, ...], "coordinate": [1.0e9, 1.0016e9, ...], "min": [...], "max": [...], "mean": [...]}}
 ```
 
+`peak` finds the line at the highest value along one axis, the others fixed with `at`, or with `min` the dip at the lowest. `center` lies between samples, at the vertex of the parabola through the extreme and its two neighbours; `base` is the opposite extreme of the selection; `low` and `high` are where the trace, going out from the line, first comes halfway from its `value` to the base, interpolated between samples, and `width` is the distance between them: the full width at half maximum, of a dip measured from its base. Positions are in the unit of the axis, `value` and `base` in that of the array. When a trace holds several lines, select one with the view's `low` and `high`. / `peak` 沿一个轴（其余的轴用 `at` 固定）找出最高处的谱线，`min` 则找最低处的凹陷。`center` 位于采样点之间，是极值点与两侧相邻点所定抛物线的顶点；`base` 是所选范围内另一端的极值；`low`、`high` 是从谱线向两侧、数值第一次到达 `value` 与 `base` 中点的位置（在采样点间插值），`width` 是两者之差，即半高全宽，凹陷从其基线算起。位置以该轴的单位给出，`value`、`base` 以数组的单位给出。一条迹线有多条谱线时，用视图的 `low`、`high` 选出一条。
+
+```json
+{"peak": {"center": 1.06e9, "width": 3.996e6, "low": 1.058e9, "high": 1.062e9, "value": 0.2, "base": 0.999, "index": 600}}
+```
+
 Saved operations and step bindings can take a value through a view, such as the frequency of a resonance; see [operations](operations.md). A data stream of a numeric format reads the same way, as samples by channels; see [continuous data](../../iop/continuity.md#continuous-data). `GET /v1/runs/{id}/array` reads an array an experiment's result holds, such as what a [sweep](operations.md#sweeps--扫描) gathered, and with `request_id` one in the results of a batch. / 已保存操作和步骤绑定也可以经视图取值，例如谐振频率，见[操作](operations.md)。数值格式的数据流同样可读，形状为“采样 × 通道”，见[连续数据](../../iop/continuity.zh-CN.md#连续数据)。`GET /v1/runs/{id}/array` 读取实验结果中的数组，例如[扫描](operations.md#sweeps--扫描)汇集的数组；加 `request_id` 则读取某个批次结果中的数组。
 
 The whole array comes as a NumPy `.npy` file, which `numpy.load` reads: `GET /v1/operations/{id}/array.npy`, `/v1/runs/{id}/array.npy` and `/v1/runs/{id}/streams/{name}/array.npy`, `array_file` in Python and `arrayFile` in TypeScript. A last axis of re/im pairs becomes complex values, a stream gives its whole samples by channels, and a map a sweep gathered from its points' files is read from them in order. / 整个数组以 NumPy `.npy` 文件取得，`numpy.load` 可直接读取：上述三个路径加 `.npy`，Python 的 `array_file`，TypeScript 的 `arrayFile`。最后一维为 re/im 时成为复数；数据流给出完整的“采样 × 通道”；扫描由各点文件汇集的二维图按顺序从这些文件读出。
