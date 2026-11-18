@@ -3,6 +3,7 @@ import copy
 import json
 import time
 import uuid
+from collections import deque
 from . import library, platforms
 from .resources import QueueFull
 from .store import dumps
@@ -113,11 +114,16 @@ def describe(engine, run_id, request_id, wait=0):
         if row is None:
             raise KeyError(request_id)
         batch = json.loads(row[0])
+        # A finished operation stays finished: each change rereads only from the first unfinished one,
+        # so waiting on a batch of N operations costs O(N) reads in total rather than O(N) per change.
+        unfinished = deque(batch['operation_ids'])
         while True:
-            operations = [engine.store.get('operations', oid) for oid in batch['operation_ids']]
-            pending = any(op['state'] in {'queued', 'running'} for op in operations)
+            while unfinished and engine.store.get('operations', unfinished[0])['state'] not in {'queued', 'running'}:
+                unfinished.popleft()
             remaining = deadline - time.monotonic()
-            if not pending or remaining <= 0:
+            if not unfinished or remaining <= 0:
+                operations = [engine.store.get('operations', oid) for oid in batch['operation_ids']]
+                pending = any(op['state'] in {'queued', 'running'} for op in operations)
                 receipt = {'request_id': request_id, 'run_id': run_id, 'complete': not pending, 'operations': operations}
                 if batch.get('calls'):
                     # The named result of each saved operation used in this batch.
