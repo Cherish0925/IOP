@@ -56,7 +56,7 @@ Experiments name their conditions with `requires`. The Runtime checks their reco
 
 An instrument's own conditions, such as warm-up, overload or reference lock, belong to its record and can come with its model description, so every instrument of that model starts with them; platform conditions build on them.
 
-A platform that declares `upkeep` is kept by the Runtime: while its instruments are idle, it observes what is unknown, due, about to expire or forecast to drift out of tolerance, and corrects what drifted. Each automatic pass is recorded with its reasons and never runs a step that asks a person. See [operating conditions](docs/runtime/conditions.md).
+A platform that declares `upkeep` is kept by the Runtime: while its instruments are idle, it observes what is unknown, due, about to expire or forecast to drift out of tolerance, and corrects what drifted. Each automatic pass is recorded with its reasons and never runs a step that asks a person. A continuous experiment or program can declare `upkeep` for the conditions it requires: the Runtime then restores them inside the experiment before its operations and renews them between operations. See [operating conditions](docs/runtime/conditions.md).
 
 ## Research and learning
 

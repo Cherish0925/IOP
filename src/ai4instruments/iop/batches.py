@@ -43,8 +43,10 @@ def submit(engine, run_id, steps, request_id, maintenance=False):
         if len(engine.operations) + len(steps) > int(engine.config.get('max_active_operations', 100000)):
             raise QueueFull('The service has reached its configured number of active operations')
         required = sorted(set([] if maintenance else run.get('requires', [])) | set(engine.conditions.required({}, calls)))
-        if required:
-            # Work continues only while what it relies on holds; a pass of maintenance restores it.
+        relied = {}
+        # Work continues only while what it relies on holds; a pass of maintenance restores it. An experiment
+        # that declares upkeep has the pass started here, and these operations wait for it.
+        if required and (maintenance or not engine.conditions.keep(run, required)):
             relied = engine.conditions.require(required, run_id)
         operations = [engine._operation(run_id, step) for step in steps]
         for op, step in zip(operations, steps):

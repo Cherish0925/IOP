@@ -151,6 +151,52 @@ class UpkeepCase(unittest.TestCase):
                              {'source.stable': 'forecast reaches the tolerance'})
             saved['forecast'] = None
 
+    def test_an_experiment_keeps_what_it_relies_on_before_its_operations(self):
+        # Only the operations of the experiment start passes here, not the periodic plan.
+        self.engine.config['upkeep_interval_s'] = 3600
+        self.client.configure_platform(chain(SOURCE, {**PATH, 'valid_for': 0.4}, keep=False))
+        # Not yet observed: the experiment is accepted and its conditions are brought up inside it first.
+        experiment = self.client.start_experiment(platform='chain', resources=['source', 'coupler', 'detector'],
+                                                  requires=['path.aligned'], upkeep=True)
+        read = [{'id': 'read', 'device': 'detector', 'operation': 'read'}]
+        self.assertEqual(experiment.batch(read)[0]['result']['signal'], 1.0)
+        # The validity ran out and the coupling drifted: the next operation waits while the Runtime restores it.
+        time.sleep(0.45)
+        WORLD['alignment'] = 0.5
+        self.assertEqual(experiment.batch(read)[0]['result']['signal'], 1.0)
+        info = experiment.info()
+        upkept = [op for op in self.client.request(f'/v1/runs/{experiment.id}/operations')['operations'] if op.get('maintenance')]
+        self.assertIn('coupler', {op['device'] for op in upkept})
+        self.assertEqual(info['in_doubt']['path.aligned']['outcome'], 'drifted')
+        experiment.finish()
+
+    def test_between_operations_an_experiment_renews_its_conditions_ahead_of_time(self):
+        self.client.configure_platform(chain(SOURCE, {**PATH, 'valid_for': 1.0}, keep=False))
+        self.client.maintain('chain')
+        experiment = self.client.start_experiment(platform='chain', resources=['source', 'coupler', 'detector'],
+                                                  requires=['path.aligned'], upkeep={'ahead_s': 0.6})
+        experiment.batch([{'id': 'read', 'device': 'detector', 'operation': 'read'}])
+        first = self.client.condition('path.aligned')['accepted']
+        self.until(lambda: self.client.condition('path.aligned')['accepted'] != first)
+
+        def finished():
+            row = next((r for r in self.client.upkeep() if r.get('run') == experiment.id), {})
+            return row.get('last') if row.get('last', {}).get('state') not in (None, 'running') else None
+        renewal = self.client.request('/v1/maintenance/' + self.until(finished)['id'])
+        self.assertEqual((renewal['run_id'], renewal['automatic'], renewal['reasons']),
+                         (experiment.id, True, {'path.aligned': 'validity ends'}))
+        experiment.finish()
+
+    def test_an_experiment_that_keeps_its_conditions_reserves_what_maintenance_uses(self):
+        self.client.configure_platform(chain(SOURCE, PATH, keep=False))
+        from ai4instruments.iop import IOPError
+        with self.assertRaisesRegex(IOPError, 'name them in requires'):
+            self.client.start_experiment(platform='chain', resources=['detector'], upkeep=True)
+        with self.assertRaises(IOPError) as refused:
+            self.client.start_experiment(platform='chain', resources=['detector'], requires=['path.aligned'], upkeep=True)
+        self.assertEqual((refused.exception.code, sorted(refused.exception.details['resources'])),
+                         ('maintenance_resources', ['device:coupler', 'device:source']))
+
     def test_settings_are_checked(self):
         self.assertEqual(upkeep({}, ['a']), {'conditions': ['a'], 'ahead_s': 0.0, 'retry_s': 1800.0, 'correct': True})
         for value, message in (({'conditions': ['b']}, 'name conditions of this platform'), ({'ahead_s': -1}, 'duration'),

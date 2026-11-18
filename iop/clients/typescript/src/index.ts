@@ -15,7 +15,7 @@ export type Condition = {
 export type ConditionState = { id: string; platform?: string; device?: string; description: string; kind?: string; after: string[]; state: 'holds' | 'due' | 'lost' | 'unknown'; reason?: string; value?: unknown; verified?: string; valid_until?: string; [key: string]: unknown };
 /** Declared on a platform: the Runtime maintains these conditions when the platform is idle. */
 export type Upkeep = { conditions?: string[]; ahead_s?: number; retry_s?: number; correct?: boolean };
-export type UpkeepStatus = { platform: string; upkeep: Required<Upkeep>; next: string | null; pending: Record<string, string>; waiting?: string; last?: { id: string; state: string; started: string; ended?: string; holds?: boolean; run_id: string } };
+export type UpkeepStatus = { platform?: string; run?: string; upkeep: Partial<Upkeep>; next: string | null; pending: Record<string, string>; waiting?: string; last?: { id: string; state: string; started: string; ended?: string; holds?: boolean; run_id: string } };
 export type Maintenance = { id: string; platform: string | null; device?: string; state: string; complete: boolean; holds?: boolean; run_id: string; report: { condition: string; result: 'held' | 'verified' | 'corrected' | 'lost' | 'blocked'; value?: unknown; by?: string; found?: string }[]; error?: string };
 export type PlatformDefinition = {
   schema_version: 1; id: string; name?: string; description?: string; devices: string[];
@@ -33,7 +33,7 @@ export type ArtifactRecord = { id: string; run_id: string; name: string; size: n
 export type Event = { sequence: number; kind: string; run_id?: string; [key: string]: unknown };
 export type ManualTask = { operation_id: string; run_id: string | null; device: string; operation: string; instruction: string; arguments: Record<string, unknown>; readings: Record<string, Record<string, unknown>>; created: string };
 export type RunUpdates = { run: RunRecord; changes: Event[]; operations: OperationRecord[]; cursor: number; has_more: boolean };
-export type Submission = { name?: string; project?: string; experiment?: string; platform?: string; resources?: string[]; requirements?: Record<string, number>; parameters?: Record<string, unknown>; request_id?: string; requires?: string[] };
+export type Submission = { name?: string; project?: string; experiment?: string; platform?: string; resources?: string[]; requirements?: Record<string, number>; parameters?: Record<string, unknown>; request_id?: string; requires?: string[]; upkeep?: boolean | Omit<Upkeep, 'conditions'> };
 export class IOPError extends Error {
   constructor(message: string, readonly status: number, readonly details: Record<string, unknown> = {}) { super(message); this.name = 'IOPError'; }
   get code() { return this.details.code as string | undefined; }

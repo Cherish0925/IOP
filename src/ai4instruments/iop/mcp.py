@@ -282,11 +282,12 @@ def create_server(client, *, http=False, selection=None):
     @tool()
     def start_experiment(request_id: str, name: str = 'Experiment', platform: str | None = None,
                          resources: list[str] | None = None, parameters: dict | None = None,
-                         requirements: dict[str, int] | None = None, requires: list[str] | None = None) -> dict:
-        """Start one experiment for successive agent decisions. Reserve all mutually dependent devices up front. The run stays open across connections until finished or cancelled. requires names the conditions it relies on (operating_conditions lists them): operations are accepted while they hold, and operating_conditions(maintain=true, run_id=...) restores them."""
+                         requirements: dict[str, int] | None = None, requires: list[str] | None = None,
+                         upkeep: bool = False) -> dict:
+        """Start one experiment for successive agent decisions. Reserve all mutually dependent devices up front. The run stays open across connections until finished or cancelled. requires names the conditions it relies on (operating_conditions lists them): operations are accepted while they hold, and operating_conditions(maintain=true, run_id=...) restores them. upkeep=true has the Runtime keep those conditions inside the experiment: before and between operations it maintains what is due or about to expire."""
         return client.start_experiment(request_id=request_id, name=name, platform=platform,
-                                       resources=resources or [], parameters=parameters,
-                                       requirements=requirements, requires=requires or ()).info(details=False)
+                                       resources=resources or [], parameters=parameters, requirements=requirements,
+                                       requires=requires or (), upkeep=upkeep or None).info(details=False)
 
     @tool()
     def invoke_operation(run_id: str, device: str, operation: str, request_id: str,

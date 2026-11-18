@@ -863,6 +863,7 @@ class Engine:
                 "device_revision":self.descriptions[device_id].get('revision'), **recorded}
 
     def submit(self, spec, package=None):
+        from .errors import RequestError
         with self.lock:
             if self.stopping:
                 raise ValueError("Service is stopping")
@@ -932,9 +933,25 @@ class Engine:
             if len(self.operations) + len(operations) > int(self.config.get('max_active_operations', 100000)):
                 raise QueueFull('The service has reached its configured number of active operations')
             required = self.conditions.required(spec, run.get('calls'), program)
+            if 'upkeep' in spec:
+                from .conditions import experiment_upkeep
+                if kind == 'workflow' or not required:
+                    raise ValueError('upkeep keeps the conditions a continuous experiment or program requires; name them in requires')
+                run['upkeep'] = experiment_upkeep(spec['upkeep'])
+                amounts, _ = self.conditions.requirements(required)
+                missing = {k: n for k, n in amounts.items() if n > self._amounts(run, reserve=True).get(k, 0)}
+                if missing:
+                    raise RequestError('maintenance_resources', 'Reserve the devices and resource quantities used by '
+                                       'maintenance when starting an experiment that keeps its conditions.', resources=missing)
             if required:
                 # The experiment is accepted only while what it relies on holds; the record keeps what that was.
-                run['conditions'] = self.conditions.require(required)
+                # One that keeps its conditions is accepted, and keeps them before its first operation.
+                try:
+                    run['conditions'] = self.conditions.require(required)
+                except RequestError as error:
+                    if error.code != 'conditions_not_held' or 'upkeep' not in run:
+                        raise
+                    run['conditions'] = {}
                 run['requires'] = required
                 for op in operations:
                     op['requires'] = required
@@ -963,6 +980,8 @@ class Engine:
             self.operations.update({op["id"]:op for op in operations})
             self._index_run(run)
             self.conditions.rely(run_id, required)
+            if run.get('upkeep'):
+                self.conditions.keep(run, required)
             self.wake.set()
             return json.loads(dumps(run))
 
@@ -1008,7 +1027,7 @@ class Engine:
                 raise ValueError("Operations require an active external experiment or running package")
             if len(self.operations) >= int(self.config.get('max_active_operations', 100000)):
                 raise QueueFull('The service has reached its configured number of active operations')
-            if run.get('requires'):
+            if run.get('requires') and not self.conditions.keep(run, run['requires']):
                 self.conditions.require(run['requires'], run_id)
             op = self._operation(run_id, step)
             if run.get('requires'):

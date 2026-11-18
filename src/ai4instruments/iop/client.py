@@ -294,25 +294,29 @@ class Client:
                    **({'requires': list(requires)} if requires else {})})['id'])
 
     def start_experiment(self, *, name='Experiment', project=None, experiment=None, resources=(),
-                         request_id=None, parameters=None, platform=None, requirements=None, requires=()):
+                         request_id=None, parameters=None, platform=None, requirements=None, requires=(), upkeep=None):
         """Start one externally driven run; retain its ID and call finish after saving results.
 
         ``requires`` names the conditions the experiment relies on: its operations are accepted
-        while they hold, and ``run.maintain()`` restores them when one is due.
+        while they hold, and ``run.maintain()`` restores them when one is due. With ``upkeep`` (True, or
+        ``{ahead_s, retry_s, correct}``) the Runtime keeps them: before an operation and between
+        operations it maintains what is due or about to expire, inside this experiment. Reserve the
+        devices that maintenance uses.
         """
         return Run(self, self.request('/v1/runs', {'kind':'external', 'name':name, 'project':project,
                    'experiment':experiment, 'resources':list(resources), 'parameters':parameters or {},
                    'platform':platform, 'requirements':requirements or {},
                    'request_id':request_id or str(uuid.uuid4()),
-                   **({'requires': list(requires)} if requires else {})})['id'])
+                   **({'requires': list(requires)} if requires else {}),
+                   **({'upkeep': upkeep} if upkeep else {})})['id'])
 
-    def submit_package(self, path, *, name=None, project=None, experiment=None, resources=(), parameters=None, request_id=None, platform=None, requirements=None, requires=()):
+    def submit_package(self, path, *, name=None, project=None, experiment=None, resources=(), parameters=None, request_id=None, platform=None, requirements=None, requires=(), upkeep=None):
         path = Path(path)
         data = archive(path)
         run = self.request('/v1/packages', {'archive':base64.b64encode(data).decode(), 'name':name or path.stem,
                            'project':project, 'experiment':experiment, 'resources':list(resources), 'platform':platform,
                            'parameters':parameters or {}, 'requirements':requirements or {}, 'request_id':request_id or str(uuid.uuid4()),
-                           **({'requires': list(requires)} if requires else {})})
+                           **({'requires': list(requires)} if requires else {}), **({'upkeep': upkeep} if upkeep else {})})
         return Run(self, run['id'])
 
     def run(self, run_id):

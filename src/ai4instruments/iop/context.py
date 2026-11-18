@@ -159,7 +159,7 @@ def laboratory(engine, refresh=False, detail='summary'):
     # Platforms whose conditions the Runtime keeps: the next foreseen pass, what it waits for, the last one.
     upkept = engine.conditions.upkeep_status()
     if upkept:
-        result['setup']['upkeep'] = {row['platform']: {**{k: row[k] for k in ('next', 'waiting') if row.get(k)},
+        result['setup']['upkeep'] = {row.get('platform') or row['run']: {**{k: row[k] for k in ('next', 'waiting') if row.get(k)},
                                                        **({'pending': sorted(row['pending'])} if row['pending'] else {}),
                                                        **({'last': row['last']} if 'last' in row else {})}
                                      for row in upkept}

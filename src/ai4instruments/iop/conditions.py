@@ -225,6 +225,17 @@ def upkeep(value, names):
             'correct': value.get('correct', True)}
 
 
+def experiment_upkeep(value):
+    """The upkeep a continuous experiment or program declares for the conditions it requires."""
+    if value is True:
+        value = {}
+    if not isinstance(value, dict) or 'conditions' in value:
+        raise ValueError('An experiment keeps the conditions it requires: upkeep takes ahead_s, retry_s and correct')
+    settings = upkeep(value, [])
+    del settings['conditions']
+    return settings
+
+
 def instrument(device_id, definitions):
     """The conditions of one instrument, named ``<device>.<id>`` in the laboratory.
 
@@ -972,16 +983,26 @@ class Conditions:
                 except Exception as error:
                     with self.engine.lock:
                         self._wait(platform_id, f'{type(error).__name__}: {error}')
+            # Experiments that keep their own conditions are kept between their operations.
+            with self.engine.lock:
+                for run in [r for r in self.engine.runs.values() if r.get('upkeep') and r['state'] in ('queued', 'running')]:
+                    self.keep(run, run.get('requires', []))
+                for store in (self.waiting, self.attempts):
+                    for key in [k for k in store if k not in self.engine.platforms and k not in self.engine.runs]:
+                        del store[key]
 
     def plan(self, platform_id, at=None):
         """What an automatic pass would maintain now and why, and when the next one is foreseen."""
         settings = self.engine.platforms[platform_id]['definition'].get('upkeep')
         if settings is None:
             return None
+        return self._plan(settings['conditions'], settings, platform_id, at)
+
+    def _plan(self, names, settings, key, at=None):
         at = at or seconds(now())
         reasons, renew, upcoming = {}, [], []
-        attempts = self.attempts.get(platform_id, {})
-        for condition_id in settings['conditions']:
+        attempts = self.attempts.get(key, {})
+        for condition_id in names:
             if condition_id not in self.definitions:
                 continue
             state, reason = self.state(condition_id, at), None
@@ -1032,12 +1053,14 @@ class Conditions:
             return 'held resource ' + sorted(held)[0].split(':', 1)[1]
         return None
 
-    def _wait(self, platform_id, reason):
-        if self.waiting.get(platform_id) != reason:
-            self.waiting[platform_id] = reason
+    def _wait(self, key, reason):
+        """Remember what upkeep of a platform or an experiment waits for; record each new reason once."""
+        if self.waiting.get(key) != reason:
+            self.waiting[key] = reason
             if reason:
+                scope = {'platform': key} if key in self.engine.platforms else {}
                 with self.engine.store.transaction():
-                    self.engine.store.event('upkeep.waiting', platform=platform_id, reason=reason)
+                    self.engine.store.event('upkeep.waiting', None if scope else key, reason=reason, **scope)
 
     def _upkeep(self, platform_id):
         engine = self.engine
@@ -1058,19 +1081,56 @@ class Conditions:
                 self._wait(platform_id, 'waiting for ' + reason)
                 return
             self._wait(platform_id, None)
-            time = seconds(now())
-            for condition_id in targets:
-                self.attempts.setdefault(platform_id, {})[condition_id] = time
-            job = self.maintain(platform_id, targets, request_id=f'upkeep.{platform_id}.{uuid.uuid4().hex[:12]}',
-                                automatic=plan)
-            with engine.store.transaction():
-                engine.store.event('upkeep.started', job['run_id'], platform=platform_id, maintenance=job['id'],
-                                   conditions=targets)
+            self._start(platform_id, targets, plan, platform=platform_id)
+
+    def _start(self, key, targets, plan, **scope):
+        """Start an automatic pass and remember the attempt, so a failed one waits retry_s."""
+        time = seconds(now())
+        for condition_id in targets:
+            self.attempts.setdefault(key, {})[condition_id] = time
+        job = self.maintain(conditions=targets, request_id=f'upkeep.{key}.{uuid.uuid4().hex[:12]}', automatic=plan, **scope)
+        with self.engine.store.transaction():
+            self.engine.store.event('upkeep.started', job['run_id'], maintenance=job['id'], conditions=targets,
+                                    **({'platform': scope['platform']} if 'platform' in scope else {}))
+        return job
+
+    def keep(self, run, names):
+        """Inside an experiment that declares upkeep: start or join a pass when what it relies on needs one.
+
+        Returns True while a pass runs in the experiment; its other operations wait for that pass.
+        """
+        if not run.get('upkeep') or not names:
+            return False
+        if any(job['state'] == 'running' and job['run_id'] == run['id'] for job in self.jobs.values()):
+            return True
+        if self.engine.remaining.get(run['id'], 0):
+            return False
+        plan = self._plan(self.closure(names), run['upkeep'], run['id'])
+        if not plan['reasons']:
+            self._wait(run['id'], None)
+            return False
+        try:
+            self._start(run['id'], list(plan['reasons']), plan, run_id=run['id'])
+        except (ValueError, KeyError) as error:
+            self._wait(run['id'], str(error))
+            return False
+        self._wait(run['id'], None)
+        return True
 
     def upkeep_status(self, platform=None):
-        """For each platform that declares upkeep: its settings, the next foreseen pass, what it waits for, the last pass."""
+        """For each platform and active experiment that declares upkeep: its settings, the next foreseen pass,
+        what it waits for and the last pass."""
         with self.engine.lock:
             rows = []
+            for run in self.engine.runs.values():
+                if run.get('upkeep') and platform is None:
+                    plan = self._plan(self.closure(run.get('requires', [])), run['upkeep'], run['id'])
+                    last = max((j for j in self.jobs.values() if j.get('automatic') and j['run_id'] == run['id']),
+                               key=lambda j: j['started'], default=None)
+                    rows.append({'run': run['id'], 'upkeep': run['upkeep'], 'next': plan['next'], 'pending': plan['reasons'],
+                                 **({'waiting': self.waiting[run['id']]} if self.waiting.get(run['id']) else {}),
+                                 **({'last': {k: last[k] for k in ('id', 'state', 'started', 'ended', 'holds') if k in last}}
+                                    if last else {})})
             for platform_id in sorted(self.engine.platforms):
                 settings = self.engine.platforms[platform_id]['definition'].get('upkeep')
                 if settings is None or platform not in (None, platform_id):
