@@ -26,6 +26,7 @@ import {
   arrayFigure,
   arraysIn,
   mapAxes,
+  save,
 } from "./core.js";
 import { parametersHTML, parameterValues } from "./devices.js";
 let query = "",
@@ -119,11 +120,20 @@ function streamFigures(id, streams) {
           `${esc(s.name)}${channel === undefined ? "" : " · " + esc(channel)} · ${esc(s.definition.format)} · ${size(s.bytes)}`;
       return channels.length > 1
         ? channels.map((c, i) =>
-            arrayFigure(source, "", caption(String(c.name ?? i)), false, {
-              channel: i,
+            arrayFigure({
+              source,
+              caption: caption(String(c.name ?? i)),
+              at: { channel: i },
+              name: s.name,
             }),
           )
-        : [arrayFigure(source, "", caption(channels[0]?.name), false)];
+        : [
+            arrayFigure({
+              source,
+              caption: caption(channels[0]?.name),
+              name: s.name,
+            }),
+          ];
     })
     .join("");
 }
@@ -135,14 +145,13 @@ function heldFigures(id, value) {
         holder.values !== undefined || Array.isArray(data.files),
     )
     .map(([path, data]) =>
-      arrayFigure(
-        `runs/${encodeURIComponent(id)}/array`,
-        path,
-        `${esc(path)} · ${esc(data.shape.join(" × "))}${data.unit ? " · " + esc(data.unit) : ""}`,
-        true,
-        undefined,
-        mapAxes(data),
-      ),
+      arrayFigure({
+        source: `runs/${encodeURIComponent(id)}/array`,
+        field: path,
+        caption: `${esc(path)} · ${esc(data.shape.join(" × "))}${data.unit ? " · " + esc(data.unit) : ""}`,
+        keep: true,
+        map: mapAxes(data),
+      }),
     )
     .join("");
 }
@@ -161,28 +170,8 @@ function resultView(value, id) {
     )
     .join("")}</div>${jsonDetails(value)}`;
 }
-async function downloadFile(file) {
-  let handle;
-  if ("showSaveFilePicker" in window)
-    handle = await window.showSaveFilePicker({
-      suggestedName: file.name.split("/").pop(),
-    });
-  const response = await fetch("/v1/artifacts/" + encodeURIComponent(file.id), {
-    headers: { Authorization: "Bearer " + state.token },
-  });
-  if (!response.ok) throw Error(t("文件读取失败", "Could not read the file"));
-  if (handle) {
-    const writer = await handle.createWritable();
-    await response.body.pipeTo(writer);
-  } else {
-    const url = URL.createObjectURL(await response.blob()),
-      a = document.createElement("a");
-    a.href = url;
-    a.download = file.name.split("/").pop();
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 30000);
-  }
-}
+const downloadFile = (file) =>
+  save("artifacts/" + encodeURIComponent(file.id), file.name.split("/").pop());
 export async function inspectRun(id) {
   clearTimeout(detailTimer);
   const body = modal(

@@ -12,6 +12,7 @@ import itertools
 import json
 import math
 import operator
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -505,12 +506,11 @@ def options(query):
             'points': value('points', int) if 'points' in query else POINTS}
 
 
-def read(result, folder, field=None, output=None, **options):
-    """The view of an array in a result: from the file its operation saved in folder, from the files the points
-    of a sweep saved in the experiment's ``output`` folder, or from the values the record holds."""
+def _source(holder, folder=None, output=None):
+    """Where an array's bytes are, as [[path, size], ...]: the file its operation saved in folder, or the files the
+    points of a sweep saved in the experiment's ``output`` folder; None when the record holds its values."""
     from .engine import relative_path
-    field, holder = select(result or {}, field)
-    data, name, path = holder['data'], holder['data'].get('file'), None
+    data = holder['data']
     if isinstance(data.get('files'), list) and holder.get('values') is None:
         if output is None:
             raise ValueError("This array is read from the files of a sweep's points; read it with the experiment ID")
@@ -520,37 +520,127 @@ def read(result, folder, field=None, output=None, **options):
             if not path.resolve().is_relative_to(output.resolve()) or not path.is_file():
                 raise ValueError('The array file of a point of this sweep is missing')
             segments.append([str(path), size])
-        return view(holder, segments, field=field, **options)
-    if name and folder is not None:
-        path = folder / relative_path(name)
+        return segments
+    if data.get('file') and folder is not None:
+        path = folder / relative_path(data['file'])
         if not path.resolve().is_relative_to(folder.resolve()) or not path.is_file():
             raise ValueError('The array file of this operation is missing')
-    elif holder.get('values') is None:
+        return [[str(path), path.stat().st_size]]
+    if holder.get('values') is None:
         raise ValueError('This array is kept in the file of the operation that returned it; read it with that '
                          'operation ID')
-    return view(holder, path, field=field, **options)
+    return None
 
 
-def operation_array(engine, operation_id, field=None, **options):
-    """The view of an array a completed operation returned."""
+def read(result, folder, field=None, output=None, **options):
+    """The view of an array in a result: from the file its operation saved in folder, from the files the points
+    of a sweep saved in the experiment's ``output`` folder, or from the values the record holds."""
+    field, holder = select(result or {}, field)
+    return view(holder, _source(holder, folder, output), field=field, **options)
+
+
+_NPY = {'int8': 'i1', 'uint8': 'u1', 'int16': 'i2', 'uint16': 'u2', 'int32': 'i4', 'uint32': 'u4', 'int64': 'i8',
+        'uint64': 'u8', 'float32': 'f4', 'float64': 'f8'}
+
+
+def npy(holder, segments=None):
+    """A whole array as a NumPy .npy file, from these files in order or from the values the record holds: its
+    length and its bytes in pieces. A last axis of re/im pairs becomes complex values."""
+    data = holder['data']
+    kind, shape = data['dtype'], list(data['shape'])
+    order = '>' if data.get('byte_order') == 'big' else '<'
+    descr = ('|' if DTYPES[kind] == 1 else order) + _NPY[kind]
+    axes = data.get('axes') or []
+    if (kind in ('float32', 'float64') and len(shape) > 1 and shape[-1] == 2 and len(axes) == len(shape)
+            and isinstance(axes[-1], dict) and axes[-1].get('labels') == COMPONENTS):
+        shape, descr = shape[:-1], order + ('c8' if kind == 'float32' else 'c16')
+    size = math.prod(data['shape']) * DTYPES[kind]
+    if segments is None:
+        try:
+            block = array.array(_typecode(kind), [math.nan if v is None else v for v in _leaves(holder['values'])])
+        except (TypeError, OverflowError):
+            raise ValueError(f'The values this record holds are not all {kind}') from None
+        if (order == '>') != (sys.byteorder == 'big') and block.itemsize > 1:
+            block.byteswap()
+        payload = block.tobytes()
+        if len(payload) != size:
+            raise ValueError('The inline values do not match the array shape')
+    elif sum(n for _, n in segments) < size:
+        raise ValueError('The files hold fewer bytes than the array description')
+    text = "{'descr': '%s', 'fortran_order': False, 'shape': %r, }" % (descr, tuple(shape))
+    pad = -(10 + len(text) + 1) % 64
+    header = b'\x93NUMPY\x01\x00' + struct.pack('<H', len(text) + pad + 1) + text.encode('latin-1') + b' ' * pad + b'\n'
+
+    def pieces():
+        yield header
+        if segments is None:
+            yield payload
+            return
+        remaining = size
+        for path, available in segments:
+            with open(path, 'rb') as file:
+                while remaining and available:
+                    block = file.read(min(1 << 20, available, remaining))
+                    if not block:
+                        raise ValueError('A file holds fewer bytes than recorded')
+                    available -= len(block)
+                    remaining -= len(block)
+                    yield block
+            if not remaining:
+                break
+    return len(header) + size, pieces()
+
+
+def _leaves(values):
+    if isinstance(values, list):
+        for item in values:
+            yield from _leaves(item)
+    else:
+        yield values
+
+
+def _operation(engine, operation_id):
     op = engine.store.get('operations', operation_id)
     if op['state'] != 'completed':
         raise ValueError('Arrays are read from completed operations')
-    folder = engine.home / 'runs' / op['run_id'] / 'output' / 'operations' / operation_id
-    return {'operation_id': operation_id, **read(op.get('result'), folder, field, **options)}
+    return op.get('result'), engine.home / 'runs' / op['run_id'] / 'output' / 'operations' / operation_id
 
 
-def result_array(engine, run_id, request_id=None, field=None, **options):
-    """The view of an array an experiment's result holds, such as what a sweep gathered; with ``request_id``,
-    one the results of that batch hold."""
+def _held(engine, run_id, request_id=None):
     if request_id is None:
         held = engine.store.get('runs', run_id).get('result')
     else:
         from .batches import describe
         held = describe(engine, run_id, request_id).get('results')
-    output = engine.home / 'runs' / run_id / 'output'
+    return held, engine.home / 'runs' / run_id / 'output'
+
+
+def operation_array(engine, operation_id, field=None, **options):
+    """The view of an array a completed operation returned."""
+    result, folder = _operation(engine, operation_id)
+    return {'operation_id': operation_id, **read(result, folder, field, **options)}
+
+
+def operation_npy(engine, operation_id, field=None):
+    """An array a completed operation returned, as a .npy file."""
+    result, folder = _operation(engine, operation_id)
+    field, holder = select(result or {}, field)
+    return npy(holder, _source(holder, folder))
+
+
+def result_array(engine, run_id, request_id=None, field=None, **options):
+    """The view of an array an experiment's result holds, such as what a sweep gathered; with ``request_id``,
+    one the results of that batch hold."""
+    held, output = _held(engine, run_id, request_id)
     return {'run_id': run_id, **({'request_id': request_id} if request_id else {}),
             **read(held, None, field, output=output, **options)}
+
+
+def result_npy(engine, run_id, request_id=None, field=None):
+    """An array an experiment's result, or a batch's results, hold, as a .npy file."""
+    held, output = _held(engine, run_id, request_id)
+    field, holder = select(held or {}, field)
+    return npy(holder, _source(holder, None, output))
 
 
 # A step binding or a saved operation's named result can take its value through a view of an array:

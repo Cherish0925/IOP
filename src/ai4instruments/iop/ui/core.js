@@ -358,10 +358,58 @@ function chart(view) {
       : ""
   }</small>`;
 }
-// One figure per array: source is the view's path under /v1, at fixes axes such as a stream's
-// channel, and keep marks arrays that never change.
-export const arrayFigure = (source, field, caption, keep, at, map) =>
-  `<figure class="array-plot" data-array-source="${esc(source)}" data-array-field="${esc(field)}"${at ? ` data-array-at="${esc(JSON.stringify(at))}"` : ""}${map ? ` data-array-map="${esc(JSON.stringify(map))}"` : ""}${keep ? ' data-array-keep="1"' : ""}><figcaption>${caption}</figcaption><div class="array-chart"><small class="muted">${t("正在读取…", "Reading…")}</small></div></figure>`;
+// One figure per array: source is the view's path under /v1, field the array in a result, at fixes axes
+// such as a stream's channel, map names two axes to draw as a map, keep marks arrays that never change
+// and name is what the whole array is saved as.
+export const arrayFigure = ({
+  source,
+  field = "",
+  caption,
+  keep,
+  at,
+  map,
+  name,
+}) =>
+  `<figure class="array-plot" data-array-source="${esc(source)}" data-array-field="${esc(field)}" data-array-name="${esc(name || field || "array")}"${at ? ` data-array-at="${esc(JSON.stringify(at))}"` : ""}${map ? ` data-array-map="${esc(JSON.stringify(map))}"` : ""}${keep ? ' data-array-keep="1"' : ""}><figcaption><span>${caption}</span><button class="array-save" data-array-save title="${t("保存整个数组，NumPy 可直接读取", "Save the whole array for NumPy")}">${icon("download")}.npy</button></figcaption><div class="array-chart"><small class="muted">${t("正在读取…", "Reading…")}</small></div></figure>`;
+// Save a file the service sends, such as an artifact or an array as .npy, where the person chooses.
+export async function save(path, name) {
+  let handle;
+  if ("showSaveFilePicker" in window)
+    handle = await window.showSaveFilePicker({ suggestedName: name });
+  const response = await fetch("/v1/" + path, {
+    headers: { Authorization: "Bearer " + state.token },
+  });
+  if (!response.ok)
+    throw Error(
+      (await response.json().catch(() => ({}))).error ||
+        t("文件读取失败", "Could not read the file"),
+    );
+  if (handle) {
+    const writer = await handle.createWritable();
+    await response.body.pipeTo(writer);
+  } else {
+    const url = URL.createObjectURL(await response.blob()),
+      a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+  }
+}
+document.addEventListener("click", (e) => {
+  const button = e.target.closest?.("[data-array-save]"),
+    figure = button?.closest("figure");
+  if (!figure) return;
+  const field = figure.dataset.arrayField;
+  busy(button, () =>
+    save(
+      figure.dataset.arraySource +
+        ".npy" +
+        (field ? "?" + new URLSearchParams({ field }) : ""),
+      figure.dataset.arrayName + ".npy",
+    ),
+  );
+});
 // The two axes an array is drawn along as a map, an image or a sweep over two parameters: its axes of more
 // than one position other than re/im components, when there are exactly two; otherwise it is drawn as a line.
 export function mapAxes(data) {
@@ -483,14 +531,14 @@ export function operationResult(value, operationId) {
   if (found.length)
     return found
       .map(([path, data]) =>
-        arrayFigure(
-          "operations/" + encodeURIComponent(operationId) + "/array",
-          path,
-          `${esc(path || t("数组", "Array"))} · ${esc(data.dtype)} ${esc(data.shape.join(" × "))}${data.unit ? " · " + esc(data.unit) : ""}`,
-          true,
-          undefined,
-          mapAxes(data),
-        ),
+        arrayFigure({
+          source: "operations/" + encodeURIComponent(operationId) + "/array",
+          field: path,
+          caption: `${esc(path || t("数组", "Array"))} · ${esc(data.dtype)} ${esc(data.shape.join(" × "))}${data.unit ? " · " + esc(data.unit) : ""}`,
+          keep: true,
+          map: mapAxes(data),
+          name: data.file?.replace(/\.[^./]*$/, "") || path,
+        }),
       )
       .join("");
   const labels = {

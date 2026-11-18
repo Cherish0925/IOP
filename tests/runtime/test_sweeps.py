@@ -4,9 +4,11 @@ import asyncio
 import importlib.util
 import json
 import math
+import struct
 import unittest
 from ai4instruments.iop import Driver, IOPError, arrays, sweeps
 from . import test_service as fixture
+from .test_array_views import load
 
 MEASURE = {'id': 'axis.measure', 'layer': 'standard', 'description': 'Turn an axis and measure the transmitted power',
            'parameters': {'axis': {'type': 'string', 'enum': ['stage', 'aux']},
@@ -176,6 +178,12 @@ class SweepCase(unittest.TestCase):
         self.assertEqual([row.index(max(row)) for row in seen['envelope']['max']], [0, 2, 7, 12])
         # The later step took the bias that puts the line at 510 nm.
         self.assertEqual(result['tuned']['line'], 510)
+        # The whole map, from the four files, as one NumPy array; and the spectrum of one point.
+        header, data = load(run.array_file('map.spectrum'))
+        self.assertEqual((header['descr'], header['shape'], len(data)), ('<f8', (4, 2000), 4 * 2000 * 8))
+        self.assertEqual(struct.unpack_from('<d', data, (3 * 2000 + 1300) * 8)[0], 100)
+        tuned = next(op for op in run.info()['operation_records'] if op['step'] == 'tuned')
+        self.assertEqual(load(self.client.array_file(tuned['id'], 'spectrum'))[1], data[2000 * 8:2 * 2000 * 8])
 
     def test_a_saved_operation_with_a_sweep_in_a_continuous_experiment(self):
         self.client.save_operation(PEAK)

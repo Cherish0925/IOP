@@ -541,6 +541,15 @@ sys.stdout.buffer.write(b.getvalue())`,
       fullPage: true,
       style: "#toast{visibility:hidden}",
     });
+  // The whole array is saved as a NumPy file.
+  const saving = page.waitForEvent("download");
+  await page.click("#detail-operation-list [data-array-save]");
+  const saved = await saving;
+  assert.equal(saved.suggestedFilename(), "image.npy");
+  assert.match(
+    (await readFile(await saved.path())).subarray(0, 128).toString("latin1"),
+    /^\x93NUMPY[\s\S]*'descr': '<f4'[\s\S]*'shape': \(48, 64\)/,
+  );
   await page.click("#modal-close");
   // A sweep gathers what each point returned into an array over the swept parameter.
   const turned = await api("runs", {

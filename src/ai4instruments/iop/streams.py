@@ -130,16 +130,27 @@ def array(definition, size):
     return data
 
 
-def array_view(engine, run_id, name, field=None, **options):
-    """What a numeric stream says: its chunks, in order, read as one array."""
-    from .views import view
-    if field is not None:
-        raise ValueError('A stream holds one array; leave out field')
+def _array(engine, run_id, name):
+    """A numeric stream's array and the chunk files that hold it, in order."""
     definition = describe(engine, run_id, name)['definition']
     with engine.store.lock:
         rows = engine.store.db.execute('SELECT body FROM stream_chunks WHERE run_id=? AND stream=? ORDER BY sequence',
                                        (run_id, name)).fetchall()
     folder = engine.home / 'runs' / run_id
     segments = [[str(folder / chunk['name']), chunk['size']] for chunk in (json.loads(row[0]) for row in rows)]
-    data = array(definition, sum(size for _, size in segments))
-    return {'run_id': run_id, 'stream': name, **view({'data': data}, segments, field='', **options)}
+    return {'data': array(definition, sum(size for _, size in segments))}, segments
+
+
+def array_view(engine, run_id, name, field=None, **options):
+    """What a numeric stream says: its chunks, in order, read as one array."""
+    from .views import view
+    if field is not None:
+        raise ValueError('A stream holds one array; leave out field')
+    holder, segments = _array(engine, run_id, name)
+    return {'run_id': run_id, 'stream': name, **view(holder, segments, field='', **options)}
+
+
+def array_npy(engine, run_id, name):
+    """A numeric stream's whole samples, by channels, as a .npy file."""
+    from .views import npy
+    return npy(*_array(engine, run_id, name))

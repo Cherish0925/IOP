@@ -87,6 +87,16 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _send_pieces(self, length, pieces, name):
+        """A file made on the fly, such as an array as .npy, sent in pieces."""
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/octet-stream')
+        self.send_header('Content-Length', str(length))
+        self.send_header('Content-Disposition', 'attachment; filename="%s"' % name.replace('"', ''))
+        self.end_headers()
+        for piece in pieces:
+            self.wfile.write(piece)
+
     def do_GET(self):
         self._handle('GET')
 
@@ -256,6 +266,10 @@ class Handler(BaseHTTPRequestHandler):
             elif len(parts) == 4 and parts[:2] == ['v1', 'operations'] and parts[3] == 'array' and method == 'GET':
                 from . import views
                 result = views.operation_array(engine, parts[2], **views.options(query))
+            elif len(parts) == 4 and parts[:2] == ['v1', 'operations'] and parts[3] == 'array.npy' and method == 'GET':
+                from . import views
+                return self._send_pieces(*views.operation_npy(engine, parts[2], query.get('field')),
+                                         (query.get('field') or 'array') + '.npy')
             elif len(parts) == 3 and parts[:2] == ['v1','runs'] and method == 'GET':
                 result = engine.run_info(parts[2], details=query.get('details', 'true') != 'false')
             elif len(parts) in (4, 5, 6) and parts[:2] == ['v1', 'runs'] and parts[3] == 'episodes':
@@ -274,6 +288,10 @@ class Handler(BaseHTTPRequestHandler):
                 from . import views
                 options = views.options({key: value for key, value in query.items() if key != 'request_id'})
                 result = views.result_array(engine, parts[2], query.get('request_id'), **options)
+            elif len(parts) == 4 and parts[:2] == ['v1', 'runs'] and parts[3] == 'array.npy' and method == 'GET':
+                from . import views
+                return self._send_pieces(*views.result_npy(engine, parts[2], query.get('request_id'), query.get('field')),
+                                         (query.get('field') or 'array') + '.npy')
             elif len(parts) == 4 and parts[:2] == ['v1', 'runs'] and parts[3] == 'streams' and method == 'GET':
                 from .streams import listing
                 result = listing(engine, parts[2])
@@ -284,6 +302,9 @@ class Handler(BaseHTTPRequestHandler):
                 elif len(parts) == 6 and parts[5] == 'array' and method == 'GET':
                     from . import streams, views
                     result = streams.array_view(engine, parts[2], parts[4], **views.options(query))
+                elif len(parts) == 6 and parts[5] == 'array.npy' and method == 'GET':
+                    from . import streams
+                    return self._send_pieces(*streams.array_npy(engine, parts[2], parts[4]), parts[4] + '.npy')
                 elif len(parts) == 5:
                     result = describe(engine, parts[2], parts[4], body['definition'] if method == 'POST' else None)
                 else:

@@ -75,6 +75,8 @@ serve(p)
     assert.deepEqual((await run.streams()).map((s) => [s.name, s.chunks, s.bytes]), [['signal', 1, 4096]]);
     const signal = await (await run.stream('signal')).readArray({points: 4});
     assert.deepEqual([signal.summary.count, signal.summary.min, signal.summary.max, signal.envelope?.mean], [4096, 7, 7, [7, 7, 7, 7]]);
+    const whole = new Uint8Array(await (await (await run.stream('signal')).arrayFile()).arrayBuffer());
+    assert.deepEqual([String.fromCharCode(...whole.subarray(1, 6)), whole.length % 64, whole.subarray(-4096).every((v) => v === 7)], ['NUMPY', 0, true]);
     const context = await client.context();
     assert.ok(!('connections' in context.discovery));
     const history = await client.deviceHistory('stage');

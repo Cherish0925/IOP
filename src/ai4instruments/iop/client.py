@@ -257,6 +257,12 @@ class Client:
                             view_query(field=field, along=along, at=at, start=start, stop=stop, low=low, high=high,
                                        points=points))
 
+    def array_file(self, operation_id, field=None):
+        """The whole array an operation returned as the bytes of a NumPy .npy file, which numpy.load reads; a last
+        axis of re/im pairs becomes complex values."""
+        return self.request('/v1/operations/' + quote(operation_id, safe='') + '/array.npy' + view_query(field=field),
+                            binary=True)
+
     def maintain(self, platform=None, conditions=None, *, run_id=None, request_id=None, force=False, timeout=None):
         """Verify the conditions that are due and correct those that drifted, in dependency order.
 
@@ -399,6 +405,12 @@ class Run:
         if request_id is not None:
             query += ('&' if query else '?') + urlencode({'request_id': request_id})
         return self.client.request('/v1/runs/' + self.id + '/array' + query)
+
+    def array_file(self, field=None, *, request_id=None):
+        """A whole array this experiment's result holds, such as a map a sweep gathered from its points' files, as
+        the bytes of a NumPy .npy file; with ``request_id``, one in the results of that batch."""
+        query = view_query(field=field, request_id=request_id)
+        return self.client.request('/v1/runs/' + self.id + '/array.npy' + query, binary=True)
 
     def streams(self):
         """The data streams of this experiment with their descriptions, chunk counts and sizes."""
@@ -570,6 +582,10 @@ class DataStream:
         by channels; the options are those of Client.read_array, and at={"channel": name} picks a channel."""
         return self.client.request(self.path + '/array' + view_query(along=along, at=at, start=start, stop=stop,
                                                                      low=low, high=high, points=points))
+
+    def array_file(self):
+        """The whole samples of a numeric stream, by channels, as the bytes of a NumPy .npy file."""
+        return self.client.request(self.path + '/array.npy', binary=True)
 
     def append(self, data, sequence):
         request = Request(self.client.endpoint + self.path + '/chunks?' + urlencode({'sequence': sequence}),

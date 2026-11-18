@@ -131,6 +131,21 @@ export class IOP {
   readArray(operationId: string, options: ArrayViewOptions = {}) {
     return this.request<ArrayView & {operation_id: string}>(`/v1/operations/${encodeURIComponent(operationId)}/array` + viewQuery(options));
   }
+  /** A file the service makes on request, such as an array as .npy. */
+  async file(path: string, signal?: AbortSignal): Promise<Response> {
+    const response = await fetch(this.endpoint + path, { headers: { Authorization: 'Bearer ' + this.token }, signal: signal ?? AbortSignal.timeout(this.timeout) });
+    if (!response.ok) {
+      const text = await response.text();
+      let message = response.statusText;
+      try { message = JSON.parse(text).error ?? message; } catch { /* not JSON */ }
+      throw new IOPError(message, response.status);
+    }
+    return response;
+  }
+  /** The whole array an operation returned as a NumPy .npy file; a last axis of re/im pairs becomes complex values. */
+  arrayFile(operationId: string, field?: string, signal?: AbortSignal) {
+    return this.file(`/v1/operations/${encodeURIComponent(operationId)}/array.npy` + viewQuery({ field }), signal);
+  }
   conditions(platform?: string) { return this.request<ConditionState[]>('/v1/conditions' + (platform ? '?' + new URLSearchParams({ platform }) : '')); }
   condition(id: string) { return this.request<Condition & ConditionState & { statistics: Record<string, unknown>; records: Record<string, unknown>[] }>('/v1/conditions/' + encodeURIComponent(id)); }
   /** Verify the conditions that are due and correct those that drifted, in dependency order; resolves when the pass has ended. */
@@ -184,6 +199,13 @@ export class Run {
   checkpoints() { return this.client.request<Record<string, {name: string; revision: number; updated: string; state: unknown}>>(`/v1/runs/${encodeURIComponent(this.id)}/checkpoints`); }
   checkpoint(state: unknown, name = 'main') { return this.client.request(`/v1/runs/${encodeURIComponent(this.id)}/checkpoints`, { name, state }); }
   resume(requestId = crypto.randomUUID()) { return this.client.request<RunRecord>(`/v1/runs/${encodeURIComponent(this.id)}/resume`, { request_id: requestId }); }
+  /** A whole array this experiment's result holds, such as a sweep's map, as a NumPy .npy file; with requestId, one in that batch's results. */
+  arrayFile(options: { field?: string; requestId?: string } = {}, signal?: AbortSignal) {
+    const query = new URLSearchParams();
+    if (options.field !== undefined) query.set('field', options.field);
+    if (options.requestId !== undefined) query.set('request_id', options.requestId);
+    return this.client.file(`/v1/runs/${encodeURIComponent(this.id)}/array.npy` + (query.size ? '?' + query : ''), signal);
+  }
   /** What an array this experiment's result holds says, such as what a sweep gathered; with requestId, one in that batch's results. */
   readArray(options: ArrayViewOptions & { requestId?: string } = {}) {
     const { requestId, ...view } = options;
@@ -304,6 +326,8 @@ export class DataStream {
   chunks(after = -1, limit = 100) { return this.run.client.request<{chunks: Record<string, unknown>[]; cursor: number}>(this.path + '/chunks?' + new URLSearchParams({ after: String(after), limit: String(limit) })); }
   /** What a numeric stream (format such as float32-le) says, its chunks read as one array of samples by channels. */
   readArray(options: Omit<ArrayViewOptions, 'field'> = {}) { return this.run.client.request<ArrayView & {run_id: string; stream: string}>(this.path + '/array' + viewQuery(options)); }
+  /** The whole samples of a numeric stream, by channels, as a NumPy .npy file. */
+  arrayFile(signal?: AbortSignal) { return this.run.client.file(this.path + '/array.npy', signal); }
   async append(data: Blob, sequence: number, signal?: AbortSignal) {
     const response = await fetch(this.run.client.endpoint + this.path + '/chunks?sequence=' + sequence, {
       method: 'POST', headers: { Authorization: 'Bearer ' + this.run.client.token, 'Content-Type': 'application/octet-stream' },

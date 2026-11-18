@@ -36,6 +36,7 @@ Base URL: `http://127.0.0.1:8765`. API bodies are JSON objects. Requests to `/v1
 | POST | `/v1/runs/{run_id}/operations` | Operation below; optional `wait=0..25` query | Operation in an external experiment or running package; identical request IDs return existing operations |
 | GET | `/v1/operations/{operation_id}` | `wait=0..25` | State, times, result or error |
 | GET | `/v1/operations/{operation_id}/array` | `field`, `along`, `at` (JSON object), `start`/`stop` or `low`/`high`, `points=64`; along two axes, JSON lists with one value per axis | What an array the operation returned says: summary, then exact values or an envelope, a map along two axes; see [Reading arrays](drivers.md#reading-arrays--读取数组) |
+| GET | `/v1/operations/{operation_id}/array.npy` | `field` | The whole array as a NumPy `.npy` file; a last axis of re/im pairs becomes complex values |
 | POST | `/v1/runs/{run_id}/batches` | `{"steps":[...],"request_id":"..."}`; optional `wait=0..25` | Batch receipt, completion flag and operation records |
 | GET | `/v1/runs/{run_id}/batches` | `request_id=...&wait=0..25` | Previously accepted batch and current operations |
 | POST | `/v1/runs/{run_id}/acquisitions` | `{"name":"point.json","operation_ids":["op_..."],"conditions":{},"analysis":{}}` | Artifact containing stored results and configuration versions; no new acquisition |
@@ -207,10 +208,12 @@ The list of required fields uses `protocol`, `communication_parameters`, `contro
 | POST | `/v1/runs/{id}/checkpoints` | `name` (default `main`), `state` | Saved progress after this program's instrument operations finish |
 | POST | `/v1/runs/{id}/resume` | `request_id` | Requeue the same run with a new attempt; requires package `resume:true` and saved progress |
 | GET | `/v1/runs/{id}/array` | `field`, optional `request_id`, view options | An array the experiment's result holds, or with `request_id` one in that batch's results, such as what a sweep gathered |
+| GET | `/v1/runs/{id}/array.npy` | `field`, optional `request_id` | That whole array as a NumPy `.npy` file |
 | GET | `/v1/runs/{id}/streams` | — | The experiment's streams with description, bytes and chunk count |
 | GET / POST | `/v1/runs/{id}/streams/{name}` | POST: `definition` with `format` | Data description, bytes, chunk count and next sequence |
 | GET | `/v1/runs/{id}/streams/{name}/chunks` | `after=-1`, `limit=100` | Ordered chunk descriptions and cursor |
 | GET | `/v1/runs/{id}/streams/{name}/array` | View options as for operation arrays, without `field` | A stream of a numeric format read as samples by channels; see [Reading arrays](drivers.md#reading-arrays--读取数组) |
+| GET | `/v1/runs/{id}/streams/{name}/array.npy` | — | The stream's whole samples by channels as a NumPy `.npy` file |
 | POST | `/v1/runs/{id}/streams/{name}/chunks?sequence=N` | Binary body and `Content-Length` | Saved artifact; an identical retry returns the original artifact |
 
 A chunk sequence starts at zero. A different body at an existing sequence returns `chunk_changed`; a gap returns `chunk_out_of_order` with `next_sequence`. Fetch bytes through `/v1/artifacts/{id}`. Descriptions state formats and units; the service does not infer binary layouts. Transfers read at most 256 KiB at a time outside the scheduler lock.

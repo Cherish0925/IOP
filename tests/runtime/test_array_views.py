@@ -1,6 +1,8 @@
 """Views of saved arrays: what a trace, spectrum or image says without moving all of its values."""
 import array
+import ast
 import importlib.util
+import io
 import json
 import math
 import os
@@ -27,6 +29,18 @@ def saved(folder, values, description):
     path = Path(folder) / f'{len(os.listdir(folder))}.bin'
     path.write_bytes(payload)
     return holder, path
+
+
+def load(payload):
+    """The header and the data of a .npy file, read as NumPy reads them; with NumPy present, also by NumPy."""
+    length = struct.unpack('<H', payload[8:10])[0]
+    assert payload[:8] == b'\x93NUMPY\x01\x00' and (10 + length) % 64 == 0
+    header = ast.literal_eval(payload[10:10 + length].decode('latin-1'))
+    if importlib.util.find_spec('numpy'):
+        import numpy
+        loaded = numpy.load(io.BytesIO(payload))
+        assert (loaded.dtype.str, loaded.shape) == (header['descr'], header['shape'])
+    return header, payload[10 + length:]
 
 
 def _payload(values, description):
@@ -153,6 +167,27 @@ class ViewCase(unittest.TestCase):
                 self.view(values, image, **options)
         with self.assertRaisesRegex(ValueError, 'at most 250000 buckets'):
             self.view([0.0] * 1_000_000, {'dtype': 'float32', 'shape': [1000, 1000]}, along=[0, 1], points=600)
+
+    def test_whole_arrays_are_written_as_numpy_files(self):
+        image = {'dtype': 'int16', 'byte_order': 'big', 'shape': [4, 5], 'axes': [{'name': 'row'}, {'name': 'column'}]}
+        values = [10 * r + c for r in range(4) for c in range(5)]
+        holder, path = saved(self.folder.name, values, image)
+        length, pieces = views.npy(holder, [[str(path), path.stat().st_size]])
+        payload = b''.join(pieces)
+        header, data = load(payload)
+        self.assertEqual((len(payload), header, data), (length, {'descr': '>i2', 'fortran_order': False, 'shape': (4, 5)},
+                                                        path.read_bytes()))
+        # re/im pairs become complex values; values held in the record, missing ones not a number.
+        pairs = {'dtype': 'float32', 'shape': [-1, 2], 'axes': [{'name': 'k'}, {'name': 'component', 'labels': ['re', 'im']}]}
+        holder, path = saved(self.folder.name, [1, 2, 3, 4, 5, 6], pairs)
+        self.assertEqual(load(b''.join(views.npy(holder, [[str(path), 24]])[1]))[0]['shape'], (3,))
+        self.assertEqual(load(b''.join(views.npy(holder, [[str(path), 24]])[1]))[0]['descr'], '<c8')
+        gathered = {'data': {'dtype': 'float64', 'shape': [2, 2]}, 'values': [[1.5, None], [3, 4]]}
+        header, data = load(b''.join(views.npy(gathered)[1]))
+        self.assertEqual(header['shape'], (2, 2))
+        self.assertTrue(math.isnan(struct.unpack('<4d', data)[1]))
+        with self.assertRaisesRegex(ValueError, 'fewer bytes'):
+            views.npy(holder, [[str(path), 8]])
 
     def test_values_that_are_not_finite_are_counted_and_left_out(self):
         seen = self.view([1.0, math.nan, 3.0, math.inf, -2.0], {'dtype': 'float64'})
@@ -410,6 +445,10 @@ class StreamViewCase(unittest.TestCase):
                 run.stream('frames').read_array()
             self.assertEqual([(s['name'], s['chunks'], s['bytes']) for s in run.streams()],
                              [('frames', 0, 0), ('voltage', 3, len(payload))])
+            # The whole samples, by channels: a sample that has not arrived in full is left out.
+            stream.append(b'\x00\x00', 3)
+            header, data = load(stream.array_file())
+            self.assertEqual((header['descr'], header['shape'], data), ('<f4', (3000, 2), payload))
 
 
 class DerivedValueCase(unittest.TestCase):

@@ -1843,9 +1843,34 @@ input::file-selector-button {
   margin: 10px 0 4px;
 }
 .array-plot figcaption {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
   color: var(--muted);
   font-size: 12px;
   margin-bottom: 4px;
+}
+.array-save {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  border-radius: 6px;
+  padding: 2px 6px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+.array-save:hover,
+.array-save:focus-visible {
+  color: var(--text);
+  background: var(--accent-soft);
+}
+.array-save svg {
+  width: 14px;
+  height: 14px;
 }
 .array-plot svg {
   display: block;
