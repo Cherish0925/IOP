@@ -66,6 +66,8 @@ class Engine:
         self.allocation.limits.update({'pool:' + k: v for k, v in self.capacities.items()})
         self.ready, self.dependents, self.remaining_dependencies, self.remaining = {}, {}, {}, {}
         self.step_ids, self.minimum_capacities = {}, {}
+        # The ends of each range swept, read once for all of its points, by experiment.
+        self.ranges = {}
         self.completed = queue.SimpleQueue()
         self.progress_lock = threading.Lock()
         self.progress_updates = {}
@@ -854,7 +856,7 @@ class Engine:
                 "resources":sorted(set(self._resources([device_id], name) + self._resources(step.get("resources", [])))),
                 "request_id":step.get("request_id"),
                 "device_revision":self.descriptions[device_id].get('revision'), **recorded,
-                **({'derive': step['derive']} if step.get('derive') else {})}
+                **{key: step[key] for key in ('derive', 'gathers') if step.get(key)}}
 
     def _described(self, device, operation):
         """A registered device operation's description, or None."""
@@ -862,12 +864,14 @@ class Engine:
 
     @staticmethod
     def _locate(operations):
-        """Bindings to what a sweep gathered name the operations of its points by ID."""
+        """What operations read from sweeps and ranges, and how to gather a sweep, name operations by ID."""
         ids = {op['step']: op['id'] for op in operations}
         for op in operations:
-            if any('sweep' in binding for binding in op['bindings'].values()):
-                op['bindings'] = {key: library.locate(binding, ids) if 'sweep' in binding else binding
+            if any(map(library.by_id, op['bindings'].values())):
+                op['bindings'] = {key: library.locate(binding, ids) if library.by_id(binding) else binding
                                   for key, binding in op['bindings'].items()}
+            if 'gathers' in op:
+                op['gathers'] = {sweep: library.locate_gathering(found, ids) for sweep, found in op['gathers'].items()}
 
     def _recorded(self, operation_id):
         return self.operations.get(operation_id) or self.store.get('operations', operation_id)
@@ -1193,6 +1197,7 @@ class Engine:
         self.ready.pop(run['id'], None)
         self.remaining.pop(run['id'], None)
         self.step_ids.pop(run['id'], None)
+        self.ranges.pop(run['id'], None)
         self.call_progress.pop(run['id'], None)
         self.minimum_capacities.pop(run['id'], None)
         process = self.processes.get(run['id'])
@@ -1545,8 +1550,9 @@ class Engine:
                 if op.get('bindings'):
                     args = dict(op['arguments'])
                     for name, binding in op['bindings'].items():
-                        if 'sweep' in binding:
-                            args[name] = library.read(binding, self._recorded, self.home / 'runs' / rid / 'output')
+                        if library.by_id(binding):
+                            args[name] = library.read(binding, self._recorded, self.home / 'runs' / rid / 'output',
+                                                      known=self.ranges.setdefault(rid, {}))
                             continue
                         source = op.get('binding_ids', {}).get(name) or self.step_ids[rid][binding['step']]
                         args[name] = library.value(self._recorded(source), binding)

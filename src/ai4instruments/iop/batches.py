@@ -64,7 +64,8 @@ def submit(engine, run_id, steps, request_id, maintenance=False):
                 raise ValueError('Reserve every device and resource used by this experiment')
             op['request_id'] = 'batch-' + uuid.uuid5(uuid.NAMESPACE_URL, dumps([run_id, request_id, op['step']])).hex
             op['after_ids'] = [by_step[s]['id'] for s in op['after']]
-            op['binding_ids'] = {key: by_step[value['step']]['id'] for key, value in op['bindings'].items()}
+            op['binding_ids'] = {key: by_step[value['step']]['id'] for key, value in op['bindings'].items()
+                                 if not library.by_id(value)}
             if op['device'] not in updated['devices']:
                 updated['devices'][op['device']] = copy.deepcopy(engine.descriptions[op['device']])
                 updated['device_configurations'][op['device']] = copy.deepcopy(engine.device_records[op['device']])

@@ -75,104 +75,11 @@
           "bindings": {
             "type": "object",
             "additionalProperties": {
-              "type": "object",
-              "required": [
-                "step"
-              ],
-              "properties": {
-                "step": {
-                  "type": "string",
-                  "minLength": 1
-                },
-                "path": {
-                  "type": "array",
-                  "items": {
-                    "type": [
-                      "string",
-                      "integer"
-                    ]
-                  }
-                },
-                "view": {
-                  "type": "object",
-                  "description": "Read the value from a view of an array this step returned: field, along, at, start, stop, low, high, points; path then selects inside the view (see docs/runtime/drivers.md, Reading arrays)",
-                  "additionalProperties": false,
-                  "properties": {
-                    "field": {
-                      "type": "string"
-                    },
-                    "along": {
-                      "type": [
-                        "string",
-                        "integer"
-                      ]
-                    },
-                    "at": {
-                      "type": "object"
-                    },
-                    "start": {
-                      "type": "integer",
-                      "minimum": 0
-                    },
-                    "stop": {
-                      "type": "integer",
-                      "minimum": 1
-                    },
-                    "low": {
-                      "type": "number"
-                    },
-                    "high": {
-                      "type": "number"
-                    },
-                    "points": {
-                      "type": "integer",
-                      "minimum": 1,
-                      "maximum": 2000
-                    }
-                  }
-                }
-              }
+              "$ref": "#/$defs/source"
             }
           },
           "sweep": {
-            "type": "object",
-            "minProperties": 1,
-            "description": "Run this step at each value of these parameters, one point after another, the first changing slowest; what it returns is gathered into arrays over the sweep, at most 10000 points. A list gives the values (numbers, or strings as labels); start, stop and points give evenly spaced numbers",
-            "additionalProperties": {
-              "oneOf": [
-                {
-                  "type": "array",
-                  "minItems": 1,
-                  "items": {
-                    "type": [
-                      "number",
-                      "string"
-                    ]
-                  }
-                },
-                {
-                  "type": "object",
-                  "required": [
-                    "start",
-                    "stop",
-                    "points"
-                  ],
-                  "additionalProperties": false,
-                  "properties": {
-                    "start": {
-                      "type": "number"
-                    },
-                    "stop": {
-                      "type": "number"
-                    },
-                    "points": {
-                      "type": "integer",
-                      "minimum": 1
-                    }
-                  }
-                }
-              ]
-            }
+            "$ref": "#/$defs/sweep"
           }
         }
       }
@@ -199,6 +106,195 @@
         "minLength": 1
       },
       "uniqueItems": true
+    },
+    "source": {
+      "type": "object",
+      "description": "A value an earlier step returned: path selects inside its result or, with view, inside a view of an array it returned",
+      "required": [
+        "step"
+      ],
+      "properties": {
+        "step": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "type": "array",
+          "items": {
+            "type": [
+              "string",
+              "integer"
+            ]
+          }
+        },
+        "view": {
+          "$ref": "#/$defs/view"
+        }
+      }
+    },
+    "view": {
+      "type": "object",
+      "description": "Read the value from a view of an array the step returned: field, along, at, start, stop, low, high, points; path then selects inside the view. Along two axes, a map, along names both and the others give one value per axis (see docs/runtime/drivers.md, Reading arrays)",
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "type": "string"
+        },
+        "along": {
+          "type": [
+            "string",
+            "integer",
+            "array"
+          ],
+          "minItems": 1,
+          "maxItems": 2,
+          "items": {
+            "type": [
+              "string",
+              "integer"
+            ]
+          }
+        },
+        "at": {
+          "type": "object"
+        },
+        "start": {
+          "type": [
+            "integer",
+            "array"
+          ],
+          "minimum": 0,
+          "items": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          }
+        },
+        "stop": {
+          "type": [
+            "integer",
+            "array"
+          ],
+          "minimum": 1,
+          "items": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          }
+        },
+        "low": {
+          "type": [
+            "number",
+            "array"
+          ],
+          "items": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "high": {
+          "type": [
+            "number",
+            "array"
+          ],
+          "items": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        },
+        "points": {
+          "type": [
+            "integer",
+            "array"
+          ],
+          "minimum": 1,
+          "maximum": 2000,
+          "items": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2000
+          }
+        }
+      }
+    },
+    "sweep": {
+      "type": "object",
+      "minProperties": 1,
+      "description": "Run this step at each value of these parameters, one point after another, the first changing slowest; what it returns is gathered into arrays over the sweep, at most 10000 points. A list gives the values (numbers, or strings as labels); start, stop and points, or center, span and points, give evenly spaced numbers. An end of a range may be read from an earlier step, as a binding is, such as where a coarse sweep found most power; each point then takes its value when it runs",
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": [
+                "number",
+                "string"
+              ]
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "start",
+              "stop",
+              "points"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "start": {
+                "$ref": "#/$defs/end"
+              },
+              "stop": {
+                "$ref": "#/$defs/end"
+              },
+              "points": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "center",
+              "span",
+              "points"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "center": {
+                "$ref": "#/$defs/end"
+              },
+              "span": {
+                "$ref": "#/$defs/end"
+              },
+              "points": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        ]
+      }
+    },
+    "end": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "$ref": "#/$defs/source"
+        }
+      ]
     }
   }
 }

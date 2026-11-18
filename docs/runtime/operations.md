@@ -98,7 +98,7 @@ These views are computed once, when the step that returned the array completes, 
 
 ## Sweeps / 扫描
 
-A step with `sweep` runs once at each value of the parameters it names, one point after another; the first name changes slowest. A list gives the values (numbers, or strings such as channel names); `start`, `stop` and `points` give evenly spaced numbers. A sweep has at most 10,000 points, and each point is an ordinary operation, or use of a saved operation, with its own record. / 带 `sweep` 的步骤按所列参数的每个取值依次运行一次，第一个参数变化最慢。列表给出取值（数值，或通道名等字符串）；`start`、`stop`、`points` 给出等间隔的数值。每次扫描最多 10,000 个点，每个点都是普通的操作或已保存操作的一次使用，有自己的记录。
+A step with `sweep` runs once at each value of the parameters it names, one point after another; the first name changes slowest. A list gives the values (numbers, or strings such as channel names); `start`, `stop` and `points`, or `center`, `span` and `points`, give evenly spaced numbers. A sweep has at most 10,000 points, and each point is an ordinary operation, or use of a saved operation, with its own record. / 带 `sweep` 的步骤按所列参数的每个取值依次运行一次，第一个参数变化最慢。列表给出取值（数值，或通道名等字符串）；`start`、`stop`、`points`，或 `center`、`span`、`points`，给出等间隔的数值。每次扫描最多 10,000 个点，每个点都是普通的操作或已保存操作的一次使用，有自己的记录。
 
 ```json
 {"steps": [
@@ -112,6 +112,20 @@ A step with `sweep` runs once at each value of the parameters it names, one poin
 What the points return is gathered under the step. Numbers in the same place become an array over the sweep, with one axis for each swept parameter carrying its values and unit; a `unit` beside a single number, as in `{"value": 0.25, "unit": "V"}`, becomes the array's unit. Arrays of one shape in the same place combine into one array with the sweep's axes in front: from the values the records hold, or, when every point saved its array in a file, from those files read in order without copying them. Spectra swept over a bias thus read as a map, and so does a sweep of a saved operation that sweeps. Other values are kept when they are the same at every point; the rest stay in the record of each point. The experiment result holds what the sweep gathered in place of the points; while a step graph runs, `GET /v1/runs/{id}/result` gives what its completed operations give so far, so a map fills in as it is measured. / 各点的返回值汇集在该步骤名下。同一位置的数值成为随扫描变化的数组，每个扫描参数一个坐标轴，带取值和单位；与单个数值并列的 `unit`（如 `{"value": 0.25, "unit": "V"}`）成为该数组的单位。同一位置、形状相同的数组合并为一个数组，扫描的轴在前：数值在记录中时直接合并；各点都把数组存成文件时，按顺序读取这些文件，不复制。随偏压扫描的谱线因此读作二维图，扫描一个本身含扫描的已保存操作也是如此。其他值在各点相同时保留；其余的值留在各点的记录里。实验结果中给出汇集后的内容，不再逐点列出；步骤图运行期间，`GET /v1/runs/{id}/result` 给出已完成操作得到的部分，二维图因此边测边显示。
 
 Bindings and named results read what a sweep gathered by path or through a `view`, so a saved operation can scan and then go to the best point; `"points": "${points}"` takes the number of points from a parameter. `read_array` with `run_id` and `field`, `Run.read_array` and `readArray` view these arrays, with `request_id` for a batch of a continuous experiment; there `run.call(operation, arguments, sweep=...)` returns the named results gathered. / 绑定和具名结果可按路径或经 `view` 读取扫描汇集的内容，已保存的操作因此可以先扫描、再转到最佳点；`"points": "${points}"` 从参数取点数。`read_array`（`run_id` 与 `field`）、`Run.read_array` 和 `readArray` 读取这些数组，连续实验中的批次另加 `request_id`；在连续实验中，`run.call(操作, 参数, sweep=...)` 返回汇集后的具名结果。
+
+An end of a range can come from an earlier step. `start`, `stop`, `center` and `span` each take a number or a source written as a binding is (`step`, `path`, `view`); the number of points stays fixed, and each point reads its value when it runs, after the steps it reads have finished. Here the fine sweep spans 2 degrees around the angle where the coarse sweep found most power: / 范围的端点可以取自之前的步骤。`start`、`stop`、`center`、`span` 各自可以是数值，或像绑定那样写出的来源（`step`、`path`、`view`）；点数固定，每个点在运行时、在所读的步骤完成之后取得自己的值。下例中，细扫以粗扫功率最大的角度为中心，跨 2 度：
+
+```json
+{"steps": [
+  {"id": "coarse", "operation": "axis.measure", "arguments": {"axis": "stage"},
+   "sweep": {"angle": {"start": -40, "stop": 40, "points": 17}}},
+  {"id": "fine", "operation": "axis.measure", "arguments": {"axis": "stage"},
+   "sweep": {"angle": {"center": {"step": "coarse", "view": {"field": "power"}, "path": ["summary", "max_at"]},
+                       "span": 2, "points": 21}}}
+]}
+```
+
+Each point records the range it read and the value it took, and what the fine sweep gathered has its axis from the ends that were read. In a saved operation an end can name one of its steps, or be `"${name}"` for a parameter the caller binds, so a coarse-to-fine search is saved as one method. / 每个点记录所读的范围和取得的值，细扫汇集的数组以读到的两端为坐标轴。已保存的操作中，端点可以指向本操作的某一步，也可以写作 `"${name}"`，由调用方绑定该参数；先粗扫、再细扫因此可以保存为一个方法。
 
 ## Record of use / 使用记录
 

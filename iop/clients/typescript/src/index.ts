@@ -1,6 +1,10 @@
-export type Step = { id: string; device?: string; operation: string; arguments?: Record<string, unknown>; after?: string[]; resources?: string[]; requirements?: Record<string, number>; bindings?: Record<string, { step: string; path?: (string | number)[]; view?: ArrayViewOptions }>; sweep?: Sweep };
-/** Parameters a step runs over, one point after another: a list of values, or evenly spaced numbers. */
-export type Sweep = Record<string, (number | string)[] | { start: number; stop: number; points: number }>;
+export type Step = { id: string; device?: string; operation: string; arguments?: Record<string, unknown>; after?: string[]; resources?: string[]; requirements?: Record<string, number>; bindings?: Record<string, Source>; sweep?: Sweep };
+/** A value an earlier step returned: path selects inside its result or, with view, inside a view of an array it returned. */
+export type Source = { step: string; path?: (string | number)[]; view?: ArrayViewOptions };
+/** An end of a range: a number, or one read from an earlier step when the sweep runs. */
+export type End = number | Source;
+/** Parameters a step runs over, one point after another: a list of values, or evenly spaced numbers from start to stop or around a center. */
+export type Sweep = Record<string, (number | string)[] | { start: End; stop: End; points: number } | { center: End; span: End; points: number }>;
 export type Endpoint = { device: string; port: string };
 export type Procedure = { steps: Step[]; resources?: string[] };
 export type ConditionStep = { device?: string; operation: string; arguments?: Record<string, unknown> };

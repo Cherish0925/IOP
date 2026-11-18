@@ -1,7 +1,9 @@
 """Sweeps: a step run at each value of one or more of its parameters, its results gathered into arrays.
 
 A step with ``sweep`` runs once for each combination of the values it gives, one point after another,
-the first name changing slowest. What the points return is gathered: numbers in the same place become an
+the first name changing slowest. A range gives evenly spaced values from start to stop, or around a
+center over a span; its ends may be read from earlier results, as bindings are, and each point then
+reads its value when it runs. What the points return is gathered: numbers in the same place become an
 array over the sweep, with one axis for each swept name; arrays of one shape in the same place combine
 into one array with the sweep's axes in front, from the values the records hold or from the files the
 points saved, read in order; other values are kept when they are the same at every point that has one.
@@ -13,6 +15,7 @@ import math
 from . import arrays
 
 MAX_POINTS = 10_000
+ENDS = ({'start', 'stop'}, {'center', 'span'})
 _LEFT = object()
 
 
@@ -20,29 +23,67 @@ def _number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
+def _ends(spec):
+    """The first and last value of a range given by start and stop, or by center and span."""
+    for key in spec.keys() - {'points'}:
+        if not _number(spec[key]):
+            raise ValueError(f'{key} is {spec[key]!r}; the ends of a range are finite numbers')
+    if 'start' in spec:
+        return spec['start'], spec['stop']
+    center, span = spec['center'], spec['span']
+    if type(center) is int and type(span) is int and span % 2 == 0:
+        return center - span // 2, center + span // 2
+    return center - span / 2, center + span / 2
+
+
+def _value(start, stop, points, index):
+    if points == 1 or start == stop:
+        return start
+    # Integers stay integers when they divide evenly, so integer parameters can be swept.
+    if type(start) is int and type(stop) is int and (stop - start) % (points - 1) == 0:
+        return start + index * ((stop - start) // (points - 1))
+    return float(stop) if index == points - 1 else float(start + index * ((stop - start) / (points - 1)))
+
+
+def _axis(name, start, stop, points):
+    if points == 1:
+        return {'name': name, 'coordinates': [float(start)]}
+    return {'name': name} if start == stop else {'name': name, 'start': start, 'stop': stop}
+
+
 def taken(name, spec):
-    """The values one swept name takes, in order, and the axis they give."""
+    """The values one swept name takes, in order, and the axis they give. The values of a range whose ends are
+    read from earlier results are found when each point runs: {"range": spec, "index": i}."""
     if isinstance(spec, list):
         if spec and all(map(_number, spec)):
             return list(spec), {'name': name, **arrays.coordinates(spec)}
         if spec and all(isinstance(value, str) for value in spec):
             return list(spec), {'name': name, 'labels': list(spec)}
         raise ValueError(f'sweep {name}: list the numbers, or the strings, it takes in turn')
-    if (not isinstance(spec, dict) or set(spec) != {'start', 'stop', 'points'} or not _number(spec['start'])
-            or not _number(spec['stop']) or type(spec['points']) is not int or spec['points'] < 1):
-        raise ValueError(f'sweep {name}: give a list of values, or start, stop and points (a positive integer)')
-    start, stop, points = spec['start'], spec['stop'], spec['points']
-    if points == 1:
-        return [start], {'name': name, 'coordinates': [float(start)]}
-    if start == stop:
-        return [start] * points, {'name': name}
-    # Integers stay integers when they divide evenly, so integer parameters can be swept.
-    if type(start) is int and type(stop) is int and (stop - start) % (points - 1) == 0:
-        values = [start + i * ((stop - start) // (points - 1)) for i in range(points)]
-    else:
-        step = (stop - start) / (points - 1)
-        values = [float(start + i * step) for i in range(points - 1)] + [float(stop)]
-    return values, {'name': name, 'start': start, 'stop': stop}
+    if (not isinstance(spec, dict) or spec.keys() - {'points'} not in ENDS or type(spec.get('points')) is not int
+            or spec['points'] < 1):
+        raise ValueError(f'sweep {name}: give a list of values, or start, stop and points (a positive integer), '
+                         'or center, span and points')
+    points = spec['points']
+    if any(isinstance(spec[key], dict) for key in spec.keys() - {'points'}):
+        return [{'range': spec, 'index': index} for index in range(points)], {'name': name, 'range': spec}
+    try:
+        start, stop = _ends(spec)
+    except ValueError as error:
+        raise ValueError(f'sweep {name}: {error}') from None
+    return [_value(start, stop, points, index) for index in range(points)], _axis(name, start, stop, points)
+
+
+def value(spec, index):
+    """The value at a point of a range whose ends are known."""
+    start, stop = _ends(spec)
+    return _value(start, stop, spec['points'], index)
+
+
+def axis(name, spec):
+    """The axis of a range whose ends are known."""
+    start, stop = _ends(spec)
+    return _axis(name, start, stop, spec['points'])
 
 
 def grid(sweep):

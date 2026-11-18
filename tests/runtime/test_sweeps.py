@@ -57,6 +57,12 @@ class GatherCase(unittest.TestCase):
         self.assertEqual(sweeps.taken('n', {'start': 10, 'stop': 0, 'points': 6})[0], [10, 8, 6, 4, 2, 0])
         self.assertEqual(sweeps.taken('f', [1, 2, 5, 10])[1], {'name': 'f', 'coordinates': [1.0, 2.0, 5.0, 10.0]})
         self.assertEqual(sweeps.taken('f', [1, 2, 3])[1], {'name': 'f', 'start': 1.0, 'step': 1.0})
+        self.assertEqual(sweeps.taken('f', {'center': 10, 'span': 4, 'points': 5}),
+                         ([8, 9, 10, 11, 12], {'name': 'f', 'start': 8, 'stop': 12}))
+        # Ends read from earlier results leave each point what to read; read, they give its value.
+        read = {'center': {'step': 'coarse', 'path': ['peak']}, 'span': 1, 'points': 3}
+        self.assertEqual(sweeps.taken('f', read), ([{'range': read, 'index': i} for i in range(3)], {'name': 'f', 'range': read}))
+        self.assertEqual(sweeps.value({**read, 'center': 2.0}, 2), 2.5)
         for spec, message in (([], 'list the numbers'), ([1, 'a'], 'list the numbers'), ({'start': 0, 'stop': 1}, 'start, stop'),
                               ({'start': 0, 'stop': 1, 'points': 0}, 'start, stop')):
             with self.assertRaisesRegex(ValueError, message):
@@ -142,6 +148,52 @@ class SweepCase(unittest.TestCase):
         self.assertEqual(result['scan']['angle']['values'], list(range(-40, 41, 10)))
         self.assertEqual(result['best']['angle_actual'], 0)
         self.assertEqual(self.client.saved_operation('axis.measure')['uses']['completed'], 9)
+
+    def test_a_fine_sweep_centered_where_a_coarse_sweep_found_most_power(self):
+        # The coarse points miss the peak at 0 deg by 3 deg; around the best of them, the fine sweep finds it.
+        peak = {'view': {'field': 'power'}, 'path': ['summary', 'max_at']}
+        run = self.submit([
+            {'id': 'coarse', 'operation': 'axis.measure', 'arguments': {'axis': 'stage'},
+             'sweep': {'angle': {'start': -37, 'stop': 43, 'points': 9}}},
+            {'id': 'fine', 'operation': 'axis.measure', 'arguments': {'axis': 'stage'},
+             'sweep': {'angle': {'center': {'step': 'coarse', **peak}, 'span': 10, 'points': 11}}},
+            {'id': 'settle', 'device': 'stage', 'operation': 'move_to', 'arguments': {'duration': 0},
+             'sweep': {'angle_deg': {'center': {'step': 'fine', **peak}, 'span': 0.5, 'points': 3}}}])
+        result = run.result(20)
+        self.assertEqual(result['coarse']['angle']['values'][4], 3)
+        self.assertEqual(result['fine']['power']['data']['axes'], [{'name': 'angle', 'start': -2, 'stop': 8, 'unit': 'deg'}])
+        self.assertEqual(result['fine']['angle']['values'], list(range(-2, 9)))
+        self.assertEqual(run.read_array('fine.power')['summary']['max_at'], 0)
+        self.assertEqual(result['settle']['angle_actual']['values'], [-0.25, 0, 0.25])
+        # Each point records the range it read and the value it took.
+        turned = {op['step']: op for op in run.info()['operation_records']}['fine.4.turn']
+        self.assertEqual((turned['arguments']['angle_deg'], turned['bindings']['angle_deg']['index']), (2, 4))
+        self.assertEqual(turned['bindings']['angle_deg']['range']['span'], 10)
+
+    def test_saved_operations_sweep_around_what_they_found_and_what_they_are_given(self):
+        found = {'step': 'coarse', 'view': {'field': 'power'}, 'path': ['summary', 'max_at']}
+        self.client.save_operation({
+            'id': 'axis.find', 'layer': 'standard', 'description': 'Find the angle of most power, coarse then fine',
+            'steps': [{'id': 'coarse', 'operation': 'axis.measure', 'arguments': {'axis': 'stage'},
+                       'sweep': {'angle': {'start': -37, 'stop': 43, 'points': 9}}},
+                      {'id': 'fine', 'operation': 'axis.measure', 'arguments': {'axis': 'stage'},
+                       'sweep': {'angle': {'center': found, 'span': 10, 'points': 11}}}],
+            'result': {'angle': {**found, 'step': 'fine'}}})
+        self.client.save_operation({
+            'id': 'axis.around', 'layer': 'standard', 'description': 'Measure around an angle',
+            'parameters': {'center': {'type': 'number', 'unit': 'deg'}},
+            'steps': [{'id': 'scan', 'operation': 'axis.measure', 'arguments': {'axis': 'stage'},
+                       'sweep': {'angle': {'center': '${center}', 'span': 4, 'points': 5}}}],
+            'result': {'power': {'step': 'scan', 'path': ['power']}}})
+        run = self.submit([{'id': 'find', 'operation': 'axis.find'},
+                           {'id': 'around', 'operation': 'axis.around', 'bindings': {'center': {'step': 'find', 'path': ['angle']}}}])
+        result = run.result(20)
+        self.assertEqual(result['find']['angle'], 0)
+        self.assertEqual(result['around']['power']['data']['axes'], [{'name': 'angle', 'start': -2, 'stop': 2, 'unit': 'deg'}])
+        self.assertAlmostEqual(result['around']['power']['values'][2], 1)
+        # Given as an argument, the same parameter is a number before anything runs.
+        given = self.submit([{'id': 'around', 'operation': 'axis.around', 'arguments': {'center': 10}}]).result(10)
+        self.assertEqual(given['around.scan']['angle']['values'], [8, 9, 10, 11, 12])
 
     def test_two_parameters_give_a_map_and_a_sweep_inside_a_saved_operation_combines(self):
         run = self.submit([{'id': 'map', 'operation': 'axis.measure',
@@ -246,9 +298,21 @@ class SweepCase(unittest.TestCase):
                 ({'id': 's', 'device': 'stage', 'operation': 'move_to', 'sweep': {'angle_deg': []}}, 'list the numbers'),
                 ({'id': 's', 'operation': 'axis.measure', 'arguments': {'axis': 'stage'}, 'sweep': {'angle': [0, 120]}},
                  'outside'),
-                ({'id': 's', 'device': 'stage', 'operation': 'move_to', 'sweep': {'angle_deg': '${a}'}}, 'give the values')):
+                ({'id': 's', 'device': 'stage', 'operation': 'move_to', 'sweep': {'angle_deg': '${a}'}}, 'give the values'),
+                ({'id': 's', 'device': 'stage', 'operation': 'move_to',
+                  'sweep': {'angle_deg': {'center': 0, 'span': 1, 'points': {'step': 'x'}}}}, 'positive integer'),
+                ({'id': 's', 'device': 'stage', 'operation': 'move_to',
+                  'sweep': {'angle_deg': {'center': {'step': 'nowhere'}, 'span': 1, 'points': 3}}}, 'unknown step')):
             with self.assertRaisesRegex(IOPError, message):
                 self.submit([step])
+        # An end read from an earlier result is a number only once it is read: the first point fails if it is not.
+        run = self.submit([{'id': 'read', 'device': 'meter', 'operation': 'measure'},
+                           {'id': 'turn', 'device': 'stage', 'operation': 'move_to',
+                            'sweep': {'angle_deg': {'start': 0, 'stop': {'step': 'read', 'path': ['unit']}, 'points': 3}}}])
+        self.assertEqual(run.wait(10)['state'], 'failed')
+        states = {op['step']: (op['state'], op.get('error', '')) for op in run.info()['operation_records']}
+        self.assertEqual((states['turn.0'][0], states['turn.2'][0]), ('failed', 'cancelled'))
+        self.assertIn("stop is 'W'", states['turn.0'][1])
         with self.assertRaisesRegex(IOPError, 'describe parameter points'):
             self.client.save_operation({**PEAK, 'parameters': {}})
         with self.assertRaisesRegex(IOPError, 'start, stop'):

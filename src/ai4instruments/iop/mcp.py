@@ -273,7 +273,7 @@ def create_server(client, *, http=False, selection=None):
     def submit_experiment(steps: list[dict], request_id: str, name: str = 'Experiment',
                           platform: str | None = None, resources: list[str] | None = None,
                           requirements: dict[str, int] | None = None, requires: list[str] | None = None) -> dict:
-        """Submit instrument operations with after dependencies and optional result bindings. A step with sweep, e.g. {"angle": {"start": -10, "stop": 10, "points": 21}} or {"axis": ["x", "y"]}, runs at each point in turn and its numbers return as arrays over the sweep; read them with read_array(run_id, field). Returns immediately. Reuse request_id only for the identical submission. requires names platform conditions that must hold for the experiment to be accepted."""
+        """Submit instrument operations with after dependencies and optional result bindings. A step with sweep, e.g. {"angle": {"start": -10, "stop": 10, "points": 21}} or {"axis": ["x", "y"]}, runs at each point in turn and its numbers return as arrays over the sweep; read them with read_array(run_id, field). A range may also be a center and span, and its ends may be read from an earlier step as a binding is, e.g. {"angle": {"center": {"step": "coarse", "view": {"field": "power"}, "path": ["summary", "max_at"]}, "span": 2, "points": 21}} around where a coarse sweep found most power. Returns immediately. Reuse request_id only for the identical submission. requires names platform conditions that must hold for the experiment to be accepted."""
         return client.submit(steps, name=name, platform=platform, resources=resources or [],
                              requirements=requirements, request_id=request_id, requires=requires or ()).info(details=False)
 
@@ -301,7 +301,7 @@ def create_server(client, *, http=False, selection=None):
 
     @tool()
     def submit_operations(run_id: str, steps: list[dict], request_id: str, wait: float = 0) -> dict:
-        """Submit a batch within an existing experiment. Steps run in order by default. after=[] starts an independent branch; after=[IDs] joins branches. A step with sweep runs at each point in turn; results then hold its numbers as arrays over the sweep (read_array with run_id, request_id and field) and the reply counts its points by state. All steps are accepted together. With wait up to 25 seconds, the reply includes results of steps that finish in that time; complete tells whether all did."""
+        """Submit a batch within an existing experiment. Steps run in order by default. after=[] starts an independent branch; after=[IDs] joins branches. A step with sweep runs at each point in turn, its ranges given or read from earlier steps as in submit_experiment; results then hold its numbers as arrays over the sweep (read_array with run_id, request_id and field) and the reply counts its points by state. All steps are accepted together. With wait up to 25 seconds, the reply includes results of steps that finish in that time; complete tells whether all did."""
         batch = client.request('/v1/runs/' + quote(run_id, safe='') + '/batches' + waiting(wait),
                                {'steps':steps, 'request_id':request_id})
         batch = compact(batch)
