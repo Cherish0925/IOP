@@ -52,7 +52,9 @@ A step with `device` is a Basic Operation; a step without it uses a saved operat
 
 A platform describes the conditions required by its experiments: observations, tolerances, dependencies, correction methods and optional validity periods. `maintain` runs these methods using the same operations and scheduler as experiments. Corrections reserve the coupled devices together; independent platforms can keep working.
 
-Experiments name their conditions with `requires`. The Runtime checks their recorded state before each dependent operation, keeps the observations with the results, and marks relevant intervals when a later observation reveals drift. Bounded `tune` provides a local numerical search; saved operations and programs express other methods. Classification and dependencies remain configurable for each platform. See [operating conditions](docs/runtime/conditions.md).
+Experiments name their conditions with `requires`. The Runtime checks their recorded state before each dependent operation, keeps the observations with the results, and marks relevant intervals when a later observation reveals drift. Bounded `tune` provides a local numerical search; saved operations and programs express other methods. Classification and dependencies remain configurable for each platform.
+
+An instrument's own conditions, such as warm-up, overload or reference lock, belong to its record and can come with its model description, so every instrument of that model starts with them; platform conditions build on them. See [operating conditions](docs/runtime/conditions.md).
 
 ## Research and learning
 

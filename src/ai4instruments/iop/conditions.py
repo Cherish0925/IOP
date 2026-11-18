@@ -1,16 +1,23 @@
-"""Platform-defined operating conditions, observations and bounded correction procedures.
+"""Operating conditions of platforms and instruments: observations and bounded correction procedures.
 
 Dependencies and acceptable measurements are supplied by the experimenter. Maintenance uses
 ordinary operations and the existing scheduler; it does not infer physical causality. The
 dependency-graph approach is informed by Kelly et al., arXiv:1803.03226.
+
+An instrument's own conditions (warm-up, references, overloads, self-calibration) belong to its
+device record, or to the model description that supplies it, and are named ``<device>.<id>``. They
+use only that instrument's operations, so they travel with the model to every laboratory; platform
+conditions may depend on them.
 """
 import copy
 import math
+import re
 import statistics
 import threading
 from collections import deque
 from datetime import datetime, timezone
 from . import batches, library
+from .drivers import parameters
 from .errors import RequestError
 from .platforms import name, strings
 from .store import dumps, now
@@ -21,6 +28,7 @@ OUTCOMES = ('holds', 'drifted', 'unusable')
 FIELDS = {'id', 'description', 'kind', 'after', 'verify', 'accept', 'usable', 'reference', 'correct', 'settle',
           'valid_for', 'note'}
 RECORDS = 20
+LOCAL = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,47}')
 
 
 def seconds(text):
@@ -119,14 +127,37 @@ def tuning(value, accept, what):
             'gain': value.get('gain', 0)}
 
 
+def setting(knob, position):
+    """The operation that puts one tuned setting at a position."""
+    return {'device': knob['device'], 'operation': knob['operation'],
+            'arguments': {**knob.get('arguments', {}), knob['argument']: position}}
+
+
+def operations_used(condition):
+    """Every operation a condition may call: its observation, its corrections and both ends of a tuned range."""
+    items = [condition['verify']]
+    for correction in condition['correct']:
+        if 'tune' in correction:
+            for knob in correction['tune']:
+                items += [setting(knob, knob['minimum']), setting(knob, knob['maximum']),
+                          {k: v for k, v in knob['read'].items() if k != 'value'}]
+        else:
+            items.append(correction)
+    return items
+
+
 def label(item):
     if 'tune' in item:
         return 'tune ' + ', '.join(f"{k['device']}.{k['argument']}" for k in item['tune'])
     return (item['device'] + '.' if 'device' in item else '') + item['operation']
 
 
-def check(definitions, taken=()):
-    """Validate the conditions of one platform; ``taken`` are the names used by other platforms."""
+def check(definitions, taken=(), external=()):
+    """Validate the conditions of one platform or instrument.
+
+    ``taken`` are names defined elsewhere in the laboratory; ``external`` are conditions of the
+    platform's instruments, which ``after`` may name.
+    """
     if not isinstance(definitions, list) or any(not isinstance(c, dict) for c in definitions):
         raise ValueError('Platform conditions must be a list of objects')
     names = strings([c.get('id') for c in definitions], 'Condition names')
@@ -136,14 +167,14 @@ def check(definitions, taken=()):
         if condition.keys() - FIELDS:
             raise ValueError(what + ': unknown fields ' + ', '.join(sorted(condition.keys() - FIELDS)))
         if condition['id'] in taken:
-            raise ValueError(what + ' is already defined on another platform')
+            raise ValueError(what + ' is already defined on another platform or instrument')
         if not isinstance(condition.get('description'), str) or not condition['description'].strip():
             raise ValueError(what + ': describe what must hold')
         if 'kind' in condition:
             name(condition['kind'], what + ' kind')
         after = strings(condition.get('after', []), what + ' after')
-        if set(after) - set(names) or condition['id'] in after:
-            raise ValueError(what + ': after names other conditions of this platform')
+        if set(after) - set(names) - set(external) or condition['id'] in after:
+            raise ValueError(what + ': after names other conditions of this platform or of its instruments')
         corrections = condition.get('correct', [])
         corrections = [corrections] if isinstance(corrections, dict) else corrections
         if not isinstance(corrections, list):
@@ -165,8 +196,69 @@ def check(definitions, taken=()):
                         **({'usable': criterion(condition['usable'], what + ' usable')} if 'usable' in condition else {}),
                         'correct': [tuning(item, accept, what + ' correct') if isinstance(item, dict) and 'tune' in item
                                     else step(item, what + ' correct') for item in corrections]})
-    order(checked, names)
+    # Instrument conditions never depend on platform conditions, so a cycle lies within this list.
+    order([{**c, 'after': [a for a in c['after'] if a in names]} for c in checked], names)
     return checked
+
+
+def instrument(device_id, definitions):
+    """The conditions of one instrument, named ``<device>.<id>`` in the laboratory.
+
+    They are observed and restored with the instrument's own operations; ``device`` may be omitted.
+    """
+    if not isinstance(definitions, list) or any(not isinstance(c, dict) for c in definitions):
+        raise ValueError('Instrument conditions must be a list of objects')
+    for local in strings([c.get('id') for c in definitions], 'Instrument condition names'):
+        if not LOCAL.fullmatch(local):
+            raise ValueError(f'Instrument condition {local}: use letters, digits, _ and -; the device name is added')
+
+    def own(item, what):
+        if not isinstance(item, dict):
+            return item
+        if 'tune' in item:
+            knobs = []
+            for knob in item['tune'] if isinstance(item['tune'], list) else [item['tune']]:
+                if isinstance(knob, dict):
+                    knob = {**knob, 'device': knob.get('device', device_id)}
+                    if isinstance(knob.get('read'), dict):
+                        knob['read'] = {**knob['read'], 'device': knob['read'].get('device', device_id)}
+                    if device_id != knob['device'] or isinstance(knob.get('read'), dict) and device_id != knob['read']['device']:
+                        raise ValueError(what + ': an instrument condition uses only that instrument')
+                knobs.append(knob)
+            return {**item, 'tune': knobs}
+        if item.get('device', device_id) != device_id:
+            raise ValueError(what + ': an instrument condition uses only that instrument')
+        return {**item, 'device': device_id}
+
+    prefix, named = device_id + '.', []
+    for condition in definitions:
+        what = 'Instrument condition ' + condition['id']
+        after, corrections = condition.get('after', []), condition.get('correct', [])
+        corrections = [corrections] if isinstance(corrections, dict) else corrections
+        named.append({**condition, 'id': prefix + condition['id'],
+                      'after': [prefix + a if isinstance(a, str) else a for a in after] if isinstance(after, list) else after,
+                      'verify': own(condition.get('verify'), what + ' verify'),
+                      'correct': [own(item, what + ' correct') for item in corrections] if isinstance(corrections, list)
+                      else corrections})
+    return check(named)
+
+
+def available(conditions, operations, builtin=()):
+    """Check that each operation the conditions call exists with valid arguments.
+
+    ``operations`` maps names to their descriptions; ``builtin`` names exist without one.
+    """
+    for condition in conditions:
+        for item in operations_used(condition):
+            if item['operation'] in builtin and item['operation'] not in operations:
+                continue
+            spec = operations.get(item['operation'])
+            if spec is None:
+                raise ValueError(f"Condition {condition['id']}: {item['device']} has no operation {item['operation']}")
+            try:
+                parameters(spec, item.get('arguments', {}))
+            except ValueError as error:
+                raise ValueError(f"Condition {condition['id']}: {item['device']}.{item['operation']}: {error}") from None
 
 
 def order(definitions, targets):
@@ -175,7 +267,8 @@ def order(definitions, targets):
     needed, pending = [], deque(targets)
     while pending:
         current = pending.popleft()
-        if current not in needed:
+        # A dependency that is not defined (an instrument not registered now) is left out; its dependents report it.
+        if current not in needed and current in by_name:
             needed.append(current)
             pending.extend(by_name[current]['after'])
     counts = {c: sum(1 for d in by_name[c]['after'] if d in needed) for c in needed}
@@ -285,12 +378,40 @@ class Conditions:
         self.index()
 
     def index(self):
-        """Conditions by name, from the saved platforms."""
-        self.definitions, self.devices = {}, {}
-        for platform in self.engine.platforms.values():
-            for condition in platform['definition'].get('conditions', []):
-                self.definitions[condition['id']] = {**condition, 'platform': platform['id']}
-                self.devices[condition['id']] = self._devices(condition)
+        """Conditions by name: those of the registered instruments, then those of the saved platforms."""
+        self.definitions, self.devices, self.errors = {}, {}, {}
+        for device_id, record in sorted(self.engine.device_records.items()):
+            if record.get('conditions'):
+                try:
+                    for condition in instrument(device_id, record['conditions']):
+                        self.definitions[condition['id']] = {**condition, 'device': device_id}
+                except ValueError as error:
+                    self.errors[device_id] = str(error)
+        for platform_id in sorted(self.engine.platforms):
+            for condition in self.engine.platforms[platform_id]['definition'].get('conditions', []):
+                self.definitions[condition['id']] = {**condition, 'platform': platform_id}
+        for condition_id, condition in self.definitions.items():
+            self.devices[condition_id] = self._devices(condition)
+
+    def scope(self, platform_id):
+        """The conditions of a platform and of its instruments."""
+        members = set(self.engine.platforms[platform_id]['definition']['devices'])
+        return [c for c, d in self.definitions.items() if d.get('platform') == platform_id or d.get('device') in members]
+
+    def _scope(self, conditions, platform, device):
+        """The platform or instrument whose maintenance covers these conditions."""
+        owners = [self.definitions[c] for c in conditions]
+        platforms = {d['platform'] for d in owners if 'platform' in d}
+        devices = {d['device'] for d in owners if 'device' in d}
+        if len(platforms) > 1:
+            raise ValueError('Maintain the conditions of one platform at a time')
+        chosen = platforms.pop() if platforms else platform
+        if chosen is not None and device is None and platform in (None, chosen) and chosen in self.engine.platforms \
+                and devices <= set(self.engine.platforms[chosen]['definition']['devices']):
+            return chosen, None
+        if not platforms and platform is None and len(devices) == 1 and device in (None, *devices):
+            return None, devices.pop()
+        raise ValueError('Maintain the conditions of one platform and its instruments, or of one instrument, at a time')
 
     def _devices(self, condition):
         devices = set()
@@ -328,16 +449,7 @@ class Conditions:
         """Resources used together during observation, correction and confirmation."""
         engine, amounts, revisions = self.engine, {}, {}
         for condition_id in self.closure(names):
-            condition = self.definitions[condition_id]
-            items = [condition['verify']]
-            for correction in condition['correct']:
-                if 'tune' in correction:
-                    for knob in correction['tune']:
-                        items.extend([self._set(knob, knob['minimum']),
-                                      {k: v for k, v in knob['read'].items() if k != 'value'}])
-                else:
-                    items.append(correction)
-            for item in items:
+            for item in operations_used(self.definitions[condition_id]):
                 expanded, calls = library.expand([{'id': 'step', **item}], engine.library.get)
                 revisions.update({c['operation']: c['revision'] for c in calls.values()})
                 for flat in expanded:
@@ -349,8 +461,9 @@ class Conditions:
     def prepare(self, definition):
         """Check the conditions of a platform being saved against its devices and the saved operations."""
         engine = self.engine
-        taken = {c for c, d in self.definitions.items() if d['platform'] != definition['id']}
-        conditions = check(definition.get('conditions', []), taken)
+        taken = {c for c, d in self.definitions.items() if d.get('platform') != definition['id']}
+        external = {c for c, d in self.definitions.items() if d.get('device') in definition['devices']}
+        conditions = check(definition.get('conditions', []), taken, external)
         for condition in conditions:
             for item in [condition['verify']] + condition['correct']:
                 if 'tune' in item:
@@ -370,11 +483,29 @@ class Conditions:
                     engine._operation('prepare', flat)
         return conditions
 
+    def prepare_instrument(self, device_id, record, description):
+        """Check an instrument's own conditions against its operations; returns them with laboratory names."""
+        conditions = instrument(device_id, record['conditions']) if record.get('conditions') else []
+        names = {c['id'] for c in conditions}
+        for condition_id, definition in self.definitions.items():
+            if condition_id in names and definition.get('device') != device_id:
+                raise ValueError(f'Condition {condition_id} is already defined on a platform or another instrument')
+        removed = {c for c, d in self.definitions.items() if d.get('device') == device_id} - names
+        for condition_id, definition in self.definitions.items():
+            if 'platform' in definition and removed & set(definition['after']):
+                raise ValueError(f"Platform condition {condition_id} depends on {', '.join(sorted(removed & set(definition['after'])))}; "
+                                 f"revise platform {definition['platform']} first")
+        available(conditions, description['operations'])
+        return conditions
+
     # State: what is known without touching an instrument.
 
     def state(self, condition_id, at=None, visiting=()):
         condition, saved = self.definitions[condition_id], self.states.get(condition_id)
         at = at or seconds(now())
+        missing = [d for d in condition['after'] if d not in self.definitions]
+        if missing:
+            return {'state': 'unknown', 'reason': ', '.join(missing) + ' not defined'}
         if not saved or saved.get('basis') != self.basis(condition) or 'verified' not in saved:
             return {'state': 'unknown'}
         shown = {key: saved[key] for key in ('verified', 'value', 'accepted', 'reference') if saved.get(key) not in (None, {})}
@@ -396,19 +527,24 @@ class Conditions:
                 return {'state': 'due', 'reason': dependency + ' does not hold', **shown}
         return {'state': 'holds', **shown}
 
-    def listing(self, platform=None):
+    def listing(self, platform=None, device=None):
+        """Conditions with their state, in dependency order: all, a platform's with its instruments', or an instrument's."""
         with self.engine.lock:
             if platform is not None and platform not in self.engine.platforms:
                 raise KeyError(platform)
+            if device is not None and device not in self.engine.devices:
+                raise KeyError(device)
+            selected = (self.scope(platform) if platform is not None else
+                        [c for c, d in self.definitions.items() if d.get('device') == device] if device is not None
+                        else list(self.definitions))
+            local = [{**self.definitions[c], 'after': [a for a in self.definitions[c]['after'] if a in selected]} for c in selected]
             rows = []
-            for platform_id in sorted({d['platform'] for d in self.definitions.values()}):
-                if platform in (None, platform_id):
-                    definitions = [d for d in self.definitions.values() if d['platform'] == platform_id]
-                    for condition_id in order(definitions, [d['id'] for d in definitions]):
-                        condition = self.definitions[condition_id]
-                        rows.append({'id': condition_id, 'platform': platform_id, 'description': condition['description'],
-                                     **({'kind': condition['kind']} if 'kind' in condition else {}),
-                                     'after': condition['after'], **self.state(condition_id)})
+            for condition_id in order(local, selected):
+                condition = self.definitions[condition_id]
+                owner = {'platform': condition['platform']} if 'platform' in condition else {'device': condition['device']}
+                rows.append({'id': condition_id, **owner, 'description': condition['description'],
+                             **({'kind': condition['kind']} if 'kind' in condition else {}),
+                             'after': condition['after'], **self.state(condition_id)})
             return rows
 
     def describe(self, condition_id):
@@ -534,11 +670,11 @@ class Conditions:
 
     # Maintenance: the loop.
 
-    def maintain(self, platform=None, conditions=None, run_id=None, request_id=None, force=False):
+    def maintain(self, platform=None, conditions=None, run_id=None, request_id=None, force=False, device=None):
         engine = self.engine
         with engine.lock:
             request = {'platform': platform, 'conditions': sorted(strings(conditions, 'Conditions')) if conditions else None,
-                       'run_id': run_id, 'force': bool(force)}
+                       'run_id': run_id, 'force': bool(force), **({'device': device} if device is not None else {})}
             if request_id is not None:
                 if not isinstance(request_id, str) or not request_id.strip():
                     raise ValueError('request_id is a nonempty string')
@@ -547,35 +683,42 @@ class Conditions:
                     if previous.get('request') != request:
                         raise ValueError('request_id already names a different maintenance request')
                     return self.job(previous['id'])
-            if not conditions and platform is None and run_id in engine.runs:
+            if not conditions and platform is None and device is None and run_id in engine.runs:
                 # Inside an experiment the default is what that experiment relies on.
                 conditions = engine.runs[run_id].get('requires')
             if conditions:
                 for condition_id in strings(conditions, 'Conditions'):
                     if condition_id not in self.definitions:
                         raise ValueError('Unknown condition: ' + condition_id)
-                platforms = {self.definitions[c]['platform'] for c in conditions}
-                if len(platforms) > 1 or platform not in (None, *platforms):
-                    raise ValueError('Maintain the conditions of one platform at a time')
-                platform, targets = platforms.pop(), list(conditions)
+                platform, device = self._scope(conditions, platform, device)
+                targets = list(conditions)
+            elif device is not None:
+                if device not in engine.devices:
+                    raise ValueError('Name a platform, an instrument or their conditions')
+                targets = [c for c, d in self.definitions.items() if d.get('device') == device]
+                if not targets:
+                    raise ValueError('This instrument has no conditions')
             else:
                 if platform not in engine.platforms:
                     raise ValueError('Name a platform or its conditions')
-                targets = [c for c, d in self.definitions.items() if d['platform'] == platform]
+                targets = self.scope(platform)
                 if not targets:
                     raise ValueError('This platform has no conditions')
-            active = [job for job in self.jobs.values() if job['platform'] == platform and job['state'] == 'running']
+            closure = self.closure(targets)
+            active = [job for job in self.jobs.values() if job['state'] == 'running' and set(closure) & set(job['closure'])]
             if active:
-                raise RequestError('maintenance_active', 'This platform is being maintained; read that maintenance.',
+                raise RequestError('maintenance_active', 'These conditions are being maintained; read that maintenance.',
                                    maintenance=active[0]['id'])
             from .engine import identifier
-            job = {'id': identifier('maintenance'), 'request_id': request_id, 'platform': platform, 'conditions': targets,
+            job = {'id': identifier('maintenance'), 'request_id': request_id, 'platform': platform,
+                   **({'device': device} if device is not None else {}), 'conditions': targets, 'closure': closure,
                    'force': bool(force), 'state': 'running', 'started': now(), 'report': [], 'steps': 0,
                    'run_id': run_id, 'own_run': run_id is None, 'request': request}
             amounts, job['operation_revisions'] = self.requirements(targets)
             if run_id is None:
                 # Keep coupled devices together through the complete correction cycle.
-                job['run_id'] = engine.submit({'kind': 'external', 'name': 'Maintain ' + platform, 'platform': platform,
+                job['run_id'] = engine.submit({'kind': 'external', 'name': 'Maintain ' + (platform or device),
+                                               **({'platform': platform} if platform is not None else {}),
                                                'resources': sorted(k[7:] for k in amounts if k.startswith(('device:', 'shared:'))),
                                                'requirements': {k[5:]: n for k, n in amounts.items() if k.startswith('pool:')},
                                                'request_id': job['id']})['id']
@@ -619,7 +762,8 @@ class Conditions:
 
     @staticmethod
     def _public(job):
-        return {**{k: v for k, v in job.items() if k not in ('steps', 'own_run', 'force', 'request')}, 'complete': job['state'] != 'running'}
+        return {**{k: v for k, v in job.items() if k not in ('steps', 'own_run', 'force', 'request', 'closure')},
+                'complete': job['state'] != 'running'}
 
     def _work(self, job):
         engine = self.engine
@@ -677,7 +821,7 @@ class Conditions:
         condition = self.definitions[condition_id]
         entry = {'condition': condition_id}
         for dependency in condition['after']:
-            if self._ensure(job, dependency, done, investigated) != 'holds':
+            if dependency not in self.definitions or self._ensure(job, dependency, done, investigated) != 'holds':
                 entry.update(result='blocked', by=dependency)
                 return self._report(job, done, entry)
         with self.engine.lock:
@@ -741,10 +885,7 @@ class Conditions:
         self.verified(condition['id'], found, value, kept, job['run_id'])
         return found, value
 
-    @staticmethod
-    def _set(knob, position):
-        return {'device': knob['device'], 'operation': knob['operation'],
-                'arguments': {**knob.get('arguments', {}), knob['argument']: position}}
+    _set = staticmethod(setting)
 
     def _tune(self, job, condition, item, value, initial_outcome):
         """Adjust the settings one at a time against the verification value, halving the step when no move helps.

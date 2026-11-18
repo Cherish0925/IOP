@@ -137,7 +137,7 @@
         "minLength": 1
       },
       "uniqueItems": true,
-      "description": "Platform conditions that must hold when the operation is used."
+      "description": "Conditions that must hold when the operation is used: a platform's, or an instrument's named <device>.<id>."
     }
   },
   "additionalProperties": false,

@@ -23,6 +23,8 @@ Open an instrument, choose “Add model operations”, select an installed descr
 
 Descriptions hold `scpi`, `modbus` or `http` operations, set by `driver` (default `scpi`). SCPI descriptions are matched automatically from `*IDN?`. For Modbus and HTTP instruments, which report no standard identity, name the description when registering: `{"id": "bath", "instrument_profile": "vendor-tc1", "config": {"host": "192.168.1.60", "device_id": 3}}`. Its operations, name and documentation are added; operations given in `config` take precedence. Modbus operations name a `function` with fixed `arguments`, `scale`, `offset`, `signed`, `unit` and `value_parameter`; HTTP operations name a `path`, `method`, `query`, `body` and `result_path`. SDK drivers describe their own operations and are registered through discovery profiles.
 
+A description can also carry the instrument's own [conditions](../docs/runtime/conditions.md#conditions-of-an-instrument--仪器自身的条件): warm-up, overload, reference lock or self-calibration, observed and restored with its own operations. Each instrument that registers with the description, or is identified as that model, gets them as `<device>.<id>`; a condition of the same name in the record takes precedence, and a condition needing an operation the instrument does not offer is left out.
+
 Automatic matching prefers laboratory descriptions, then installed packages, then built-in descriptions. Within a source tier, narrower model, serial-number or firmware conditions take precedence. Equally applicable descriptions remain explicit alternatives; generic SCPI operations remain available. Reading the catalogue sends no instrument commands.
 
 ## Package layout

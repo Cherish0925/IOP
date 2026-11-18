@@ -12,8 +12,8 @@ export type Condition = {
   after?: string[]; verify: ConditionStep; accept: Tolerance; usable?: Tolerance; reference?: Record<string, (string | number)[]>;
   correct?: ConditionStep | Tuning | (ConditionStep | Tuning)[]; settle?: number; valid_for?: number; note?: string;
 };
-export type ConditionState = { id: string; platform: string; description: string; kind?: string; after: string[]; state: 'holds' | 'due' | 'lost' | 'unknown'; reason?: string; value?: unknown; verified?: string; valid_until?: string; [key: string]: unknown };
-export type Maintenance = { id: string; platform: string; state: string; complete: boolean; holds?: boolean; run_id: string; report: { condition: string; result: 'held' | 'verified' | 'corrected' | 'lost' | 'blocked'; value?: unknown; by?: string; found?: string }[]; error?: string };
+export type ConditionState = { id: string; platform?: string; device?: string; description: string; kind?: string; after: string[]; state: 'holds' | 'due' | 'lost' | 'unknown'; reason?: string; value?: unknown; verified?: string; valid_until?: string; [key: string]: unknown };
+export type Maintenance = { id: string; platform: string | null; device?: string; state: string; complete: boolean; holds?: boolean; run_id: string; report: { condition: string; result: 'held' | 'verified' | 'corrected' | 'lost' | 'blocked'; value?: unknown; by?: string; found?: string }[]; error?: string };
 export type PlatformDefinition = {
   schema_version: 1; id: string; name?: string; description?: string; devices: string[];
   resources?: { id: string; devices: string[]; description?: string; operations?: Record<string, string[]> }[];
@@ -103,12 +103,16 @@ export class IOP {
   programFile(id: string, name: string) {
     return this.request<{ text: string | null }>(`/v1/library/${encodeURIComponent(id)}/files/${name.split('/').map(encodeURIComponent).join('/')}`);
   }
-  conditions(platform?: string) { return this.request<ConditionState[]>('/v1/conditions' + (platform ? '?' + new URLSearchParams({ platform }) : '')); }
+  /** Conditions with their state; `platform` adds its instruments' own conditions, `device` gives one instrument's. */
+  conditions(platform?: string, device?: string) {
+    const query = new URLSearchParams(Object.entries({ platform, device }).filter((entry): entry is [string, string] => Boolean(entry[1])));
+    return this.request<ConditionState[]>('/v1/conditions' + (query.size ? '?' + query : ''));
+  }
   condition(id: string) { return this.request<Condition & ConditionState & { statistics: Record<string, unknown>; records: Record<string, unknown>[] }>('/v1/conditions/' + encodeURIComponent(id)); }
   /** Verify the conditions that are due and correct those that drifted, in dependency order; resolves when the pass has ended. */
-  async maintain(options: { platform?: string; conditions?: string[]; runId?: string; requestId?: string; force?: boolean; signal?: AbortSignal } = {}): Promise<Maintenance> {
+  async maintain(options: { platform?: string; device?: string; conditions?: string[]; runId?: string; requestId?: string; force?: boolean; signal?: AbortSignal } = {}): Promise<Maintenance> {
     let job = await this.request<Maintenance>('/v1/conditions/maintain?wait=25', {
-      platform: options.platform, conditions: options.conditions, run_id: options.runId,
+      platform: options.platform, device: options.device, conditions: options.conditions, run_id: options.runId,
       request_id: options.requestId ?? crypto.randomUUID(), force: options.force ?? false }, options.signal);
     while (!job.complete) job = await this.request<Maintenance>(`/v1/maintenance/${encodeURIComponent(job.id)}?wait=25`, undefined, options.signal);
     return job;

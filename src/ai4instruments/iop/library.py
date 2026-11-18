@@ -70,7 +70,7 @@ def check(definition, lookup):
         raise ValueError('conditions state in words when the result has its meaning')
     requires = definition.get('requires', [])
     if not isinstance(requires, list) or any(not isinstance(c, str) or not c for c in requires) or len(set(requires)) != len(requires):
-        raise ValueError('requires names the platform conditions that must hold when the operation is used')
+        raise ValueError('requires names the conditions that must hold when the operation is used')
     declared = definition.get('parameters', {})
     if not isinstance(declared, dict) or any(not isinstance(spec, dict) for spec in declared.values()):
         raise ValueError('Each parameter needs a description object')

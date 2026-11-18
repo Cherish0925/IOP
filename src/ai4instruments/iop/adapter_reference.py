@@ -20,6 +20,8 @@ RECORD = {
     'allowed_operations': 'name patterns to keep; omit to keep all',
     'calibration': '{id, date, valid_until, certificate, uncertainty, enforce}',
     'monitors': '[{id, operation, interval_s, minimum, maximum, equals, on_violation: record | hold, hold: [resources]}]',
+    'conditions': ('[{id, description, verify: {operation, arguments}, accept: {value, minimum, maximum, equals}, correct, after, '
+                   'valid_for}]: what must hold for this instrument, named <device>.<id>; its own operations only'),
     'execution': '{"mode": "process"} runs the driver in its own process',
 }
 ARRAY = ('{type: "array", dtype: int8..uint64 | float32 | float64, byte_order, shape, unit, axes}: saved as a file and '

@@ -68,7 +68,8 @@ class InstrumentCatalog:
         offset, limit = max(0, int(offset)), min(200, max(1, int(limit)))
         page = profiles[offset:offset + limit]
         return {'profiles': page if details else [{k: p[k] for k in ('id', 'match', 'source', 'documentation') if k in p} |
-                            {'operations': list(p['config']['operations'])} for p in page],
+                            {'operations': list(p['config']['operations'])} |
+                            ({'conditions': [c['id'] for c in p['conditions']]} if p.get('conditions') else {}) for p in page],
                 'total': len(profiles), 'offset': offset, 'next_offset': offset + limit if offset + limit < len(profiles) else None,
                 'errors': copy.deepcopy(self.errors)}
 

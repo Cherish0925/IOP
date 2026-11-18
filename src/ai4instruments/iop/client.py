@@ -233,25 +233,31 @@ class Client:
         return self.request('/v1/library/' + quote(operation_id, safe='') + '/files/' + quote(name, safe='/') +
                             ('?' + urlencode({'revision': revision}) if revision else ''))
 
-    def conditions(self, platform=None):
-        """What must hold for experiments, with what is known now: holds, due, lost or unknown."""
-        return self.request('/v1/conditions' + ('?' + urlencode({'platform': platform}) if platform else ''))
+    def conditions(self, platform=None, device=None):
+        """What must hold for experiments, with what is known now: holds, due, lost or unknown.
+
+        ``platform`` gives a platform's conditions with those of its instruments; ``device`` one instrument's.
+        """
+        query = {k: v for k, v in (('platform', platform), ('device', device)) if v}
+        return self.request('/v1/conditions' + ('?' + urlencode(query) if query else ''))
 
     def condition(self, condition_id):
         """One condition with its definition, state, statistics and latest records."""
         return self.request('/v1/conditions/' + quote(condition_id, safe=''))
 
-    def maintain(self, platform=None, conditions=None, *, run_id=None, request_id=None, force=False, timeout=None):
+    def maintain(self, platform=None, conditions=None, *, device=None, run_id=None, request_id=None, force=False, timeout=None):
         """Verify the conditions that are due and correct those that drifted, in dependency order.
 
         Returns the report when the pass has ended; ``holds`` says whether every named condition holds.
+        A platform's pass includes the conditions of its instruments; ``device`` maintains one instrument's.
         Inside an experiment pass its ``run_id``; ``force`` verifies conditions whose state still holds.
         """
         request_id = request_id or uuid.uuid4().hex
         deadline = time.monotonic() + timeout if timeout is not None else None
         wait = min(25, max(0, self.timeout - 1))
         job = self.request('/v1/conditions/maintain?' + urlencode({'wait': wait}), {
-            'platform': platform, 'conditions': conditions, 'run_id': run_id, 'request_id': request_id, 'force': force})
+            'platform': platform, 'conditions': conditions, 'run_id': run_id, 'request_id': request_id, 'force': force,
+            **({'device': device} if device else {})})
         while not job['complete']:
             if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError('Maintenance is still running: ' + job['id'])
@@ -277,7 +283,7 @@ class Client:
         return Run(self, record['id'])
 
     def submit(self, steps, *, name='Experiment', project=None, experiment=None, resources=(), request_id=None, parameters=None, platform=None, requirements=None, requires=()):
-        """Submit a graph of steps. ``requires`` names platform conditions that must hold for it to be accepted."""
+        """Submit a graph of steps. ``requires`` names conditions that must hold for it to be accepted."""
         return Run(self, self.request('/v1/runs', {'name':name, 'project':project, 'experiment':experiment,
                    'steps':steps, 'resources':list(resources), 'parameters':parameters or {}, 'platform': platform,
                    'requirements':requirements or {}, 'request_id':request_id or str(uuid.uuid4()),
@@ -287,7 +293,7 @@ class Client:
                          request_id=None, parameters=None, platform=None, requirements=None, requires=()):
         """Start one externally driven run; retain its ID and call finish after saving results.
 
-        ``requires`` names platform conditions the experiment relies on: its operations are accepted
+        ``requires`` names the conditions the experiment relies on: its operations are accepted
         while they hold, and ``run.maintain()`` restores them when one is due.
         """
         return Run(self, self.request('/v1/runs', {'kind':'external', 'name':name, 'project':project,

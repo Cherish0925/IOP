@@ -186,10 +186,10 @@ class Handler(BaseHTTPRequestHandler):
             elif len(parts) == 4 and parts[:2] == ['v1', 'library'] and parts[3] == 'history' and method == 'GET':
                 result = engine.store.saved_operation_history(parts[2])
             elif parts == ['v1', 'conditions'] and method == 'GET':
-                result = engine.conditions.listing(query.get('platform'))
+                result = engine.conditions.listing(query.get('platform'), query.get('device'))
             elif parts == ['v1', 'conditions', 'maintain'] and method == 'POST':
                 job = engine.conditions.maintain(body.get('platform'), body.get('conditions'), body.get('run_id'),
-                                                 body.get('request_id'), body.get('force', False))
+                                                 body.get('request_id'), body.get('force', False), body.get('device'))
                 result = engine.conditions.job(job['id'], query.get('wait', 0)) if query.get('wait') else job
             elif parts == ['v1', 'conditions', 'invalidate'] and method == 'POST':
                 result = engine.conditions.invalidate(body['conditions'], body['reason'])
@@ -224,6 +224,9 @@ class Handler(BaseHTTPRequestHandler):
                     monitors = engine.monitors.summary(parts[2])
                     if monitors:
                         result['monitors'] = monitors
+                    conditions = engine.conditions.listing(device=parts[2])
+                    if conditions:
+                        result['conditions'] = conditions
             elif len(parts) == 4 and parts[:2] == ['v1', 'devices'] and parts[3] == 'history' and method == 'GET':
                 result = engine.store.device_history(parts[2], query.get('limit', 100))
             elif len(parts) == 4 and parts[:2] == ['v1', 'devices'] and parts[3] == 'configuration' and method == 'POST':

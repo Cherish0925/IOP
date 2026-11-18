@@ -71,7 +71,105 @@
           "unit": "Hz"
         },
         "effect": "observe"
+      },
+      "input_overload_detected": {
+        "description": "Read and clear LIA status bit 0 (INPUT/RESRV): 1 when an input or amplifier overload was detected since the bit was last read or cleared.",
+        "parameters": {},
+        "query": "LIAS? 0",
+        "result": {
+          "type": "integer"
+        },
+        "effect": "observe"
+      },
+      "filter_overload_detected": {
+        "description": "Read and clear LIA status bit 1 (FILTR): 1 when a time constant filter overload was detected since the bit was last read or cleared.",
+        "parameters": {},
+        "query": "LIAS? 1",
+        "result": {
+          "type": "integer"
+        },
+        "effect": "observe"
+      },
+      "output_overload_detected": {
+        "description": "Read and clear LIA status bit 2 (OUTPT): 1 when an output overload was detected since the bit was last read or cleared.",
+        "parameters": {},
+        "query": "LIAS? 2",
+        "result": {
+          "type": "integer"
+        },
+        "effect": "observe"
+      },
+      "reference_unlock_detected": {
+        "description": "Read and clear LIA status bit 3 (UNLK): 1 when a reference unlock was detected since the bit was last read or cleared.",
+        "parameters": {},
+        "query": "LIAS? 3",
+        "result": {
+          "type": "integer"
+        },
+        "effect": "observe"
       }
     }
-  }
+  },
+  "conditions": [
+    {
+      "id": "reference_locked",
+      "kind": "lock",
+      "description": "No reference unlock since the previous observation",
+      "verify": {
+        "operation": "reference_unlock_detected"
+      },
+      "accept": {
+        "value": [
+          "value"
+        ],
+        "equals": 0
+      },
+      "note": "LIA status bits stay set until read; reading the bit clears it, so the next observation shows whether the condition has returned."
+    },
+    {
+      "id": "input_in_range",
+      "kind": "operating_point",
+      "description": "No input or amplifier overload since the previous observation",
+      "verify": {
+        "operation": "input_overload_detected"
+      },
+      "accept": {
+        "value": [
+          "value"
+        ],
+        "equals": 0
+      },
+      "note": "An overload is removed by a lower sensitivity or a higher dynamic reserve; the experiment decides which. LIA status bits stay set until read; reading the bit clears it, so the next observation shows whether the condition has returned."
+    },
+    {
+      "id": "filter_in_range",
+      "kind": "operating_point",
+      "description": "No time constant filter overload since the previous observation",
+      "verify": {
+        "operation": "filter_overload_detected"
+      },
+      "accept": {
+        "value": [
+          "value"
+        ],
+        "equals": 0
+      },
+      "note": "LIA status bits stay set until read; reading the bit clears it, so the next observation shows whether the condition has returned."
+    },
+    {
+      "id": "output_in_range",
+      "kind": "operating_point",
+      "description": "No output overload since the previous observation",
+      "verify": {
+        "operation": "output_overload_detected"
+      },
+      "accept": {
+        "value": [
+          "value"
+        ],
+        "equals": 0
+      },
+      "note": "LIA status bits stay set until read; reading the bit clears it, so the next observation shows whether the condition has returned."
+    }
+  ]
 }

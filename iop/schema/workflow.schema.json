@@ -106,7 +106,7 @@
         "minLength": 1
       },
       "uniqueItems": true,
-      "description": "Platform conditions that must hold for the experiment to be accepted."
+      "description": "Conditions that must hold for the experiment to be accepted: a platform's, or an instrument's named <device>.<id>."
     }
   },
   "$defs": {

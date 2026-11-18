@@ -64,6 +64,27 @@ Conditions are part of the platform description (`conditions`) and are saved wit
 
 A correction acts on the system. A `reference` acts on the data: the condition "the dark level was measured within the last half hour" has no correction beyond measuring again, and its value travels with every experiment that requires it. / 校正作用于系统；`reference` 作用于数据：“半小时内测过暗计数”这个条件的校正就是再测一次，它的数值随每个依赖它的实验保存。
 
+## Conditions of an instrument / 仪器自身的条件
+
+Some conditions belong to one instrument wherever it is used: a laser diode at its temperature, a lock-in amplifier without overload or reference unlock, a source warmed up, a self-calibration that is current. They are written in the device record or in its [model description](../../iop/instrument-packages.md), observed and restored with that instrument's own operations, and named `<device>.<id>` in the laboratory. / 有些条件属于单台仪器，不论它用在哪里：激光二极管到达工作温度、锁相放大器没有过载或参考失锁、光源已预热、自校准仍然有效。它们写在设备记录或[型号说明](../../iop/instrument-packages.zh-CN.md)里，用这台仪器自己的操作观察和恢复，在实验室中命名为 `<device>.<id>`。
+
+```json
+{"id": "laser", "driver": "...", "config": {"...": "..."},
+ "conditions": [
+   {"id": "warm", "kind": "equilibrium", "description": "The diode is at its set temperature",
+    "verify": {"operation": "temperature"}, "accept": {"minimum": 24.5, "maximum": 25.5},
+    "correct": {"operation": "wait_warm", "arguments": {"minutes": 30}}},
+   {"id": "power_ok", "description": "The output power is at its working value", "after": ["warm"],
+    "verify": {"operation": "power"}, "accept": {"minimum": 0.9, "maximum": 1.1}}]}
+```
+
+- `device` may be omitted from their operations; another instrument is refused. `after` names conditions of the same instrument by their local names. / 操作中可以省略 `device`；用到其他仪器会被拒绝。`after` 用本地名称指向同一台仪器的条件。
+- Registration and configuration check them against the instrument's operations and parameter ranges. A configuration that removes a condition a platform depends on is refused until the platform is revised. / 登记和修改配置时，按仪器的操作和参数范围核对。删除平台所依赖的条件时，配置被拒绝，先修改平台。
+- A platform condition may depend on them: `"after": ["laser.power_ok"]`. A platform's listing, its next step in `lab_context` and `maintain(platform)` include the conditions of its instruments. An instrument outside every platform is maintained alone with `maintain(device=...)`. / 平台条件可以依赖它们。平台的列表、`lab_context` 中的下一步和 `maintain(platform)` 都包含其仪器的条件；不属于任何平台的仪器用 `maintain(device=...)` 单独保持。
+- A model description can carry them. Every instrument that registers with that description, or is identified as that model, gets those conditions unless its record defines the same name; a condition is left out when an operation it needs is not among the instrument's operations or `allowed_operations`. / 型号说明可以携带它们。按该说明登记或被识别为该型号的每台仪器都会得到这些条件，记录中同名的条件优先；所需操作不在仪器操作或 `allowed_operations` 中的条件不加入。
+
+The built-in SR830 description carries four: `reference_locked`, `input_in_range`, `filter_in_range` and `output_in_range`, each read from one LIA status bit. These bits stay set until they are read, so an observation reports whether an unlock or overload occurred since the previous one; data taken in between by experiments that relied on the condition are marked `in_doubt`. / 内置的 SR830 说明带有四个条件，各读一个 LIA 状态位。这些位读取前保持置位，所以一次观察说明的是自上次观察以来是否发生过失锁或过载；依赖该条件的实验在这期间采集的数据被标为 `in_doubt`。
+
 ## Tuning / 调节
 
 Most corrections an experimentalist makes by hand have one form: change a setting a little, look at the reading, keep the change if it helped. `tune` lets the Runtime do this itself, for one setting or for several adjusted jointly. / 实验者手动做的校正大多是同一种形式：把某个设定改一点，看读数，变好就保留。`tune` 让运行服务自己做这件事，可以是一个设定，也可以是多个设定联合调节。
@@ -167,12 +188,12 @@ Settling times, warm-up times and safe ranges come from the instrument manuals; 
 
 | | Read / 读取 | Maintain / 保持 | Disturbance / 扰动 |
 | --- | --- | --- | --- |
-| HTTP | `GET /v1/conditions?platform=`, `GET /v1/conditions/{id}` | `POST /v1/conditions/maintain?wait=`, `GET /v1/maintenance/{id}?wait=` | `POST /v1/conditions/invalidate` |
-| Python | `client.conditions()`, `client.condition(id)` | `client.maintain(platform)`, `run.maintain()` | `client.invalidate(names, reason)` |
+| HTTP | `GET /v1/conditions?platform=&device=`, `GET /v1/conditions/{id}` | `POST /v1/conditions/maintain?wait=`, `GET /v1/maintenance/{id}?wait=` | `POST /v1/conditions/invalidate` |
+| Python | `client.conditions()`, `client.condition(id)` | `client.maintain(platform)`, `client.maintain(device=...)`, `run.maintain()` | `client.invalidate(names, reason)` |
 | TypeScript | `conditions()`, `condition(id)` | `maintain({platform})`, `run.maintain()` | `invalidate(names, reason)` |
 | MCP | `operating_conditions()` | `operating_conditions(maintain=true, ...)` | `operating_conditions(invalidate=..., conditions=[...])` |
-| CLI | `iop conditions [name]` | `iop conditions --platform P --maintain` | |
+| CLI | `iop conditions [name]` | `iop conditions --platform P --maintain`, `--device D --maintain` | |
 
 `maintain` accepts `platform` or `conditions`, `run_id` to run inside that experiment, `request_id` so a repeated request returns the same pass, and `force` to verify what still holds. Its report lists each condition with `held`, `verified`, `corrected` (and `by`), `lost` or `blocked`. / `maintain` 接受 `platform` 或 `conditions`，`run_id` 表示在该实验内部运行，`request_id` 使重复请求返回同一轮，`force` 连仍然成立的也核对。报告逐条给出 `held`、`verified`、`corrected`（及 `by`）、`lost` 或 `blocked`。
 
-Conditions currently belong to platform descriptions. A reusable instrument profile does not yet install platform conditions automatically. / 条件目前保存在平台说明中；安装可复用的仪器型号说明，还不会自动安装平台条件。
+Platform conditions belong to platform descriptions; an instrument's own conditions belong to its record and can come with its model description. / 平台条件保存在平台说明中；仪器自身的条件保存在设备记录中，并可随型号说明一起提供。

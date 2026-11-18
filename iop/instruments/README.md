@@ -8,7 +8,7 @@ Model descriptions map manufacturer/model names to documented commands, register
 
 | File | Models | Operations | Source |
 | --- | --- | --- | --- |
-| [srs-sr830.json](srs-sr830.json) | SR830 | X, Y, magnitude, phase, simultaneous X/Y, reference frequency | [SRS manual](https://www.thinksrs.com/downloads/pdfs/manuals/SR830m.pdf), Remote Programming, pp. 5-4, 5-15, 5-19 |
+| [srs-sr830.json](srs-sr830.json) | SR830 | X, Y, magnitude, phase, simultaneous X/Y, reference frequency; LIA status bits 0–3 (input, filter and output overload, reference unlock) with four instrument conditions | [SRS manual](https://www.thinksrs.com/downloads/pdfs/manuals/SR830m.pdf), Remote Programming, pp. 5-4, 5-15, 5-19, 5-20, 5-23 |
 | [rigol-dp800-three-channel.json](rigol-dp800-three-channel.json) | DP831, DP831A, DP832, DP832A | Channel voltage/current/power, output state, output enable | [RIGOL programming guide, manufacturer document hosted by Batronix](https://www.batronix.com/pdf/Rigol/ProgrammingGuide/DP800_ProgrammingGuide_EN.pdf), pp. 2-34–2-36, 2-63 |
 | [rigol-dp800-two-channel.json](rigol-dp800-two-channel.json) | DP821, DP821A | Same operations with two-channel selection | Same guide |
 | [rigol-dp800-one-channel.json](rigol-dp800-one-channel.json) | DP811, DP811A | Same operations with CH1 | Same guide |

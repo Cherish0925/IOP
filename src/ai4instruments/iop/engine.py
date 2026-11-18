@@ -676,6 +676,7 @@ class Engine:
                 with self.lock:
                     if self.stopping:
                         raise ValueError("Service is stopping")
+                    self.conditions.prepare_instrument(device_id, record, description)
                     self.devices[device_id] = driver
                     self.device_records[device_id] = record
                     metadata = {k:record[k] for k in METADATA if k in record}
@@ -683,6 +684,7 @@ class Engine:
                     self.descriptions[device_id]['revision'] = self.store.save_device(record)['revision']
                     self.allocation.limits['device:' + device_id] = concurrency
                     self.monitors.configure(device_id, monitors)
+                    self.conditions.index()
                     if persist:
                         saved = {d['id']: d for d in self.config.get('devices', [])}
                         saved[device_id] = record
@@ -750,6 +752,9 @@ class Engine:
                                               **record['config'].get('operations', {})}
             if 'protocol' in enriched['config']:
                 record['config']['protocol'] = {**enriched['config']['protocol'], **record['config'].get('protocol', {})}
+            if enriched.get('conditions'):
+                from .identification import builtin_operations, merge_conditions
+                merge_conditions(record, enriched['conditions'], builtin_operations('scpi'))
             if not record.get('execution'):
                 self.devices[device_id].config.update(record['config'])
         elif enriched.get('profile_candidates') and not record['config'].get('operations'):
@@ -766,6 +771,7 @@ class Engine:
         self.descriptions[device_id]['revision'] = self.store.save_device(record)['revision']
         self.config['devices'] = [record if d['id'] == device_id else d for d in self.config['devices']]
         save_json(self.home / 'config.json', self.config)
+        self.conditions.index()
 
     def instrument_profiles(self):
         return self.instrument_catalog.profiles(self.config)
@@ -807,6 +813,7 @@ class Engine:
                     self.descriptions[device_id]['revision'] = self.store.save_device(record)['revision']
                     self.config['devices'] = [record if d['id'] == device_id else d for d in self.config['devices']]
                     save_json(self.home/'config.json', self.config)
+                    self.conditions.index()
                     with self.store.transaction():
                         self.store.event('instrument.connection_changed', device_id=device_id, connection=enrollment_key)
                     return self.descriptions[device_id]

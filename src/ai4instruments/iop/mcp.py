@@ -238,19 +238,21 @@ def create_server(client, *, http=False, selection=None):
         return client.saved_operation(operation) if operation else client.saved_operations()
 
     @tool()
-    def operating_conditions(platform: str | None = None, condition: str | None = None, maintain: bool = False,
+    def operating_conditions(platform: str | None = None, device: str | None = None, condition: str | None = None,
+                             maintain: bool = False,
                              conditions: list[str] | None = None, run_id: str | None = None,
                              request_id: str | None = None, force: bool = False, invalidate: str | None = None,
                              maintenance: str | None = None, wait: float = 0) -> dict | list:
-        """Conditions a platform's experiments rely on (environment, equilibrium, references, calibration, alignment, locks, operating point, signal), each with a verification, a tolerance, corrections and a validity time. No arguments: all with their state (holds, due, lost, unknown). condition: one with statistics and records. maintain=true with platform or conditions: verify what is due and correct what drifted, dependencies first; pass request_id, and run_id inside an experiment; force re-verifies what holds. Returns within wait (up to 25 s); read on with maintenance=<id>. invalidate=<reason> marks conditions due after a disturbance."""
+        """Conditions experiments rely on (environment, equilibrium, references, calibration, alignment, locks, operating point, signal), each with a verification, a tolerance, corrections and a validity time. A platform states its own; an instrument's own (warm-up, overload, reference lock) are named <device>.<id> and often come with its model description. No arguments: all with their state (holds, due, lost, unknown); platform or device narrows it. condition: one with statistics and records. maintain=true with platform, device or conditions: verify what is due and correct what drifted, dependencies first; pass request_id, and run_id inside an experiment; force re-verifies what holds. Returns within wait (up to 25 s); read on with maintenance=<id>. invalidate=<reason> marks conditions due after a disturbance."""
         if maintenance:
             return client.request('/v1/maintenance/' + quote(maintenance, safe='') + waiting(wait))
         if invalidate:
             return client.invalidate(conditions or [], invalidate)
         if maintain:
             return client.request('/v1/conditions/maintain' + waiting(wait), {
-                'platform': platform, 'conditions': conditions, 'run_id': run_id, 'request_id': request_id, 'force': force})
-        return client.condition(condition) if condition else client.conditions(platform)
+                'platform': platform, 'conditions': conditions, 'run_id': run_id, 'request_id': request_id, 'force': force,
+                **({'device': device} if device else {})})
+        return client.condition(condition) if condition else client.conditions(platform, device)
 
     @tool()
     def configure_platform(definition: dict, expected_revision: int = 0, preview: bool = False) -> dict:
@@ -273,7 +275,7 @@ def create_server(client, *, http=False, selection=None):
     def submit_experiment(steps: list[dict], request_id: str, name: str = 'Experiment',
                           platform: str | None = None, resources: list[str] | None = None,
                           requirements: dict[str, int] | None = None, requires: list[str] | None = None) -> dict:
-        """Submit instrument operations with after dependencies and optional result bindings. Returns immediately. Reuse request_id only for the identical submission. requires names platform conditions that must hold for the experiment to be accepted."""
+        """Submit instrument operations with after dependencies and optional result bindings. Returns immediately. Reuse request_id only for the identical submission. requires names conditions (operating_conditions lists them) that must hold for the experiment to be accepted."""
         return client.submit(steps, name=name, platform=platform, resources=resources or [],
                              requirements=requirements, request_id=request_id, requires=requires or ()).info(details=False)
 
@@ -281,7 +283,7 @@ def create_server(client, *, http=False, selection=None):
     def start_experiment(request_id: str, name: str = 'Experiment', platform: str | None = None,
                          resources: list[str] | None = None, parameters: dict | None = None,
                          requirements: dict[str, int] | None = None, requires: list[str] | None = None) -> dict:
-        """Start one experiment for successive agent decisions. Reserve all mutually dependent devices up front. The run stays open across connections until finished or cancelled. requires names platform conditions it relies on: operations are accepted while they hold, and operating_conditions(maintain=true, run_id=...) restores them."""
+        """Start one experiment for successive agent decisions. Reserve all mutually dependent devices up front. The run stays open across connections until finished or cancelled. requires names the conditions it relies on (operating_conditions lists them): operations are accepted while they hold, and operating_conditions(maintain=true, run_id=...) restores them."""
         return client.start_experiment(request_id=request_id, name=name, platform=platform,
                                        resources=resources or [], parameters=parameters,
                                        requirements=requirements, requires=requires or ()).info(details=False)

@@ -107,9 +107,16 @@ try {
   await page.click("#overview-discover");
   await page.waitForSelector('[data-register="0"]');
   assert.equal(await page.locator("#discovery-section pre").count(), 0);
-  const identified = (await api("devices")).find(
-    (d) => d.identity?.model === "SR830",
-  );
+  // The connections can be listed before identification of the SR830 has finished.
+  const identifying = performance.now() + 10000;
+  let identified;
+  do {
+    identified = (await api("devices")).find(
+      (d) => d.identity?.model === "SR830",
+    );
+    if (identified) break;
+    await pause(50);
+  } while (performance.now() < identifying);
   assert.ok(identified);
   await page.click(`[data-device="${identified.id}"]`);
   assert.ok(
@@ -479,7 +486,10 @@ sys.stdout.buffer.write(b.getvalue())`,
       document.querySelector('[data-condition="axis.in_range"]') &&
       !document.querySelector('[data-condition="axis.in_range"] .error-text'),
   );
-  assert.equal((await api("conditions"))[0].state, "holds");
+  // The identified SR830 brings the conditions of its model; the platform pass covers only its own instruments.
+  const conditions = await api("conditions");
+  assert.equal(conditions.find((c) => c.id === "axis.in_range").state, "holds");
+  assert.ok(conditions.some((c) => c.id.endsWith(".reference_locked")));
   const lasting = await api("runs", {
     name: "Continues after browser closes",
     steps: [

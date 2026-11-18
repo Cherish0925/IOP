@@ -20,10 +20,61 @@ def same_registration(saved, requested):
     for key in ('identity', 'identity_source', 'instrument_profile', 'documentation', 'profile_candidates'):
         if key not in requested:
             saved.pop(key, None)
-    # Enrichment adds named operations; repeating the original registration remains idempotent.
+    # Enrichment adds named operations and conditions; repeating the original registration remains idempotent.
     if enriched and 'operations' not in requested.get('config', {}) and saved.get('config'):
         saved['config'].pop('operations', None)
+    if enriched and 'conditions' not in requested:
+        saved.pop('conditions', None)
     return saved == requested
+
+
+def builtin_operations(driver):
+    """Operations an adapter provides itself, which model descriptions use without describing them."""
+    from .adapters import MODBUS_FUNCTIONS
+    return {'scpi': {'identify', 'query', 'write'}, 'modbus': set(MODBUS_FUNCTIONS), 'http': set()}.get(driver, set())
+
+
+def merge_conditions(record, conditions, builtin=()):
+    """Add a model description's instrument conditions that the record does not define and can run.
+
+    The record's own conditions take precedence. A described condition is added when every operation it
+    calls is among the record's operations, is allowed by allowed_operations and accepts its arguments,
+    and the conditions it depends on are kept too.
+    """
+    import fnmatch
+    from .conditions import available, instrument, operations_used, order
+    own = list(record.get('conditions', []))
+    names = {c.get('id') for c in own if isinstance(c, dict)}
+    candidates = [c for c in conditions if c['id'] not in names]
+    if not candidates:
+        return record
+    try:
+        named = instrument('device', own + candidates)
+    except ValueError:
+        # The record's own conditions are refused at registration, with the reason.
+        return record
+    by_name = {c['id']: c for c in named}
+    operations = record.get('config', {}).get('operations', {})
+    patterns = record.get('allowed_operations')
+    kept, added = set(names), []
+    for full in order(named, list(by_name)):
+        local = full.split('.', 1)[1]
+        condition = by_name[full]
+        if local in names or any(d.split('.', 1)[1] not in kept for d in condition['after']):
+            continue
+        if patterns is not None and any(item['operation'] != 'identify' and
+                                        not any(fnmatch.fnmatchcase(item['operation'], p) for p in patterns)
+                                        for item in operations_used(condition)):
+            continue
+        try:
+            available([condition], operations, builtin)
+        except ValueError:
+            continue
+        kept.add(local)
+        added.append(copy.deepcopy(next(c for c in candidates if c['id'] == local)))
+    if added:
+        record['conditions'] = own + added
+    return record
 
 
 def validate_profile(profile):
@@ -55,7 +106,7 @@ def validate_profile(profile):
     if not isinstance(operations, dict) or not operations:
         raise ValueError('Provide named instrument operations.')
     from .adapters import MODBUS_FUNCTIONS
-    builtin = {'scpi': {'identify', 'query', 'write'}, 'modbus': set(MODBUS_FUNCTIONS), 'http': set()}[driver]
+    builtin = builtin_operations(driver)
     if set(operations) & builtin:
         raise ValueError('Use descriptive operation names; ' + ', '.join(sorted(builtin)) + ' are provided by the driver.')
     for operation, spec in operations.items():
@@ -99,6 +150,10 @@ def validate_profile(profile):
     docs = profile.get('documentation', [])
     if not isinstance(docs, list) or any(not isinstance(url, str) or not url.startswith(('https://', 'http://')) for url in docs):
         raise ValueError('Documentation must be a list of web links.')
+    if 'conditions' in profile:
+        # What must hold for this model's readings to mean something, with its own operations.
+        from .conditions import available, instrument
+        available(instrument('device', profile['conditions']), operations, builtin)
     return profile
 
 
@@ -127,6 +182,8 @@ def apply_profile(record, profiles):
     if 'name' in profile['config']:
         config.setdefault('name', profile['config']['name'])
     record.setdefault('documentation', list(profile.get('documentation', [])))
+    if profile.get('conditions'):
+        merge_conditions(record, profile['conditions'], builtin_operations(driver))
     return record
 
 
@@ -184,6 +241,8 @@ def description(identity, connection, catalog):
         record['config'].update(connection)
         record['instrument_profile'] = profile['id']
         record['documentation'] = profile.get('documentation', [])
+        if profile.get('conditions'):
+            merge_conditions(record, profile['conditions'], builtin_operations(record['driver']))
     elif alternatives:
         record['profile_candidates'] = alternatives
     record['identity'] = identity

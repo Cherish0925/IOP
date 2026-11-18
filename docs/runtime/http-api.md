@@ -51,9 +51,9 @@ Base URL: `http://127.0.0.1:8765`. API bodies are JSON objects. Requests to `/v1
 | POST | `/v1/library` | `{"definition": {...}, "expected_revision": 1, "archive": "<base64 ZIP>"}`; revision and archive optional | Saved operation as a new revision; the archive holds the program of a Workflow Operation that decides from results. See [operations](operations.md) |
 | GET | `/v1/library/{id}/files/{name}` | `revision=n` optional | Text of one file of a saved program |
 | GET | `/v1/library/{id}` | — | One saved operation with its steps, result and record of use; `/history` lists revisions |
-| GET | `/v1/conditions` | `platform=id` optional | Platform conditions with their state: `holds`, `due` (with `reason`), `lost` or `unknown`. See [operating conditions](conditions.md) |
+| GET | `/v1/conditions` | `platform=id` or `device=id` optional | Conditions with their state: `holds`, `due` (with `reason`), `lost` or `unknown`. A platform's list includes the conditions of its instruments; `device` gives one instrument's. See [operating conditions](conditions.md) |
 | GET | `/v1/conditions/{id}` | — | One condition: definition, state, statistics (how long it holds, what restores it, drift) and latest records |
-| POST | `/v1/conditions/maintain` | `{"platform": id}` or `{"conditions": [...]}`, optional `run_id`, `request_id`, `force`; `wait=0..25` | Verify what is due and correct what drifted, dependencies first; returns the pass with its report, `complete` and `holds` |
+| POST | `/v1/conditions/maintain` | `{"platform": id}`, `{"device": id}` or `{"conditions": [...]}`, optional `run_id`, `request_id`, `force`; `wait=0..25` | Verify what is due and correct what drifted, dependencies first; a platform's pass includes its instruments' conditions; returns the pass with its report, `complete` and `holds` |
 | GET | `/v1/maintenance/{id}` | `wait=0..25` | A pass of maintenance: state, report and the experiment it ran in |
 | POST | `/v1/conditions/invalidate` | `{"conditions": [...], "reason": "..."}` | Record a disturbance; those conditions are verified again before they are relied on |
 | GET | `/v1/manual-tasks` | — | Steps of `manual` devices waiting for a person: instruction, arguments and readings to report |
