@@ -520,8 +520,9 @@ $("#new-run").onclick = () => newExperiment();
 $("#refresh-button").onclick = (e) =>
   busy(e.currentTarget, () => refresh(true));
 $("#modal-close").onclick = closeModal;
+// The close event arrives after close(); a detail opened again in between keeps its run.
 $("#modal").addEventListener("close", () => {
-  delete $("#modal").dataset.runDetail;
+  if (!$("#modal").open) delete $("#modal").dataset.runDetail;
 });
 $("#search-open").onclick = openPalette;
 $("#palette-input").oninput = palette;
