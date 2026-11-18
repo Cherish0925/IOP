@@ -230,6 +230,18 @@ def result(payload, spec, context=None, name='data'):
     return fields
 
 
+def spacing(values):
+    """Axis coordinates for evenly spaced points, such as the setpoints of a sweep: start and step, or {}."""
+    import numpy
+    points = numpy.asarray(values, dtype=float).ravel()
+    if points.size < 2 or not numpy.isfinite(points).all():
+        return {}
+    step = (points[-1] - points[0]) / (points.size - 1)
+    if step == 0 or not numpy.allclose(numpy.diff(points), step, rtol=1e-6, atol=0):
+        return {}
+    return {'start': float(points[0]), 'step': float(step)}
+
+
 _NUMPY = {'float64': 'float64', 'float32': 'float32', 'int8': 'int8', 'int16': 'int16', 'int32': 'int32',
           'int64': 'int64', 'uint8': 'uint8', 'uint16': 'uint16', 'uint32': 'uint32', 'uint64': 'uint64', 'bool': 'uint8'}
 

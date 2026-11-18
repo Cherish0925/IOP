@@ -136,6 +136,13 @@ class ViewCase(unittest.TestCase):
         self.assertEqual(seen['values'], [1.0, None, 3.0, None, -2.0])
         self.assertEqual(json.loads(json.dumps(seen, allow_nan=False)), seen)
 
+    @unittest.skipUnless(importlib.util.find_spec('numpy'), 'Adapters that return NumPy arrays use this')
+    def test_evenly_spaced_points_give_coordinates(self):
+        self.assertEqual(arrays.spacing([2.0, 2.5, 3.0, 3.5]), {'start': 2.0, 'step': 0.5})
+        self.assertEqual(arrays.spacing([1.0e9 + 1e5 * i for i in range(1001)]), {'start': 1.0e9, 'step': 1.0e5})
+        for values in ([1.0, 2.0, 4.0], [3.0], [1.0, 1.0], [0.0, math.nan]):
+            self.assertEqual(arrays.spacing(values), {})
+
     def test_inline_values_are_viewed_without_a_file(self):
         holder = arrays.result(_payload(DIP[:100], {}), arrays.check_result({'dtype': 'float64'}), None)
         self.assertEqual(views.view(holder, points=4)['envelope']['position'], [0, 25, 50, 75])
