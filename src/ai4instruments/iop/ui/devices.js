@@ -34,13 +34,17 @@ function connectionAddress(d) {
   const c = d.connection || {};
   return c.resource || (c.host ? c.host + ":" + (c.port || 5025) : c.port);
 }
-export function parametersHTML(spec = {}, prefix = "arg") {
+// With sweepable, a number can instead be swept: from, to and a number of points, one after another.
+export function parametersHTML(spec = {}, prefix = "arg", sweepable = false) {
   return (
     Object.entries(spec.parameters || {})
       .map(([name, p]) => {
         const id = prefix + "-" + name,
           value = p.default ?? "",
-          optional = p.required === false || p.default !== undefined;
+          optional = p.required === false || p.default !== undefined,
+          swept =
+            sweepable && ["integer", "number"].includes(p.type) && !p.enum,
+          step = p.type === "integer" ? 'step="1"' : 'step="any"';
         let input = p.enum
           ? `<select id="${esc(id)}" data-parameter="${esc(name)}"><option value="">${t("选择", "Choose")}</option>${p.enum.map((v) => `<option value="${esc(JSON.stringify(v))}" ${v === value ? "selected" : ""}>${esc(v)}</option>`).join("")}</select>`
           : p.type === "boolean"
@@ -49,8 +53,15 @@ export function parametersHTML(spec = {}, prefix = "arg") {
               ? `<textarea id="${esc(id)}" data-parameter="${esc(name)}" rows="2" style="min-height:75px" placeholder="${p.type === "array" ? "[]" : "{}"}">${esc(value === "" ? "" : JSON.stringify(value))}</textarea>`
               : `<input id="${esc(id)}" data-parameter="${esc(name)}" type="${["integer", "number"].includes(p.type) ? "number" : "text"}" ${p.type === "integer" ? 'step="1"' : 'step="any"'} ${p.minimum !== undefined ? `min="${esc(p.minimum)}"` : ""} ${p.maximum !== undefined ? `max="${esc(p.maximum)}"` : ""} value="${esc(value)}" placeholder="${optional ? t("可选", "Optional") : t("必填", "Required")}">`;
         return field(
-          esc(name) + (p.unit ? " <small>" + esc(p.unit) + "</small>" : ""),
-          input,
+          esc(name) +
+            (p.unit ? " <small>" + esc(p.unit) + "</small>" : "") +
+            (swept
+              ? `<button type="button" class="sweep-toggle" data-sweep-toggle="${esc(name)}" aria-pressed="false">${t("扫描", "Sweep")}</button>`
+              : ""),
+          input +
+            (swept
+              ? `<span class="sweep-fields" data-sweep="${esc(name)}" hidden><small>${t("从", "From")}</small><input type="number" ${step} data-sweep-start aria-label="${t("起点", "From")}"><small>${t("到", "to")}</small><input type="number" ${step} data-sweep-stop aria-label="${t("终点", "To")}"><small>${t("点数", "points")}</small><input type="number" min="1" step="1" value="11" data-sweep-points aria-label="${t("点数", "Points")}"></span>`
+              : ""),
           esc(p.description || ""),
         );
       })
@@ -61,6 +72,7 @@ export function parametersHTML(spec = {}, prefix = "arg") {
 export function parameterValues(container, spec) {
   const result = {};
   for (const input of $$("[data-parameter]", container)) {
+    if (input.disabled) continue;
     const name = input.dataset.parameter,
       p = spec.parameters[name],
       v = input.value;
@@ -81,6 +93,41 @@ export function parameterValues(container, spec) {
           : v;
   }
   return result;
+}
+// Show or hide the sweep of one parameter; while it is swept, its single value is not used.
+export function setSweep(container, name, on) {
+  const block = $(`[data-sweep="${CSS.escape(name)}"]`, container);
+  if (!block) return;
+  block.hidden = !on;
+  const single = $(`[data-parameter="${CSS.escape(name)}"]`, container);
+  single.disabled = on;
+  single.style.display = on ? "none" : "";
+  $(`[data-sweep-toggle="${CSS.escape(name)}"]`, container).setAttribute(
+    "aria-pressed",
+    String(on),
+  );
+}
+// The parameters swept, as a step's sweep: {name: {start, stop, points}}.
+export function sweepValues(container) {
+  const sweep = {};
+  for (const block of $$("[data-sweep]:not([hidden])", container)) {
+    const [start, stop, points] = ["start", "stop", "points"].map((k) =>
+      $(`[data-sweep-${k}]`, block),
+    );
+    if ([start, stop, points].some((i) => i.value === "" || !i.checkValidity()))
+      throw Error(
+        t(
+          "请填写扫描的起点、终点和点数：",
+          "Enter from, to and points to sweep: ",
+        ) + block.dataset.sweep,
+      );
+    sweep[block.dataset.sweep] = {
+      start: Number(start.value),
+      stop: Number(stop.value),
+      points: Number(points.value),
+    };
+  }
+  return sweep;
 }
 export function renderDevices() {
   return `<div class="page-heading"><div><span class="eyebrow">INSTRUMENTS & SOFTWARE</span><h1>${t("仪器与软件", "Instruments & software")}</h1><p>${t("查看设备说明、可用操作和计算机上的连接。", "Inspect registered instruments, available operations and connections on this computer.")}</p></div><div class="actions"><button class="button" id="scan">${icon("refresh")}${t("发现设备", "Discover")}</button><button class="button primary" id="register-device">${icon("plus")}${t("注册设备", "Register device")}</button></div></div><div class="toolbar"><label class="search-field">${icon("search")}<input id="device-search" value="${esc(filter)}" placeholder="${t("搜索名称、驱动或设备 ID", "Search name, driver or device ID")}"></label><div class="segmented">${[

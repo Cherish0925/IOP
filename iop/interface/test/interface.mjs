@@ -551,29 +551,35 @@ sys.stdout.buffer.write(b.getvalue())`,
     /^\x93NUMPY[\s\S]*'descr': '<f4'[\s\S]*'shape': \(48, 64\)/,
   );
   await page.click("#modal-close");
-  // A sweep gathers what each point returned into an array over the swept parameter.
-  const turned = await api("runs", {
-    name: "Turned axis",
-    steps: [
-      {
-        id: "turn",
-        device: "sim-axis",
-        operation: "move_to",
-        arguments: { duration: 0 },
-        sweep: { angle_deg: { start: -45, stop: 45, points: 19 } },
-      },
-    ],
-  });
-  await page.evaluate(
-    (id) => document.dispatchEvent(new CustomEvent("iop:run", { detail: id })),
-    turned.id,
+  // The experiment form sweeps a numeric parameter; the result gathers what each point returned.
+  await page.click("#new-run");
+  await page.fill("#experiment-name", "Turned axis");
+  await page.selectOption(
+    '[data-step="step-1"] [data-step-device]',
+    "sim-axis",
   );
+  await page.selectOption(
+    '[data-step="step-1"] [data-step-operation]',
+    "move_to",
+  );
+  await page.fill('[data-step="step-1"] [data-parameter="duration"]', "0");
+  await page.click('[data-step="step-1"] [data-sweep-toggle="angle_deg"]');
+  for (const [part, value] of [
+    ["start", "-45"],
+    ["stop", "45"],
+    ["points", "19"],
+  ])
+    await page.fill(
+      `[data-step="step-1"] [data-sweep="angle_deg"] [data-sweep-${part}]`,
+      value,
+    );
+  await page.click("#experiment-submit");
   await page.waitForSelector("#run-detail-summary .badge.completed");
   await page.click('[data-detail-tab="results"]');
   await page.waitForSelector("#detail-results .array-plot svg polyline");
   assert.match(
     await page.locator("#detail-results .array-plot").innerText(),
-    /turn\.angle_actual · 19 · deg[\s\S]*angle_deg/,
+    /step-1\.angle_actual · 19 · deg[\s\S]*angle_deg/,
   );
   await page.click("#modal-close");
   // A numeric data stream is drawn per channel from its view.

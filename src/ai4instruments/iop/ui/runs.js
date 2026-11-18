@@ -28,7 +28,12 @@ import {
   mapAxes,
   save,
 } from "./core.js";
-import { parametersHTML, parameterValues } from "./devices.js";
+import {
+  parametersHTML,
+  parameterValues,
+  setSweep,
+  sweepValues,
+} from "./devices.js";
 let query = "",
   category = "all",
   detailTimer = null;
@@ -358,6 +363,13 @@ export function newExperiment() {
       s.device = $("[data-step-device]", el).value;
       s.operation = $("[data-step-operation]", el).value;
       s.after = $("[data-step-after]", el).value;
+      // What was typed for each sweep is kept as typed, to be shown again.
+      s.sweeping = Object.fromEntries(
+        $$("[data-sweep]:not([hidden])", el).map((block) => [
+          block.dataset.sweep,
+          $$("input", block).map((input) => input.value),
+        ]),
+      );
       try {
         s.arguments = parameterValues(
           $("[data-step-args]", el),
@@ -391,7 +403,7 @@ export function newExperiment() {
                   `<option value="${esc(k)}" ${k === s.operation ? "selected" : ""}>${esc(k)}</option>`,
               )
               .join("")}</select>`,
-          )}<div class="full form-grid" data-step-args>${parametersHTML(d.operations[s.operation], s.id)}</div><div class="full">${field(
+          )}<div class="full form-grid" data-step-args>${parametersHTML(d.operations[s.operation], s.id, true)}</div><div class="full">${field(
             t("开始条件", "Start after"),
             `<select data-step-after><option value="">${t("就绪后执行，可与其他步骤并行", "When ready; may run in parallel")}</option>${steps
               .slice(0, i)
@@ -428,15 +440,32 @@ export function newExperiment() {
               : value;
         }
       }
+      for (const [name, typed] of Object.entries(s.sweeping || {})) {
+        setSweep(el, name, true);
+        $$(`[data-sweep="${CSS.escape(name)}"] input`, el).forEach(
+          (input, k) => (input.value = typed[k]),
+        );
+      }
+      $$("[data-sweep-toggle]", el).forEach(
+        (button) =>
+          (button.onclick = () =>
+            setSweep(
+              el,
+              button.dataset.sweepToggle,
+              button.getAttribute("aria-pressed") !== "true",
+            )),
+      );
       $("[data-step-device]", el).onchange = () => {
         capture();
         s.operation = "";
         s.arguments = {};
+        s.sweeping = {};
         render();
       };
       $("[data-step-operation]", el).onchange = () => {
         capture();
         s.arguments = {};
+        s.sweeping = {};
         render();
       };
     }
@@ -461,6 +490,7 @@ export function newExperiment() {
           d = state.devices.find((d) => d.id === s.device);
         if (!el || !d)
           throw Error(t("请先选择设备", "Select an instrument first"));
+        const sweep = sweepValues($("[data-step-args]", el));
         return {
           id: s.id,
           device: s.device,
@@ -469,6 +499,7 @@ export function newExperiment() {
             $("[data-step-args]", el),
             d.operations[s.operation],
           ),
+          ...(Object.keys(sweep).length ? { sweep } : {}),
           after: s.after ? [s.after] : [],
         };
       }),
