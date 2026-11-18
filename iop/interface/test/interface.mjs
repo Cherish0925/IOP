@@ -20,11 +20,15 @@ from ai4instruments.iop.engine import Engine
 from ai4instruments.iop.cli import serve
 import socketserver, threading
 import ai4instruments.iop.discovery as discovery
-import array
+import array, math
 from ai4instruments.iop import Driver, arrays
 class Analyzer(Driver):
-    def describe(self): return {'operations':{'sweep':{'parameters':{},'effect':'observe'}}}
+    def describe(self): return {'operations':{'sweep':{'parameters':{},'effect':'observe'},'image':{'parameters':{},'effect':'observe'}}}
     def invoke(self, operation, arguments, context):
+        if operation == 'image':
+            spot = array.array('f', [math.exp(-((x - 40) ** 2 + (y - 20) ** 2) / 60) for y in range(48) for x in range(64)])
+            axes = [{'name':'y','unit':'m','start':0,'step':2e-6},{'name':'x','unit':'m','start':0,'step':2e-6}]
+            return arrays.result(spot.tobytes(), arrays.check_result({'dtype':'float32','shape':[48,64],'axes':axes,'unit':'W'}), context, 'image')
         dip = array.array('d', [1 - 0.8 / (1 + ((i - 600) / 20) ** 2) for i in range(1001)])
         axis = {'name':'frequency','unit':'Hz','start':1e9,'step':1e5}
         return arrays.result(dip.tobytes(), arrays.check_result({'dtype':'float64','axes':[axis]}), context, 'trace')
@@ -517,6 +521,27 @@ sys.stdout.buffer.write(b.getvalue())`,
       style: "#toast{visibility:hidden}",
     });
   await page.click("#modal-close");
+  // An image is drawn as a map of its two axes.
+  const imaged = await api("runs", {
+    name: "Beam image",
+    steps: [{ id: "image", device: "analyzer", operation: "image" }],
+  });
+  await page.evaluate(
+    (id) => document.dispatchEvent(new CustomEvent("iop:run", { detail: id })),
+    imaged.id,
+  );
+  await page.waitForSelector("#detail-operation-list .array-map img");
+  assert.match(
+    await page.locator("#detail-operation-list .array-plot").innerText(),
+    /y[\s\S]*x 0 m[\s\S]*126 µm[\s\S]*1 W @ 40 µm, 80 µm/,
+  );
+  if (images)
+    await page.screenshot({
+      path: join(images, "array-map.png"),
+      fullPage: true,
+      style: "#toast{visibility:hidden}",
+    });
+  await page.click("#modal-close");
   // A sweep gathers what each point returned into an array over the swept parameter.
   const turned = await api("runs", {
     name: "Turned axis",
@@ -611,7 +636,7 @@ sys.stdout.buffer.write(b.getvalue())`,
   assert.equal(continued.state, "completed", JSON.stringify(continued));
   assert.deepEqual(errors, []);
   console.log(
-    "Interface passed: discovery, registration, topology, workflow, results, resources, search, language, themes, mobile, program ZIP, file download, manual steps, held resources, saved operations, operating conditions, array and stream views, sweeps and service continuity.",
+    "Interface passed: discovery, registration, topology, workflow, results, resources, search, language, themes, mobile, program ZIP, file download, manual steps, held resources, saved operations, operating conditions, array and stream views, maps, sweeps and service continuity.",
   );
 } finally {
   if (browser) await browser.close();

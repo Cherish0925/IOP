@@ -1871,3 +1871,45 @@ input::file-selector-button {
   font-size: 12px;
   margin: 2px 0;
 }
+.array-map {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px;
+}
+.array-map img {
+  display: block;
+  width: 100%;
+  height: 220px;
+  image-rendering: pixelated;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.array-rows {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: flex-end;
+  padding-bottom: 22px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.array-scale {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0;
+  color: var(--muted);
+}
+.array-scale i {
+  flex: 0 1 160px;
+  height: 8px;
+  border-radius: 4px;
+  background: linear-gradient(
+    to right,
+    rgb(68 1 84),
+    rgb(59 82 139),
+    rgb(33 145 140),
+    rgb(94 201 98),
+    rgb(253 231 37)
+  );
+}

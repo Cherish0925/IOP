@@ -220,8 +220,89 @@ export function quantity(value, unit = "") {
   }
   return `${Number(value.toPrecision(5))}${unit ? " " + unit : ""}`;
 }
-// One line chart per array: the band between bucket minima and maxima, and the mean or exact values.
+// Viridis, a perceptually uniform scale that stays readable in grey and for colour-blind readers.
+const SCALE = [
+  [68, 1, 84],
+  [59, 82, 139],
+  [33, 145, 140],
+  [94, 201, 98],
+  [253, 231, 37],
+];
+function shade(t) {
+  const x = Math.max(0, Math.min(1, t)) * (SCALE.length - 1),
+    i = Math.min(SCALE.length - 2, Math.floor(x)),
+    f = x - i;
+  return SCALE[i].map((c, k) => Math.round(c + f * (SCALE[i + 1][k] - c)));
+}
+// The two ends of an axis followed, its first position first.
+function ends(along, listed = along.coordinates) {
+  if (along.low === undefined)
+    return ["#" + along.start, "#" + (along.stop - 1)];
+  const both = [along.low, along.high].map((v) =>
+    quantity(v, along.unit || ""),
+  );
+  const falling =
+    along.step < 0 ||
+    (along.step === undefined &&
+      listed?.length > 1 &&
+      listed[0] > listed.at(-1));
+  return falling ? both.reverse() : both;
+}
+// Two axes followed: rows down the first, columns across the second, as an image is read.
+function map(view) {
+  const s = view.summary;
+  if (s.min === null)
+    return `<small class="muted">${t("没有有限数值", "No finite values")}</small>`;
+  const grid = view.values || view.envelope.mean,
+    rows = grid.length,
+    columns = grid[0].length,
+    span = s.max - s.min || 1;
+  const canvas = document.createElement("canvas");
+  canvas.width = columns;
+  canvas.height = rows;
+  const context = canvas.getContext("2d"),
+    image = context.createImageData(columns, rows);
+  grid.forEach((row, r) =>
+    row.forEach((v, c) => {
+      if (v !== null)
+        image.data.set(
+          [...shade((v - s.min) / span), 255],
+          4 * (r * columns + c),
+        );
+    }),
+  );
+  context.putImageData(image, 0, 0);
+  const [down, across] = view.along,
+    unit = view.unit || "",
+    // Where an extreme lies: its coordinates when both axes have them, otherwise its index.
+    place = (index, at) =>
+      at?.every((c) => c !== null)
+        ? at.map((c, k) => quantity(c, view.along[k].unit || "")).join(", ")
+        : "[" + index.join(", ") + "]";
+  const [top, bottom] = ends(down, view.envelope?.coordinate?.[0]),
+    [left, right] = ends(across, view.envelope?.coordinate?.[1]);
+  // Two lengths in the same unit keep their proportions, as an image of a beam does.
+  const width = across.high - across.low,
+    height = down.high - down.low,
+    proportion =
+      down.unit && down.unit === across.unit && width > 0 && height > 0
+        ? ` style="max-width:calc(280px * ${width / height})"`
+        : "";
+  return `<div class="array-map"><div class="array-rows"><span>${esc(top)}</span><span>${esc(String(down.axis))}</span><span>${esc(bottom)}</span></div><div class="array-image"${proportion}><img src="${canvas.toDataURL()}" alt="${esc(String(down.axis))} × ${esc(String(across.axis))}"${proportion ? ` style="height:auto;aspect-ratio:${width / height}"` : ""}><div class="array-axis"><span>${esc(String(across.axis))} ${esc(left)}</span><span>${esc(right)}</span></div></div></div><div class="array-scale"><small>${esc(quantity(s.min, unit))}</small><i></i><small>${esc(quantity(s.max, unit))}</small></div><small class="muted">${t("最小", "min")} ${esc(quantity(s.min, unit))} @ ${esc(place(s.min_index, s.min_at))} · ${t("最大", "max")} ${esc(quantity(s.max, unit))} @ ${esc(place(s.max_index, s.max_at))} · ${t("均值", "mean")} ${esc(quantity(s.mean, unit))}${s.nonfinite ? " · " + s.nonfinite + t(" 个非有限值", " not finite") : ""}${
+    view.at
+      ? " · " +
+        esc(
+          Object.entries(view.at)
+            .map(([k, v]) => k + "=" + v)
+            .join(", "),
+        )
+      : ""
+  }</small>`;
+}
+// One chart per array: a map along two axes, otherwise a line with the band between bucket minima and
+// maxima and the mean or exact values.
 function chart(view) {
+  if (Array.isArray(view.along)) return map(view);
   const s = view.summary,
     width = 600,
     height = 150;
@@ -255,24 +336,18 @@ function chart(view) {
     .join("");
   const along = view.along,
     unit = view.unit || "",
-    place = (v, at) =>
-      at === undefined ? "#" + v : quantity(at, along.unit || "");
-  const ends =
-    along.low !== undefined
-      ? [
-          quantity(along.low, along.unit || ""),
-          quantity(along.high, along.unit || ""),
-        ]
-      : ["#" + along.start, "#" + (along.stop - 1)];
-  const listed = along.coordinates || view.envelope?.coordinate;
-  if (
-    along.step < 0 ||
-    (along.step === undefined &&
-      listed?.length > 1 &&
-      listed[0] > listed.at(-1))
-  )
-    ends.reverse();
-  return `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${esc(String(along.axis))}">${shapes}</svg><div class="array-axis"><span>${esc(String(along.axis))} ${esc(ends[0])}</span><span>${esc(ends[1])}</span></div><small class="muted">${t("最小", "min")} ${esc(quantity(s.min, unit))} @ ${esc(place(s.min_index?.[0], s.min_at))} · ${t("最大", "max")} ${esc(quantity(s.max, unit))} @ ${esc(place(s.max_index?.[0], s.max_at))} · ${t("均值", "mean")} ${esc(quantity(s.mean, unit))} · σ ${esc(quantity(s.std, unit))}${s.nonfinite ? " · " + s.nonfinite + t(" 个非有限值", " not finite") : ""}${
+    // Where an extreme lies: its coordinate, otherwise its position, or its index in an array of several axes.
+    place = (index, at) =>
+      at !== undefined
+        ? quantity(at, along.unit || "")
+        : index.length > 1
+          ? "[" + index.join(", ") + "]"
+          : "#" + index[0];
+  const [first, last] = ends(
+    along,
+    along.coordinates || view.envelope?.coordinate,
+  );
+  return `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${esc(String(along.axis))}">${shapes}</svg><div class="array-axis"><span>${esc(String(along.axis))} ${esc(first)}</span><span>${esc(last)}</span></div><small class="muted">${t("最小", "min")} ${esc(quantity(s.min, unit))} @ ${esc(place(s.min_index, s.min_at))} · ${t("最大", "max")} ${esc(quantity(s.max, unit))} @ ${esc(place(s.max_index, s.max_at))} · ${t("均值", "mean")} ${esc(quantity(s.mean, unit))} · σ ${esc(quantity(s.std, unit))}${s.nonfinite ? " · " + s.nonfinite + t(" 个非有限值", " not finite") : ""}${
     view.at
       ? " · " +
         esc(
@@ -285,8 +360,25 @@ function chart(view) {
 }
 // One figure per array: source is the view's path under /v1, at fixes axes such as a stream's
 // channel, and keep marks arrays that never change.
-export const arrayFigure = (source, field, caption, keep, at) =>
-  `<figure class="array-plot" data-array-source="${esc(source)}" data-array-field="${esc(field)}"${at ? ` data-array-at="${esc(JSON.stringify(at))}"` : ""}${keep ? ' data-array-keep="1"' : ""}><figcaption>${caption}</figcaption><div class="array-chart"><small class="muted">${t("正在读取…", "Reading…")}</small></div></figure>`;
+export const arrayFigure = (source, field, caption, keep, at, map) =>
+  `<figure class="array-plot" data-array-source="${esc(source)}" data-array-field="${esc(field)}"${at ? ` data-array-at="${esc(JSON.stringify(at))}"` : ""}${map ? ` data-array-map="${esc(JSON.stringify(map))}"` : ""}${keep ? ' data-array-keep="1"' : ""}><figcaption>${caption}</figcaption><div class="array-chart"><small class="muted">${t("正在读取…", "Reading…")}</small></div></figure>`;
+// The two axes an array is drawn along as a map, an image or a sweep over two parameters: its axes of more
+// than one position other than re/im components, when there are exactly two; otherwise it is drawn as a line.
+export function mapAxes(data) {
+  const named = (data.axes || []).length === data.shape.length,
+    axes = data.shape
+      .map((size, i) => [size, named ? data.axes[i].name : i])
+      .filter(
+        ([size], i) =>
+          size > 1 &&
+          !(
+            named &&
+            i === data.shape.length - 1 &&
+            JSON.stringify(data.axes[i].labels) === '["re","im"]'
+          ),
+      );
+  return axes.length === 2 ? axes.map(([, name]) => name) : null;
+}
 // A completed operation's array is read once; a growing stream shows its last chart while one
 // reading at a time renews it.
 const charts = new Map(),
@@ -303,11 +395,20 @@ const chartKey = (figure) =>
     figure.dataset.arrayAt,
   ].join("|");
 function readChart(figure) {
-  const query = new URLSearchParams({
-    points: String(
-      Math.max(32, Math.min(600, Math.round((figure.clientWidth || 600) / 2))),
-    ),
-  });
+  const width = figure.clientWidth || 600,
+    query = new URLSearchParams(
+      figure.dataset.arrayMap
+        ? {
+            along: figure.dataset.arrayMap,
+            points: JSON.stringify([
+              60,
+              Math.max(16, Math.min(300, Math.round(width / 3))),
+            ]),
+          }
+        : {
+            points: String(Math.max(32, Math.min(600, Math.round(width / 2)))),
+          },
+    );
   if (figure.dataset.arrayField) query.set("field", figure.dataset.arrayField);
   if (figure.dataset.arrayAt) query.set("at", figure.dataset.arrayAt);
   return api(figure.dataset.arraySource + "?" + query).then(chart);
@@ -387,6 +488,8 @@ export function operationResult(value, operationId) {
           path,
           `${esc(path || t("数组", "Array"))} · ${esc(data.dtype)} ${esc(data.shape.join(" × "))}${data.unit ? " · " + esc(data.unit) : ""}`,
           true,
+          undefined,
+          mapAxes(data),
         ),
       )
       .join("");

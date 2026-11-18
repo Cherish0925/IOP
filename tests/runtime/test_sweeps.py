@@ -166,6 +166,14 @@ class SweepCase(unittest.TestCase):
             seen = run.read_array('map.spectrum', along='wavelength', at={'volts': volts}, points=50)
             self.assertAlmostEqual(seen['summary']['max_at'], 500 + 10 * volts)
         self.assertEqual(run.read_array('map.spectrum', along='volts', at={'wavelength': 1000})['values'][0], 100)
+        # As a map: each bias a row, wavelengths 505 to 535 nm in columns of 2 nm.
+        seen = run.read_array('map.spectrum', along=['volts', 'wavelength'], low=[None, 505], high=[None, 535],
+                              points=[4, 15])
+        self.assertEqual([(axis['axis'], axis['low'], axis['high']) for axis in seen['along']],
+                         [('volts', 0.0, 3.0), ('wavelength', 505.0, 535.0)])
+        self.assertEqual((len(seen['envelope']['max']), len(seen['envelope']['max'][0]), seen['summary']['max_at']),
+                         (4, 15, [1.0, 510.0]))
+        self.assertEqual([row.index(max(row)) for row in seen['envelope']['max']], [0, 2, 7, 12])
         # The later step took the bias that puts the line at 510 nm.
         self.assertEqual(result['tuned']['line'], 510)
 

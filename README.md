@@ -56,7 +56,7 @@ Experiments name their conditions with `requires`. The Runtime checks their reco
 
 ## Measured arrays
 
-Traces, spectra, images, buffers and numeric data streams are saved with their type, shape, unit and axes; axis coordinates can come from the instrument, such as a sweep's start and stop. `read_array` and the clients tell what an array says without moving it: extremes and where they lie, mean and spread, an envelope along an axis, or exact values in a chosen window; complex values read as modulus, argument or one component. Rust `iop-execd` computes these views outside the service process. A saved operation can name a value read through a view, such as the frequency of a resonance; later steps bind it and operating conditions verify and tune on it. See [reading arrays](docs/runtime/drivers.md#reading-arrays--读取数组).
+Traces, spectra, images, buffers and numeric data streams are saved with their type, shape, unit and axes; axis coordinates can come from the instrument, such as a sweep's start and stop. `read_array` and the clients tell what an array says without moving it: extremes and where they lie, mean and spread, an envelope along an axis or a map along two, or exact values in a chosen window; complex values read as modulus, argument or one component. Rust `iop-execd` computes these views outside the service process. A saved operation can name a value read through a view, such as the frequency of a resonance; later steps bind it and operating conditions verify and tune on it. See [reading arrays](docs/runtime/drivers.md#reading-arrays--读取数组).
 
 ## Research and learning
 

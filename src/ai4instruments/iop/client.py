@@ -248,9 +248,10 @@ class Client:
         Returns the count, extremes with their index (and coordinate), mean and standard deviation,
         then exact values when each position holds one element and there are at most ``points``
         positions, otherwise the minimum, maximum and mean of ``points`` buckets. ``along`` names the
-        axis followed; ``at`` fixes others by index or label, and ``{"component": "arg"}`` reads complex
-        values as their argument (abs by default). ``start``/``stop`` select positions and ``low``/``high``
-        coordinates. ``field`` names the array when a result holds several.
+        axis followed, or a list of two for a map, with start, stop, low and high then given per axis;
+        ``at`` fixes others by index or label, and ``{"component": "arg"}`` reads complex values as their
+        argument (abs by default). ``start``/``stop`` select positions and ``low``/``high`` coordinates.
+        ``field`` names the array when a result holds several.
         """
         return self.request('/v1/operations/' + quote(operation_id, safe='') + '/array' +
                             view_query(field=field, along=along, at=at, start=start, stop=stop, low=low, high=high,
@@ -546,8 +547,9 @@ IOP = Client
 
 
 def view_query(**options):
-    """The URL query of an array view; at is sent as a JSON object."""
-    query = {key: json.dumps(value) if key == 'at' else value for key, value in options.items() if value is not None}
+    """The URL query of an array view; at, and a list with one value per axis along, are sent as JSON."""
+    query = {key: json.dumps(value) if key == 'at' or isinstance(value, list) else value
+             for key, value in options.items() if value is not None}
     return '?' + urlencode(query) if query else ''
 
 

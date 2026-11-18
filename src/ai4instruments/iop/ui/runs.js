@@ -25,6 +25,7 @@ import {
   drawArrays,
   arrayFigure,
   arraysIn,
+  mapAxes,
 } from "./core.js";
 import { parametersHTML, parameterValues } from "./devices.js";
 let query = "",
@@ -139,6 +140,8 @@ function heldFigures(id, value) {
         path,
         `${esc(path)} · ${esc(data.shape.join(" × "))}${data.unit ? " · " + esc(data.unit) : ""}`,
         true,
+        undefined,
+        mapAxes(data),
       ),
     )
     .join("");

@@ -35,7 +35,7 @@ Base URL: `http://127.0.0.1:8765`. API bodies are JSON objects. Requests to `/v1
 | GET | `/v1/runs/{run_id}/operations` | `after=0&limit=200` | `{"operations":[...],"cursor":N}`; ordered operation history |
 | POST | `/v1/runs/{run_id}/operations` | Operation below; optional `wait=0..25` query | Operation in an external experiment or running package; identical request IDs return existing operations |
 | GET | `/v1/operations/{operation_id}` | `wait=0..25` | State, times, result or error |
-| GET | `/v1/operations/{operation_id}/array` | `field`, `along`, `at` (JSON object), `start`/`stop` or `low`/`high`, `points=64` | What an array the operation returned says: summary, then exact values or an envelope; see [Reading arrays](drivers.md#reading-arrays--读取数组) |
+| GET | `/v1/operations/{operation_id}/array` | `field`, `along`, `at` (JSON object), `start`/`stop` or `low`/`high`, `points=64`; along two axes, JSON lists with one value per axis | What an array the operation returned says: summary, then exact values or an envelope, a map along two axes; see [Reading arrays](drivers.md#reading-arrays--读取数组) |
 | POST | `/v1/runs/{run_id}/batches` | `{"steps":[...],"request_id":"..."}`; optional `wait=0..25` | Batch receipt, completion flag and operation records |
 | GET | `/v1/runs/{run_id}/batches` | `request_id=...&wait=0..25` | Previously accepted batch and current operations |
 | POST | `/v1/runs/{run_id}/acquisitions` | `{"name":"point.json","operation_ids":["op_..."],"conditions":{},"analysis":{}}` | Artifact containing stored results and configuration versions; no new acquisition |

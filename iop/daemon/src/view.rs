@@ -1,11 +1,11 @@
 //! Summarize a saved numerical array without moving its values.
 //!
-//! One axis is followed; every other axis is either fixed at one index or summarized. The result
-//! holds the statistics of the selected elements and, per bucket of consecutive positions along the
-//! followed axis, their count, extremes and mean. A last axis of re/im pairs can be read as the
-//! modulus or the argument of the complex values. The bytes of the array are one file or, for a data
-//! stream, its chunk files in order; only the range that holds the selected positions of the first axis
-//! is read.
+//! One axis is followed, or two for a map or an image; every other axis is either fixed at one index
+//! or summarized. The result holds the statistics of the selected elements and, per bucket of
+//! consecutive positions along the followed axes, their count, extremes and mean. A last axis of
+//! re/im pairs can be read as the modulus or the argument of the complex values. The bytes of the
+//! array are one file or, as for a data stream or the points of a sweep, several files in order;
+//! only the range that holds the selected positions of the first axis is read.
 use serde_json::{json, Value};
 use std::{
     error::Error,
@@ -85,6 +85,15 @@ enum Complex {
     Argument,
 }
 
+/// An axis followed: the positions selected, start to stop, in a number of buckets.
+#[derive(Clone, Copy, Debug)]
+struct Followed {
+    axis: usize,
+    start: usize,
+    stop: usize,
+    points: usize,
+}
+
 #[derive(Debug)]
 struct Request {
     /// Files whose bytes, in order, hold the array, with their sizes.
@@ -93,13 +102,13 @@ struct Request {
     big: bool,
     /// Shape of the selected values: without the re/im axis when complex values are derived.
     shape: Vec<usize>,
-    along: usize,
+    along: Vec<Followed>,
     fixed: Vec<Option<usize>>,
     complex: Option<Complex>,
-    start: usize,
-    stop: usize,
-    points: usize,
 }
+
+/// Buckets of a view, at most: a map of 2000 by 2000.
+const CELLS: usize = 4_000_000;
 
 fn invalid(message: impl Into<String>) -> Box<dyn Error> {
     Box::new(io::Error::new(io::ErrorKind::InvalidInput, message.into()))
@@ -110,6 +119,14 @@ fn count(value: &Value, what: &str) -> Result<usize, Box<dyn Error>> {
         .as_u64()
         .map(|n| n as usize)
         .ok_or_else(|| invalid(format!("{what} must be a nonnegative integer")))
+}
+
+/// One count for each axis followed: a list, or one number for a single axis.
+fn counts(value: &Value, what: &str) -> Result<Vec<usize>, Box<dyn Error>> {
+    match value.as_array() {
+        Some(items) => items.iter().map(|item| count(item, what)).collect(),
+        None => Ok(vec![count(value, what)?]),
+    }
 }
 
 fn parse(request: &Value) -> Result<Request, Box<dyn Error>> {
@@ -153,9 +170,41 @@ fn parse(request: &Value) -> Result<Request, Box<dyn Error>> {
         }
         shape.pop();
     }
-    let along = count(&request["along"], "along")?;
-    if along >= shape.len() {
-        return Err(invalid("along names an axis of the array"));
+    let axes = counts(&request["along"], "along")?;
+    let starts = counts(&request["start"], "start")?;
+    let stops = counts(&request["stop"], "stop")?;
+    let points = counts(&request["points"], "points")?;
+    if axes.is_empty()
+        || [starts.len(), stops.len(), points.len()]
+            .iter()
+            .any(|n| *n != axes.len())
+    {
+        return Err(invalid(
+            "along, start, stop and points give one value for each axis followed",
+        ));
+    }
+    let mut along = Vec::with_capacity(axes.len());
+    for (i, &axis) in axes.iter().enumerate() {
+        if axis >= shape.len() || axes[..i].contains(&axis) {
+            return Err(invalid("along names different axes of the array"));
+        }
+        if starts[i] >= stops[i] || stops[i] > shape[axis] {
+            return Err(invalid(
+                "start and stop select at least one position along each axis followed",
+            ));
+        }
+        if points[i] == 0 {
+            return Err(invalid("points must be positive"));
+        }
+        along.push(Followed {
+            axis,
+            start: starts[i],
+            stop: stops[i],
+            points: points[i].min(stops[i] - starts[i]),
+        });
+    }
+    if along.iter().map(|f| f.points).product::<usize>() > CELLS {
+        return Err(invalid(format!("A view has at most {CELLS} buckets")));
     }
     let mut fixed = vec![None; shape.len()];
     for pair in request["fixed"]
@@ -165,23 +214,12 @@ fn parse(request: &Value) -> Result<Request, Box<dyn Error>> {
     {
         let axis = count(&pair[0], "A fixed axis")?;
         let index = count(&pair[1], "A fixed index")?;
-        if axis >= shape.len() || axis == along || index >= shape[axis] {
+        if axis >= shape.len() || axes.contains(&axis) || index >= shape[axis] {
             return Err(invalid(
                 "fixed holds [axis, index] pairs inside the array, other than along",
             ));
         }
         fixed[axis] = Some(index);
-    }
-    let start = count(&request["start"], "start")?;
-    let stop = count(&request["stop"], "stop")?;
-    if start >= stop || stop > shape[along] {
-        return Err(invalid(
-            "start and stop select at least one position along the axis",
-        ));
-    }
-    let points = count(&request["points"], "points")?;
-    if points == 0 {
-        return Err(invalid("points must be positive"));
     }
     Ok(Request {
         segments,
@@ -191,9 +229,6 @@ fn parse(request: &Value) -> Result<Request, Box<dyn Error>> {
         along,
         fixed,
         complex,
-        start,
-        stop,
-        points,
     })
 }
 
@@ -290,12 +325,10 @@ fn view(r: &Request) -> Result<Value, Box<dyn Error>> {
     }
     let total = stride[0] * r.shape[0];
     // Only the slabs of the first axis that hold selected elements are read.
-    let (low, high) = if r.along == 0 {
-        (r.start, r.stop)
-    } else if let Some(index) = r.fixed[0] {
-        (index, index + 1)
-    } else {
-        (0, r.shape[0])
+    let (low, high) = match (r.along.iter().find(|f| f.axis == 0), r.fixed[0]) {
+        (Some(f), _) => (f.start, f.stop),
+        (None, Some(index)) => (index, index + 1),
+        (None, None) => (0, r.shape[0]),
     };
     if r.segments.iter().map(|part| part.1).sum::<u64>() < (total * unit) as u64 {
         return Err(invalid(
@@ -305,8 +338,7 @@ fn view(r: &Request) -> Result<Value, Box<dyn Error>> {
     let mut file = Segments::at(&r.segments, (low * stride[0] * unit) as u64)?;
     let mut remaining = (high - low) * stride[0];
 
-    let n = r.stop - r.start;
-    let points = r.points.min(n);
+    let cells = r.along.iter().map(|f| f.points).product();
     let mut buckets = vec![
         Bucket {
             count: 0,
@@ -315,7 +347,7 @@ fn view(r: &Request) -> Result<Value, Box<dyn Error>> {
             max: f64::NEG_INFINITY,
             sum: 0.0
         };
-        points
+        cells
     ];
     let mut s = Summary {
         count: 0,
@@ -336,9 +368,10 @@ fn view(r: &Request) -> Result<Value, Box<dyn Error>> {
         let bytes = &mut buffer[..elements * unit];
         file.read_exact(bytes)?;
         for element in bytes.chunks_exact(unit) {
-            let position = index[r.along];
-            let selected = position >= r.start
-                && position < r.stop
+            let selected = r
+                .along
+                .iter()
+                .all(|f| index[f.axis] >= f.start && index[f.axis] < f.stop)
                 && r.fixed
                     .iter()
                     .zip(&index)
@@ -356,8 +389,13 @@ fn view(r: &Request) -> Result<Value, Box<dyn Error>> {
                         }
                     }
                 };
-                let b = &mut buckets
-                    [((position - r.start) as u128 * points as u128 / n as u128) as usize];
+                // The bucket of each axis followed, in row-major order.
+                let cell = r.along.iter().fold(0usize, |cell, f| {
+                    cell * f.points
+                        + ((index[f.axis] - f.start) as u128 * f.points as u128
+                            / (f.stop - f.start) as u128) as usize
+                });
+                let b = &mut buckets[cell];
                 b.count += 1;
                 s.count += 1;
                 if value.is_finite() {
@@ -390,8 +428,14 @@ fn view(r: &Request) -> Result<Value, Box<dyn Error>> {
         }
         remaining -= elements;
     }
-    let starts: Vec<usize> = (0..points)
-        .map(|b| r.start + (b * n).div_ceil(points))
+    let starts: Vec<Vec<usize>> = r
+        .along
+        .iter()
+        .map(|f| {
+            (0..f.points)
+                .map(|b| f.start + (b * (f.stop - f.start)).div_ceil(f.points))
+                .collect()
+        })
         .collect();
     let finite = s.finite > 0;
     Ok(json!({
@@ -480,7 +524,7 @@ mod tests {
         assert_eq!(v["min"], json!(0.0));
         assert_eq!(v["max_index"], json!([9]));
         assert_eq!(v["mean"], json!(4.5));
-        assert_eq!(v["buckets"]["start"], json!([0, 3, 5, 8]));
+        assert_eq!(v["buckets"]["start"], json!([[0, 3, 5, 8]]));
         assert_eq!(v["buckets"]["count"], json!([3, 2, 3, 2]));
         assert_eq!(v["buckets"]["max"], json!([2.0, 4.0, 7.0, 9.0]));
     }
@@ -540,6 +584,52 @@ mod tests {
         assert_eq!(rows["buckets"]["min"], json!([0.0, 10.0, 20.0]));
         assert_eq!(rows["buckets"]["max"], json!([3.0, 13.0, 23.0]));
         assert_eq!(rows["max_index"], json!([2, 3]));
+    }
+
+    #[test]
+    fn two_axes_give_a_map_of_buckets() {
+        // A 4 x 6 image, value = 10 * row + column, in 2 x 3 buckets; a window keeps exact values.
+        let values: Vec<f64> = (0..4)
+            .flat_map(|r| (0..6).map(move |c| (10 * r + c) as f64))
+            .collect();
+        let (_keep, name) = file(&values);
+        let map = view(
+            &parse(&request(
+                &name,
+                &[4, 6],
+                json!({"along": [0, 1], "start": [0, 0], "stop": [4, 6], "points": [2, 3]}),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(map["buckets"]["start"], json!([[0, 2], [0, 2, 4]]));
+        assert_eq!(map["buckets"]["count"], json!([4, 4, 4, 4, 4, 4]));
+        assert_eq!(
+            map["buckets"]["mean"],
+            json!([5.5, 7.5, 9.5, 25.5, 27.5, 29.5])
+        );
+        let window = view(
+            &parse(&request(
+                &name,
+                &[4, 6],
+                json!({"along": [1, 0], "start": [4, 1], "stop": [6, 3], "points": [8, 8]}),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(window["buckets"]["mean"], json!([14.0, 24.0, 15.0, 25.0]));
+        assert!(parse(&request(
+            &name,
+            &[4, 6],
+            json!({"along": [0, 0], "start": [0, 0], "stop": [4, 4], "points": [2, 2]})
+        ))
+        .is_err());
+        assert!(parse(&request(
+            &name,
+            &[4, 6],
+            json!({"along": [0, 1], "points": [2, 2]})
+        ))
+        .is_err());
     }
 
     #[test]

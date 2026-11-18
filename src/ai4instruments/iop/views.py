@@ -1,9 +1,10 @@
-"""Views of saved arrays: statistics, an envelope along one axis and exact values in a window.
+"""Views of saved arrays: statistics, an envelope along one axis or a map along two, and exact values in
+a window.
 
-A trace, spectrum, image or buffer is read without moving all of its values. One axis is followed;
-every other axis is either fixed with ``at`` or summarized. A last axis of ``re``/``im`` pairs is
-read as ``abs`` unless ``at`` chooses ``re``, ``im`` or ``arg``. iop-execd computes the view in its
-own process; without it, Python computes the same view when the elements read stay within
+A trace, spectrum, image or buffer is read without moving all of its values. One axis is followed, or
+two for a map; every other axis is either fixed with ``at`` or summarized. A last axis of ``re``/``im``
+pairs is read as ``abs`` unless ``at`` chooses ``re``, ``im`` or ``arg``. iop-execd computes the view
+in its own process; without it, Python computes the same view when the elements read stay within
 ``PYTHON_LIMIT``.
 """
 import array
@@ -18,6 +19,7 @@ from .arrays import DTYPES, _typecode
 
 POINTS = 64
 MAX_POINTS = 2000
+MAX_CELLS = 250_000
 PYTHON_LIMIT = 4_000_000
 COMPONENTS = ['re', 'im']
 
@@ -129,22 +131,40 @@ def _short(value):
 
 
 def plan(data, along=None, at=None, start=None, stop=None, low=None, high=None, points=POINTS):
-    """Resolve axis names, labels and coordinates into the request iop-execd and Python compute."""
+    """Resolve axis names, labels and coordinates into the request iop-execd and Python compute. ``along``
+    names one axis, or a list of two for a map; start, stop, low and high then give one value per axis
+    (None for none) and points a number for each axis or for both."""
     shape, axes = list(data['shape']), list(data.get('axes') or [])
     if len(axes) != len(shape) or any(not isinstance(a, dict) or not isinstance(a.get('name'), str) for a in axes):
         axes = []
     named = (lambda i: axes[i]['name']) if axes else (lambda i: i)
-    along = 0 if along is None else _axis(axes, shape, along, 'along')
+    several = isinstance(along, list)
+    if several and not 1 <= len(along) <= 2:
+        raise ValueError('along names one axis, or a list of two for a map')
+    followed = [_axis(axes, shape, key, 'along') for key in (along if several else [0 if along is None else along])]
+    if len(set(followed)) != len(followed):
+        raise ValueError('along names different axes')
+
+    def each(value, what):
+        if not several:
+            return [value]
+        if value is None:
+            return [None] * len(followed)
+        if not isinstance(value, list) or len(value) != len(followed):
+            raise ValueError(f'{what} gives one value for each axis along, or none')
+        return value
+    windows = list(zip(each(start, 'start'), each(stop, 'stop'), each(low, 'low'), each(high, 'high')))
+    counts = points if isinstance(points, list) else [points] * len(followed)
     last = len(shape) - 1
     component = last if (last > 0 and shape[last] == 2 and axes and axes[last].get('labels') == COMPONENTS
-                         and along != last) else None
+                         and last not in followed) else None
     complex_mode, fixed, shown = None, {}, {}
     if at is not None and not isinstance(at, dict):
         raise ValueError('at maps axes to an index or a label')
     for key, value in (at or {}).items():
         axis = _axis(axes, shape, key, 'at')
-        if axis == along:
-            raise ValueError('at fixes axes other than the one the view follows')
+        if axis in followed:
+            raise ValueError('at fixes axes other than those the view follows')
         if axis == component and value in ('abs', 'arg'):
             complex_mode = value
         elif isinstance(value, str) and not value.isdigit():
@@ -163,27 +183,33 @@ def plan(data, along=None, at=None, start=None, stop=None, low=None, high=None, 
         # Complex values are read as their modulus unless a component or the argument is chosen.
         complex_mode = 'abs'
         shown[named(component)] = 'abs'
-    size = shape[along]
-    coordinates = _coordinates(axes[along], size) if axes else None
-    if low is not None or high is not None:
-        if coordinates is None:
-            raise ValueError('This axis has no coordinates; select positions with start and stop')
-        if start is not None or stop is not None:
-            raise ValueError('Select positions with start and stop, or coordinates with from and to, not both')
-        start, stop = _positions(coordinates, size, -math.inf if low is None else float(low),
-                                 math.inf if high is None else float(high))
-    start = 0 if start is None else start
-    stop = size if stop is None else stop
-    if any(isinstance(v, bool) or not isinstance(v, int) for v in (start, stop)) or not 0 <= start < stop <= size:
-        raise ValueError(f'start and stop are positions from 0 to {size} along this axis, start before stop')
-    if isinstance(points, bool) or not isinstance(points, int) or not 1 <= points <= MAX_POINTS:
-        raise ValueError(f'points is an integer from 1 to {MAX_POINTS}')
+    starts, stops, coordinates = [], [], []
+    for axis, (first, end, lowest, highest) in zip(followed, windows):
+        size = shape[axis]
+        found = _coordinates(axes[axis], size) if axes else None
+        if lowest is not None or highest is not None:
+            if found is None:
+                raise ValueError('This axis has no coordinates; select positions with start and stop')
+            if first is not None or end is not None:
+                raise ValueError('Select positions with start and stop, or coordinates with low and high, not both')
+            first, end = _positions(found, size, -math.inf if lowest is None else float(lowest),
+                                    math.inf if highest is None else float(highest))
+        first = 0 if first is None else first
+        end = size if end is None else end
+        if any(isinstance(v, bool) or not isinstance(v, int) for v in (first, end)) or not 0 <= first < end <= size:
+            raise ValueError(f'start and stop are positions from 0 to {size} along this axis, start before stop')
+        starts.append(first), stops.append(end), coordinates.append(found)
+    if len(counts) != len(followed) or any(isinstance(n, bool) or not isinstance(n, int) or not 1 <= n <= MAX_POINTS
+                                           for n in counts):
+        raise ValueError(f'points is an integer from 1 to {MAX_POINTS}, or one for each axis along')
+    if math.prod(min(n, b - a) for n, a, b in zip(counts, starts, stops)) > MAX_CELLS:
+        raise ValueError(f'A map has at most {MAX_CELLS} buckets; ask for fewer points')
     request = {'dtype': data['dtype'], 'byte_order': data.get('byte_order', 'little'), 'shape': shape,
-               'along': along, 'fixed': [[a, i] for a, i in sorted(fixed.items())],
-               'start': start, 'stop': stop, 'points': points}
+               'along': followed, 'fixed': [[a, i] for a, i in sorted(fixed.items())],
+               'start': starts, 'stop': stops, 'points': counts}
     if complex_mode:
         request['complex'] = complex_mode
-    summarized = [named(i) for i in range(len(shape)) if i not in fixed and i != along
+    summarized = [named(i) for i in range(len(shape)) if i not in fixed and i not in followed
                   and not (i == component and complex_mode)]
     return request, {'axes': axes, 'coordinates': coordinates, 'at': shown, 'summarized': summarized, 'fixed': fixed}
 
@@ -239,13 +265,15 @@ def python(request, values=None):
     shape = list(request['shape'])
     derive = request.get('complex')
     logical = shape[:-1] if derive else shape
-    dims, along, start, stop = len(logical), request['along'], request['start'], request['stop']
+    dims = len(logical)
+    followed = list(zip(request['along'], request['start'], request['stop'], request['points']))
     stride = [1] * dims
     for d in range(dims - 2, -1, -1):
         stride[d] = stride[d + 1] * logical[d + 1]
     width = 2 if derive else 1
     fixed = {a: i for a, i in request['fixed']}
-    low, high = (start, stop) if along == 0 else (fixed[0], fixed[0] + 1) if 0 in fixed else (0, logical[0])
+    first = next(((start, stop) for axis, start, stop, _ in followed if axis == 0), None)
+    low, high = first or ((fixed[0], fixed[0] + 1) if 0 in fixed else (0, logical[0]))
     if values is None:
         if (high - low) * stride[0] * width > PYTHON_LIMIT:
             raise ValueError(f'Views reading more than {PYTHON_LIMIT} elements are computed by iop-execd; install '
@@ -253,10 +281,10 @@ def python(request, values=None):
         flat = _read(request, low, high, stride[0], width)
     else:
         flat = values[low * stride[0] * width:high * stride[0] * width]
-    n = stop - start
-    points = min(request['points'], n)
-    bounds = [start + -(-b * n // points) for b in range(points + 1)]
-    free = [d for d in range(dims) if d != along and d not in fixed]
+    counts = [min(points, stop - start) for _, start, stop, points in followed]
+    bounds = [[start + -(-b * (stop - start) // n) for b in range(n + 1)]
+              for (_, start, stop, _), n in zip(followed, counts)]
+    free = [d for d in range(dims) if d not in fixed and all(d != axis for axis, *_ in followed)]
 
     def index(offset):
         """The index, in the selected array, of an offset counted from the first slab read."""
@@ -266,8 +294,10 @@ def python(request, values=None):
             absolute %= stride[d]
         return result
 
-    if not free:
-        # One element per position: the selection is a strided slice.
+    if len(followed) == 1 and not free:
+        # One element per position of one axis: the selection is a strided slice.
+        along, start, stop, _ = followed[0]
+        n, points, bounds = stop - start, counts[0], bounds[0]
         first = sum(fixed[d] * stride[d] for d in fixed) - low * stride[0] + start * stride[along]
         step = stride[along]
         end = first + (n - 1) * step + 1
@@ -277,7 +307,7 @@ def python(request, values=None):
             seq = list(map(math.hypot, re, im)) if derive == 'abs' else list(map(math.atan2, im, re))
         else:
             seq = list(map(float, flat[first:end:step]))
-        counts = [bounds[b + 1] - bounds[b] for b in range(points)]
+        counted = [bounds[b + 1] - bounds[b] for b in range(points)]
         clean = math.isfinite(sum(seq))
         parts = [seq[bounds[b] - start:bounds[b + 1] - start] for b in range(points)]
         if not clean:
@@ -294,25 +324,28 @@ def python(request, values=None):
                      'min_index': index(first + seq.index(smallest) * step),
                      'max_index': index(first + seq.index(largest) * step)}
         return {'count': n, 'finite': finite, **stats,
-                'buckets': {'start': bounds[:-1], 'count': counts, 'finite': [len(p) for p in parts],
+                'buckets': {'start': [bounds[:-1]], 'count': counted, 'finite': [len(p) for p in parts],
                             'min': [min(p) if p else None for p in parts], 'max': [max(p) if p else None for p in parts],
                             'mean': [math.fsum(p) / len(p) if p else None for p in parts]}}
 
-    # Several elements per position: walk the slabs read in storage order, as iop-execd does.
+    # Several elements per position, or two axes followed: walk the slabs read in storage order, as iop-execd does.
     count = finite = 0
     mean = m2 = 0.0
     smallest = largest = None
-    buckets = [[0, 0, math.inf, -math.inf, 0.0] for _ in range(points)]
+    buckets = [[0, 0, math.inf, -math.inf, 0.0] for _ in range(math.prod(counts))]
     position = [low] + [0] * (dims - 1)
     for offset in range((high - low) * stride[0]):
-        p = position[along]
-        if start <= p < stop and all(position[d] == i for d, i in fixed.items()):
+        if (all(start <= position[axis] < stop for axis, start, stop, _ in followed)
+                and all(position[d] == i for d, i in fixed.items())):
             if derive:
                 re, im = float(flat[2 * offset]), float(flat[2 * offset + 1])
                 x = math.hypot(re, im) if derive == 'abs' else math.atan2(im, re)
             else:
                 x = float(flat[offset])
-            bucket = buckets[(p - start) * points // n]
+            cell = 0
+            for (axis, start, stop, _), n in zip(followed, counts):
+                cell = cell * n + (position[axis] - start) * n // (stop - start)
+            bucket = buckets[cell]
             bucket[0] += 1
             count += 1
             if math.isfinite(x):
@@ -335,7 +368,8 @@ def python(request, values=None):
     return {'count': count, 'finite': finite, 'min': smallest and smallest[0], 'max': largest and largest[0],
             'mean': mean if finite else None, 'std': math.sqrt(m2 / finite) if finite else None,
             'min_index': smallest and index(smallest[1]), 'max_index': largest and index(largest[1]),
-            'buckets': {'start': bounds[:-1], 'count': [b[0] for b in buckets], 'finite': [b[1] for b in buckets],
+            'buckets': {'start': [b[:-1] for b in bounds], 'count': [b[0] for b in buckets],
+                        'finite': [b[1] for b in buckets],
                         'min': [b[2] if b[1] else None for b in buckets], 'max': [b[3] if b[1] else None for b in buckets],
                         'mean': [b[4] / b[1] if b[1] else None for b in buckets]}}
 
@@ -351,10 +385,11 @@ def _flatten(values):
 def view(holder, source=None, along=None, at=None, start=None, stop=None, low=None, high=None, points=POINTS,
          field='', use_native=True):
     """What one array says: a summary, and exact values when each position holds one element within
-    ``points`` positions, otherwise the minimum, maximum and mean of ``points`` buckets of positions.
+    ``points`` positions, otherwise the minimum, maximum and mean of ``points`` buckets of positions. Along
+    two axes, the same over a map of buckets.
 
-    ``source`` is the file that holds the array, or ``[[path, size], ...]`` for the chunks of a stream;
-    without it the inline values are read.
+    ``source`` is the file that holds the array, or ``[[path, size], ...]`` for the chunks of a stream or
+    the files of a sweep's points; without it the inline values are read.
     """
     data = holder['data']
     request, context = plan(data, along, at, start, stop, low, high, points)
@@ -371,17 +406,25 @@ def view(holder, source=None, along=None, at=None, start=None, stop=None, low=No
         if len(flat) != math.prod(data['shape']):
             raise ValueError('The inline values do not match the array shape')
         computed = python(request, flat)
-    axes, along, coordinates = context['axes'], request['along'], context['coordinates']
-    place = _place(coordinates) if coordinates else None
-    following = {'axis': axes[along]['name'] if axes else along, 'start': request['start'], 'stop': request['stop']}
-    listed = coordinates[request['start']:request['stop']] if isinstance(coordinates, list) else None
-    if coordinates:
-        span = listed or (place(request['start']), place(request['stop'] - 1))
-        following.update({'low': min(span), 'high': max(span)})
-        if not listed:
-            following['step'] = coordinates[1]
-    if axes and isinstance(axes[along].get('unit'), str):
-        following['unit'] = axes[along]['unit']
+    axes, buckets = context['axes'], computed['buckets']
+    places = [_place(c) if c else None for c in context['coordinates']]
+    exact = all(c == 1 for c in buckets['count'])
+    following = []
+    for i, axis in enumerate(request['along']):
+        first, end, found = request['start'][i], request['stop'][i], context['coordinates'][i]
+        item = {'axis': axes[axis]['name'] if axes else axis, 'start': first, 'stop': end}
+        listed = found[first:end] if isinstance(found, list) else None
+        if found:
+            span = listed or (places[i](first), places[i](end - 1))
+            item.update({'low': min(span), 'high': max(span)})
+            if not listed:
+                item['step'] = found[1]
+            elif exact:
+                # Listed coordinates are not implied by a step: each value comes with its own.
+                item['coordinates'] = listed
+        if axes and isinstance(axes[axis].get('unit'), str):
+            item['unit'] = axes[axis]['unit']
+        following.append(item)
     unit = data.get('unit')
     for axis, index in context['fixed'].items():
         # An axis whose positions are different quantities, such as the channels of a stream, gives each its unit.
@@ -390,6 +433,7 @@ def view(holder, source=None, along=None, at=None, start=None, stop=None, low=No
             unit = units[index]
     if request.get('complex') == 'arg':
         unit = 'rad'
+    one = len(following) == 1
     summary = {'count': computed['count']}
     if computed['count'] != computed['finite']:
         summary['nonfinite'] = computed['count'] - computed['finite']
@@ -399,38 +443,54 @@ def view(holder, source=None, along=None, at=None, start=None, stop=None, low=No
         position = computed[key + '_index']
         if position is not None:
             summary[key + '_index'] = position
-            if coordinates:
-                summary[key + '_at'] = place(position[along])
+            at_ = [place(position[axis]) if place else None for place, axis in zip(places, request['along'])]
+            if any(c is not None for c in at_):
+                summary[key + '_at'] = at_[0] if one else at_
     result = {'field': field, 'dtype': data['dtype'], 'shape': data['shape'], **({'unit': unit} if unit else {}),
-              'along': following, **({'at': context['at']} if context['at'] else {}),
+              'along': following[0] if one else following, **({'at': context['at']} if context['at'] else {}),
               **({'summarized': context['summarized']} if context['summarized'] else {}), 'summary': summary}
-    buckets = computed['buckets']
-    if all(c == 1 for c in buckets['count']):
-        result['values'] = buckets['mean']
-        if listed:
-            # Listed coordinates are not implied by a step: each value comes with its own.
-            following['coordinates'] = listed
+    sizes = [len(starts) for starts in buckets['start']]
+    shaped = (lambda values: values) if one else (lambda values: _nest(values, sizes))
+    if exact:
+        result['values'] = shaped(buckets['mean'])
     else:
-        result['envelope'] = {'position': buckets['start'],
-                              **({'coordinate': [_short(place(p)) for p in buckets['start']]} if coordinates else {}),
-                              'min': [_short(v) for v in buckets['min']], 'max': [_short(v) for v in buckets['max']],
-                              'mean': [_short(v) for v in buckets['mean']]}
+        coordinates = [[_short(place(p)) for p in starts] if place else None
+                       for place, starts in zip(places, buckets['start'])]
+        result['envelope'] = {'position': buckets['start'][0] if one else buckets['start'],
+                              **({'coordinate': coordinates[0] if one else coordinates}
+                                 if any(c is not None for c in coordinates) else {}),
+                              'min': shaped([_short(v) for v in buckets['min']]),
+                              'max': shaped([_short(v) for v in buckets['max']]),
+                              'mean': shaped([_short(v) for v in buckets['mean']])}
     return result
 
 
-def options(query):
-    """View options from URL query values: at is a JSON object."""
-    def integer(key):
-        try:
-            return int(query[key]) if key in query else None
-        except ValueError:
-            raise ValueError(key + ' is an integer') from None
+def _nest(values, sizes):
+    """Row-major values as nested lists of these sizes."""
+    for size in reversed(sizes[1:]):
+        values = [values[i:i + size] for i in range(0, len(values), size)]
+    return values
 
-    def number(key):
+
+def options(query):
+    """View options from URL query values: at is a JSON object; a JSON list gives one value per axis along."""
+    def one(key, kind, text):
         try:
-            return float(query[key]) if key in query else None
+            return kind(text)
         except ValueError:
-            raise ValueError(key + ' is a number') from None
+            raise ValueError(f'{key} is {"an integer" if kind is int else "a number"}') from None
+
+    def value(key, kind):
+        text = query.get(key)
+        if text is None:
+            return None
+        if not text.startswith('['):
+            return one(key, kind, text) if kind else text
+        try:
+            items = json.loads(text)
+        except ValueError:
+            raise ValueError(f'{key} is a JSON list with one value for each axis along') from None
+        return [item if item is None or not kind else one(key, kind, str(item)) for item in items]
     at = None
     if 'at' in query:
         try:
@@ -440,9 +500,9 @@ def options(query):
     unknown = set(query) - {'field', 'along', 'at', 'start', 'stop', 'low', 'high', 'points'}
     if unknown:
         raise ValueError('Unknown view options: ' + ', '.join(sorted(unknown)))
-    return {'field': query.get('field'), 'along': query.get('along'), 'at': at, 'start': integer('start'),
-            'stop': integer('stop'), 'low': number('low'), 'high': number('high'),
-            'points': integer('points') if 'points' in query else POINTS}
+    return {'field': query.get('field'), 'along': value('along', None), 'at': at, 'start': value('start', int),
+            'stop': value('stop', int), 'low': value('low', float), 'high': value('high', float),
+            'points': value('points', int) if 'points' in query else POINTS}
 
 
 def read(result, folder, field=None, output=None, **options):
@@ -506,7 +566,10 @@ def check(value, what):
     kinds = {'field': (str,), 'along': (str, int), 'at': (dict,), 'start': (int,), 'stop': (int,),
              'low': (int, float), 'high': (int, float), 'points': (int,)}
     for key, item in value.items():
-        if isinstance(item, bool) or not isinstance(item, kinds[key]):
+        # Along two axes, the options other than field and at give one value per axis.
+        items = item if isinstance(item, list) and key not in ('field', 'at') else [item]
+        if any(isinstance(i, bool) or not (isinstance(i, kinds[key]) or i is None and key in ('start', 'stop', 'low', 'high'))
+               for i in items) or not items:
             raise ValueError(f'{what}: view {key} has the wrong type')
     return value
 

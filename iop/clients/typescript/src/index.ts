@@ -31,23 +31,28 @@ export type ArtifactRecord = { id: string; run_id: string; name: string; size: n
 export type Event = { sequence: number; kind: string; run_id?: string; [key: string]: unknown };
 export type ManualTask = { operation_id: string; run_id: string | null; device: string; operation: string; instruction: string; arguments: Record<string, unknown>; readings: Record<string, Record<string, unknown>>; created: string };
 export type RunUpdates = { run: RunRecord; changes: Event[]; operations: OperationRecord[]; cursor: number; has_more: boolean };
-/** What an array says: see Client.readArray. */
+/** An axis a view follows: the positions selected and, when known, their coordinates. */
+export type ArrayAxis = { axis: string | number; start: number; stop: number; low?: number; high?: number; step?: number; coordinates?: number[]; unit?: string };
+/** What an array says: see Client.readArray. Along two axes, along is a pair and values and envelope are maps. */
 export type ArrayView = {
   field: string; dtype: string; shape: number[]; unit?: string;
-  along: { axis: string | number; start: number; stop: number; low?: number; high?: number; step?: number; coordinates?: number[]; unit?: string };
+  along: ArrayAxis | ArrayAxis[];
   at?: Record<string, string | number>; summarized?: (string | number)[];
   summary: { count: number; nonfinite?: number; min: number | null; max: number | null; mean: number | null; std: number | null;
-    min_index?: number[]; max_index?: number[]; min_at?: number; max_at?: number };
-  values?: (number | null)[];
-  envelope?: { position: number[]; coordinate?: number[]; min: (number | null)[]; max: (number | null)[]; mean: (number | null)[] };
+    min_index?: number[]; max_index?: number[]; min_at?: number | (number | null)[]; max_at?: number | (number | null)[] };
+  values?: (number | null)[] | (number | null)[][];
+  envelope?: { position: number[] | number[][]; coordinate?: number[] | (number[] | null)[]; min: (number | null)[] | (number | null)[][];
+    max: (number | null)[] | (number | null)[][]; mean: (number | null)[] | (number | null)[][] };
 };
-/** The URL query of an array view; at is sent as a JSON object. */
+/** The URL query of an array view; at, and a list with one value per axis along, are sent as JSON. */
 function viewQuery(options: ArrayViewOptions) {
   const query = new URLSearchParams();
-  for (const [key, value] of Object.entries(options)) if (value !== undefined) query.set(key, key === 'at' ? JSON.stringify(value) : String(value));
+  for (const [key, value] of Object.entries(options)) if (value !== undefined) query.set(key, key === 'at' || Array.isArray(value) ? JSON.stringify(value) : String(value));
   return query.size ? '?' + query : '';
 }
-export type ArrayViewOptions = { field?: string; along?: string | number; at?: Record<string, string | number>; start?: number; stop?: number; low?: number; high?: number; points?: number };
+type PerAxis<T> = T | (T | null)[];
+export type ArrayViewOptions = { field?: string; along?: string | number | (string | number)[]; at?: Record<string, string | number>;
+  start?: PerAxis<number>; stop?: PerAxis<number>; low?: PerAxis<number>; high?: PerAxis<number>; points?: number | number[] };
 export type Submission = { name?: string; project?: string; experiment?: string; platform?: string; resources?: string[]; requirements?: Record<string, number>; parameters?: Record<string, unknown>; request_id?: string; requires?: string[] };
 export class IOPError extends Error {
   constructor(message: string, readonly status: number, readonly details: Record<string, unknown> = {}) { super(message); this.name = 'IOPError'; }

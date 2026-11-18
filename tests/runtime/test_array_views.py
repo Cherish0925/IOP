@@ -125,8 +125,34 @@ class ViewCase(unittest.TestCase):
         self.assertEqual(self.view(values, image, along='column', at={'row': 2})['values'], [20, 21, 22, 23, 24])
         columns = self.view(values, image, along=1)
         self.assertEqual((columns['envelope']['min'], columns['envelope']['max']), ([0, 1, 2, 3, 4], [30, 31, 32, 33, 34]))
-        with self.assertRaisesRegex(ValueError, 'other than the one'):
+        with self.assertRaisesRegex(ValueError, 'other than those the view follows'):
             self.view(values, image, along='column', at={'column': 1})
+
+    def test_two_axes_give_a_map(self):
+        # A 4 x 5 image of big-endian integers on a 10 nm grid: value = 10 * row + column.
+        image = {'dtype': 'int16', 'byte_order': 'big', 'shape': [4, 5], 'unit': 'counts',
+                 'axes': [{'name': 'row', 'unit': 'nm', 'start': 0, 'step': 10}, {'name': 'column'}]}
+        values = [10 * r + c for r in range(4) for c in range(5)]
+        whole = self.view(values, image, along=['row', 'column'])
+        self.assertEqual(whole['values'], [[10 * r + c for c in range(5)] for r in range(4)])
+        self.assertEqual([item['axis'] for item in whole['along']], ['row', 'column'])
+        self.assertEqual((whole['along'][0]['high'], whole['summary']['max_index'], whole['summary']['max_at']),
+                         (30.0, [3, 4], [30.0, None]))
+        coarse = self.view(values, image, along=['row', 'column'], points=[2, 2])
+        self.assertEqual(coarse['envelope']['position'], [[0, 2], [0, 3]])
+        self.assertEqual(coarse['envelope']['coordinate'], [[0.0, 20.0], None])
+        self.assertEqual(coarse['envelope']['mean'], [[6, 8.5], [26, 28.5]])
+        self.assertEqual(coarse['envelope']['min'], [[0, 3], [20, 23]])
+        # Windows by coordinates on one axis and by positions on the other; columns first gives the transpose.
+        window = self.view(values, image, along=['column', 'row'], start=[3, None], low=[None, 15], high=[None, 30])
+        self.assertEqual(window['values'], [[23, 33], [24, 34]])
+        for options, message in (({'along': ['row', 'row']}, 'different axes'), ({'along': ['row', 'column'], 'start': 1},
+                                 'one value for each axis'), ({'along': ['row', 'column'], 'points': [2]}, 'one for each axis'),
+                                 ({'along': ['row', 'column', 'row']}, 'a list of two')):
+            with self.assertRaisesRegex(ValueError, message):
+                self.view(values, image, **options)
+        with self.assertRaisesRegex(ValueError, 'at most 250000 buckets'):
+            self.view([0.0] * 1_000_000, {'dtype': 'float32', 'shape': [1000, 1000]}, along=[0, 1], points=600)
 
     def test_values_that_are_not_finite_are_counted_and_left_out(self):
         seen = self.view([1.0, math.nan, 3.0, math.inf, -2.0], {'dtype': 'float64'})
@@ -189,6 +215,9 @@ class ViewCase(unittest.TestCase):
              {'along': 'b', 'at': {'a': 4}, 'points': 3}),
             (z, {'dtype': 'float64', 'shape': [-1, 2], 'axes': [{'name': 'k'}, {'name': 'component', 'labels': ['re', 'im']}]},
              {'at': {'component': 'arg'}, 'points': 50}),
+            (cube, {'dtype': 'float64', 'shape': [6, 7, 50], 'axes': [{'name': 'a'}, {'name': 'b'}, {'name': 'c'}]},
+             {'along': ['c', 'a'], 'start': [3, None], 'stop': [47, 5], 'points': [9, 4]}),
+            (nan_trace[:20000], {'dtype': 'float32', 'shape': [100, 200]}, {'along': [0, 1], 'points': [7, 30]}),
         ]
         compared = 0
         for values, description, options in cases:
