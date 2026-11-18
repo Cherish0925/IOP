@@ -250,7 +250,7 @@ class Client:
         positions, otherwise the minimum, maximum and mean of ``points`` buckets. ``along`` names the
         axis followed, or a list of two for a map, with start, stop, low and high then given per axis;
         ``at`` fixes others by index or label, and ``{"component": "arg"}`` reads complex values as their
-        argument (abs by default). ``start``/``stop`` select positions and ``low``/``high`` coordinates.
+        argument, ``"power"`` as their squared modulus (abs by default). ``start``/``stop`` select positions and ``low``/``high`` coordinates.
         ``peak`` ("max", or "min" for a dip) adds the line there: its center between samples, its width
         where it is halfway to the opposite extreme, and its value. ``field`` names the array when a result
         holds several.

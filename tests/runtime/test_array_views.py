@@ -123,8 +123,18 @@ class ViewCase(unittest.TestCase):
         self.assertEqual(imaginary['at'], {'component': 'im'})
         for got, c in zip(imaginary['values'], z):
             self.assertAlmostEqual(got, c.imag, places=5)
-        with self.assertRaisesRegex(ValueError, 'labels are re, im; abs and arg'):
+        power = self.view(pairs, trace, at={'component': 'power'}, start=0, stop=5)
+        self.assertEqual(power['unit'], 'V²')
+        for got, c in zip(power['values'], z):
+            self.assertAlmostEqual(got, abs(c) ** 2, places=5)
+        with self.assertRaisesRegex(ValueError, 'labels are re, im; abs, arg and power'):
             self.view(pairs, trace, at={'component': 'phase'})
+        # A notch resonance at 1.06 GHz with loaded Q 200: its dip in power is as wide as f0 / Q.
+        s21 = [1 - 0.8 / (1 + 2j * 200 * (1e5 * i - 6e7) / 1.06e9) for i in range(1001)]
+        notch = {'dtype': 'float64', 'shape': [-1, 2], 'axes': [FREQUENCY, {'name': 'component', 'labels': ['re', 'im']}]}
+        line = self.view([x for c in s21 for x in (c.real, c.imag)], notch, at={'component': 'power'}, peak='min')['peak']
+        self.assertEqual(line['center'], 1.06e9)
+        self.assertAlmostEqual(line['center'] / line['width'], 200, delta=2)
 
     def test_other_axes_are_fixed_or_summarized(self):
         # A 4 x 5 image of big-endian integers: value = 10 * row + column.
@@ -283,6 +293,8 @@ class ViewCase(unittest.TestCase):
             (nan_trace, {'dtype': 'float64'}, {'points': 37, 'peak': 'max'}),
             (nan_trace, {'dtype': 'float32', 'byte_order': 'big'}, {'start': 101, 'stop': 4093, 'peak': 'min'}),
             (DIP, {'dtype': 'float64', 'axes': [FREQUENCY]}, {'low': 1.05e9, 'high': 1.07e9, 'peak': 'min'}),
+            (z, {'dtype': 'float64', 'shape': [-1, 2], 'axes': [{'name': 'k'}, {'name': 'component', 'labels': ['re', 'im']}]},
+             {'at': {'component': 'power'}, 'points': 40, 'peak': 'max'}),
             (cube, {'dtype': 'float64', 'shape': [6, 7, 50], 'axes': [{'name': 'a'}, {'name': 'b'}, {'name': 'c'}]},
              {'along': 'c', 'at': {'a': 4, 'b': 2}, 'peak': 'max'}),
         ]

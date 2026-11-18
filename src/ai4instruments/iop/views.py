@@ -3,11 +3,11 @@ window, and the line at a peak or a dip.
 
 A trace, spectrum, image or buffer is read without moving all of its values. One axis is followed, or
 two for a map; every other axis is either fixed with ``at`` or summarized. A last axis of ``re``/``im``
-pairs is read as ``abs`` unless ``at`` chooses ``re``, ``im`` or ``arg``. Along one axis with the others
-fixed, ``peak`` finds the line at the highest value, or the lowest for a dip: its center between samples,
-its value, the opposite extreme as its base, and its width where it is halfway to the base. iop-execd
-computes the view in its own process; without it, Python computes the same view when the elements read
-stay within ``PYTHON_LIMIT``.
+pairs is read as ``abs`` unless ``at`` chooses ``re``, ``im``, ``arg`` or ``power``, the squared modulus.
+Along one axis with the others fixed, ``peak`` finds the line at the highest value, or the lowest for a
+dip: its center between samples, its value, the opposite extreme as its base, and its width where it is
+halfway to the base. iop-execd computes the view in its own process; without it, Python computes the
+same view when the elements read stay within ``PYTHON_LIMIT``.
 """
 import array
 import itertools
@@ -168,14 +168,14 @@ def plan(data, along=None, at=None, start=None, stop=None, low=None, high=None, 
         axis = _axis(axes, shape, key, 'at')
         if axis in followed:
             raise ValueError('at fixes axes other than those the view follows')
-        if axis == component and value in ('abs', 'arg'):
+        if axis == component and value in ('abs', 'arg', 'power'):
             complex_mode = value
         elif isinstance(value, str) and not value.isdigit():
             labels = axes[axis].get('labels') if axes else None
             if not isinstance(labels, list) or value not in labels:
                 raise ValueError(f'at: axis {named(axis)!r} has no label {value!r}'
                                  + (f'; its labels are {", ".join(map(str, labels))}' if isinstance(labels, list) else '')
-                                 + ('; abs and arg read complex values' if axis == component else ''))
+                                 + ('; abs, arg and power read complex values' if axis == component else ''))
             fixed[axis] = labels.index(value)
         elif isinstance(value, bool) or not isinstance(value, (int, str)) or not 0 <= int(value) < shape[axis]:
             raise ValueError(f'at: axis {named(axis)!r} has positions 0 to {shape[axis] - 1}')
@@ -190,7 +190,8 @@ def plan(data, along=None, at=None, start=None, stop=None, low=None, high=None, 
         if peak not in ('max', 'min'):
             raise ValueError('peak is max, or min for a dip')
         # An axis of one position is read at it.
-        fixed.update((axis, 0) for axis, size in enumerate(shape) if size == 1 and axis not in followed and axis not in fixed)
+        fixed.update((axis, 0) for axis, size in enumerate(shape)
+                     if size == 1 and axis not in followed and axis not in fixed)
     starts, stops, coordinates = [], [], []
     for axis, (first, end, lowest, highest) in zip(followed, windows):
         size = shape[axis]
@@ -221,7 +222,8 @@ def plan(data, along=None, at=None, start=None, stop=None, low=None, high=None, 
                   and not (i == component and complex_mode)]
     if peak is not None:
         if len(followed) > 1 or summarized:
-            raise ValueError('A peak is read along one axis; fix the others with at: ' + ', '.join(map(str, summarized)))
+            raise ValueError('A peak is read along one axis; fix the others with at: '
+                             + ', '.join(map(str, summarized)))
         request['peak'] = peak
     return request, {'axes': axes, 'coordinates': coordinates, 'at': shown, 'summarized': summarized, 'fixed': fixed}
 
@@ -316,7 +318,10 @@ def python(request, values=None):
         if derive:
             re = flat[2 * first:2 * end - 1:2 * step]
             im = flat[2 * first + 1:2 * end:2 * step]
-            seq = list(map(math.hypot, re, im)) if derive == 'abs' else list(map(math.atan2, im, re))
+            if derive == 'power':
+                seq = [float(a) * float(a) + float(b) * float(b) for a, b in zip(re, im)]
+            else:
+                seq = list(map(math.hypot, re, im)) if derive == 'abs' else list(map(math.atan2, im, re))
         else:
             seq = list(map(float, flat[first:end:step]))
         counted = [bounds[b + 1] - bounds[b] for b in range(points)]
@@ -353,7 +358,8 @@ def python(request, values=None):
                 and all(position[d] == i for d, i in fixed.items())):
             if derive:
                 re, im = float(flat[2 * offset]), float(flat[2 * offset + 1])
-                x = math.hypot(re, im) if derive == 'abs' else math.atan2(im, re)
+                x = (math.hypot(re, im) if derive == 'abs' else math.atan2(im, re) if derive == 'arg'
+                     else re * re + im * im)
             else:
                 x = float(flat[offset])
             cell = 0
@@ -521,6 +527,8 @@ def view(holder, source=None, along=None, at=None, start=None, stop=None, low=No
             unit = units[index]
     if request.get('complex') == 'arg':
         unit = 'rad'
+    elif request.get('complex') == 'power' and unit:
+        unit += '²'
     one = len(following) == 1
     summary = {'count': computed['count']}
     if computed['count'] != computed['finite']:

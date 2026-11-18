@@ -3,7 +3,8 @@
 //! One axis is followed, or two for a map or an image; every other axis is either fixed at one index
 //! or summarized. The result holds the statistics of the selected elements and, per bucket of
 //! consecutive positions along the followed axes, their count, extremes and mean. A last axis of
-//! re/im pairs can be read as the modulus or the argument of the complex values. Along one axis with
+//! re/im pairs can be read as the modulus, the argument or the power (squared modulus) of the complex
+//! values. Along one axis with
 //! every other axis fixed, the line at the highest or lowest value is found too: its sub-sample
 //! position, its value, the opposite extreme as its base, and where it falls halfway to the base.
 //! The bytes of the array are one file or, as for a data stream or the points of a sweep, several
@@ -85,6 +86,7 @@ impl Kind {
 enum Complex {
     Modulus,
     Argument,
+    Power,
 }
 
 /// A line read at the highest value, or at the lowest for a dip.
@@ -174,7 +176,8 @@ fn parse(request: &Value) -> Result<Request, Box<dyn Error>> {
         None => None,
         Some("abs") => Some(Complex::Modulus),
         Some("arg") => Some(Complex::Argument),
-        Some(_) => return Err(invalid("complex is abs or arg")),
+        Some("power") => Some(Complex::Power),
+        Some(_) => return Err(invalid("complex is abs, arg or power")),
     };
     if complex.is_some() {
         if shape.len() < 2 || shape[shape.len() - 1] != 2 {
@@ -421,10 +424,10 @@ fn view(r: &Request) -> Result<Value, Box<dyn Error>> {
                     Some(kind) => {
                         let re = r.kind.read(element, r.big);
                         let im = r.kind.read(&element[size..], r.big);
-                        if kind == Complex::Modulus {
-                            re.hypot(im)
-                        } else {
-                            im.atan2(re)
+                        match kind {
+                            Complex::Modulus => re.hypot(im),
+                            Complex::Argument => im.atan2(re),
+                            Complex::Power => re * re + im * im,
                         }
                     }
                 };
@@ -671,6 +674,12 @@ mod tests {
         )
         .unwrap();
         assert!((arg["mean"].as_f64().unwrap() - 4f64.atan2(3.0)).abs() < 1e-12);
+        let power =
+            view(&parse(&request(&name, &[4, 2], json!({"complex": "power"}))).unwrap()).unwrap();
+        assert_eq!(
+            power["buckets"]["mean"],
+            json!([25.0, 4.0, Value::Null, 100.0])
+        );
     }
 
     #[test]
