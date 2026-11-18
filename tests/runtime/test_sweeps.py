@@ -5,6 +5,7 @@ import importlib.util
 import json
 import math
 import struct
+import time
 import unittest
 from ai4instruments.iop import Driver, IOPError, arrays, sweeps
 from . import test_service as fixture
@@ -108,6 +109,23 @@ class SweepCase(unittest.TestCase):
         self.assertEqual([(op['step'], op['arguments']['angle_deg']) for op in operations],
                          [('turn.0', 0), ('turn.1', 10), ('turn.2', 25)])
         self.assertLessEqual(operations[0]['ended'], operations[1]['started'])
+
+    def test_a_running_sweep_shows_what_it_gathered_so_far(self):
+        run = self.submit([{'id': 'turn', 'device': 'stage', 'operation': 'move_to', 'arguments': {'duration': 0.5},
+                            'sweep': {'angle_deg': [0, 10, 20, 30, 40]}}])
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            # Until a point completes, the sweep has gathered nothing.
+            partial = (self.client.request(f'/v1/runs/{run.id}/result') or {}).get('turn')
+            if partial and partial['angle_actual']['values'][1] is not None:
+                break
+            time.sleep(0.05)
+        self.assertEqual(run.info(details=False)['state'], 'running')
+        self.assertIsNone(partial['angle_actual']['values'][-1])
+        seen = run.read_array('turn.angle_actual')
+        self.assertEqual((seen['summary']['count'], seen['summary']['min']), (5, 0))
+        self.assertGreater(seen['summary']['nonfinite'], 0)
+        self.assertEqual(run.result(10)['turn']['angle_actual']['values'], [0, 10, 20, 30, 40])
 
     def test_a_saved_operation_swept_and_its_peak_used_by_a_later_step(self):
         run = self.submit([

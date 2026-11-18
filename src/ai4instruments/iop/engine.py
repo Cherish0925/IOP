@@ -872,6 +872,26 @@ class Engine:
     def _recorded(self, operation_id):
         return self.operations.get(operation_id) or self.store.get('operations', operation_id)
 
+    def _assembled(self, run):
+        """A step graph's result from its operations completed so far: each Basic Operation's result under its
+        step, each use of a saved operation its named result, and each sweep what it gathered; the operations
+        of a sweep's points stay in their records."""
+        by_step = {self.operations[oid]['step']: self.operations[oid] for oid in run['operations']}
+        sweeps = run.get('sweeps', {})
+        result = {step: op.get('result') for step, op in by_step.items()
+                  if op['state'] == 'completed' and not library.within(step, sweeps)}
+        if run.get('calls') or sweeps:
+            result.update(library.results(run.get('calls', {}), sweeps, by_step, self.home / 'runs' / run['id'] / 'output'))
+        return result
+
+    def run_result(self, run_id):
+        """The saved result of an experiment; while a step graph runs, what its completed operations give so far."""
+        with self.lock:
+            run = self.runs.get(run_id)
+            if run is not None and run['kind'] == 'workflow' and run['state'] in {'queued', 'running'}:
+                return self._assembled(run) or None
+        return self.store.get('runs', run_id).get('result')
+
     def submit(self, spec, package=None):
         with self.lock:
             if self.stopping:
@@ -1453,15 +1473,7 @@ class Engine:
                     self._finish(run, run.get('end_state', 'cancelled'))
                 elif run['kind'] == 'workflow' or process is not None:
                     if run['kind'] == 'workflow':
-                        by_step = {self.operations[oid]['step']: self.operations[oid] for oid in run['operations']}
-                        sweeps = run.get('sweeps', {})
-                        # Each saved operation used as a step returns its named result under that step, and each
-                        # sweep what it gathered; the operations of a sweep's points stay in their records.
-                        run['result'] = {step: op.get('result') for step, op in by_step.items()
-                                         if not library.within(step, sweeps)}
-                        if run.get('calls') or sweeps:
-                            run['result'].update(library.results(run.get('calls', {}), sweeps, by_step,
-                                                                 self.home / 'runs' / run['id'] / 'output'))
+                        run['result'] = self._assembled(run)
                     self._finish(run, 'completed')
         if self.stopping:
             return

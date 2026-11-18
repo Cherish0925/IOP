@@ -608,7 +608,7 @@ def _operation(engine, operation_id):
 
 def _held(engine, run_id, request_id=None):
     if request_id is None:
-        held = engine.store.get('runs', run_id).get('result')
+        held = engine.run_result(run_id)
     else:
         from .batches import describe
         held = describe(engine, run_id, request_id).get('results')

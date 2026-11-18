@@ -138,7 +138,7 @@ function streamFigures(id, streams) {
     .join("");
 }
 // Arrays the result holds, such as what a sweep gathered from its points' values or files, are drawn from their views.
-function heldFigures(id, value) {
+function heldFigures(id, value, keep) {
   return arraysIn(value)
     .filter(
       ([, data, holder]) =>
@@ -149,20 +149,21 @@ function heldFigures(id, value) {
         source: `runs/${encodeURIComponent(id)}/array`,
         field: path,
         caption: `${esc(path)} · ${esc(data.shape.join(" × "))}${data.unit ? " · " + esc(data.unit) : ""}`,
-        keep: true,
+        keep,
         map: mapAxes(data),
       }),
     )
     .join("");
 }
-function resultView(value, id) {
+// A finished experiment's result is final; while a step graph runs, it is what its completed operations give so far.
+function resultView(value, id, final) {
   if (value === null || value === undefined)
     return `<p class="inline-note">${t("此实验没有单独保存汇总结果，可查看每个操作的返回值和输出文件。", "No separate summary was saved. Operation results and output files are available below.")}</p>`;
   const entries =
     typeof value === "object" && !Array.isArray(value)
       ? Object.entries(value)
       : [["result", value]];
-  return `${heldFigures(id, value)}<div class="result-grid">${entries
+  return `${heldFigures(id, value, final)}<div class="result-grid">${entries
     .slice(0, 24)
     .map(
       ([key, v]) =>
@@ -186,6 +187,7 @@ export async function inspectRun(id) {
     pages = [],
     terminalLoaded = false,
     resultLoaded = false,
+    running = true,
     activeTab = "steps";
   $$("[data-detail-tab]", body).forEach(
     (b) =>
@@ -199,14 +201,18 @@ export async function inspectRun(id) {
       }),
   );
   async function loadResult() {
-    if (activeTab !== "results" || resultLoaded || !terminalLoaded) return;
-    resultLoaded = true;
-    $("#detail-results").innerHTML =
-      `<p class="inline-note">${t("正在读取结果…", "Loading results…")}</p>`;
+    if (activeTab !== "results" || resultLoaded) return;
+    if (!running) resultLoaded = true;
+    if (!$("#detail-results").childElementCount)
+      $("#detail-results").innerHTML =
+        `<p class="inline-note">${t("正在读取结果…", "Loading results…")}</p>`;
     try {
       const value = await api("runs/" + encodeURIComponent(id) + "/result");
       if (body.isConnected && $("#modal").dataset.runDetail === id) {
-        $("#detail-results").innerHTML = resultView(value, id);
+        $("#detail-results").innerHTML =
+          running && value === null
+            ? `<p class="inline-note">${t("实验正在进行，完成的操作给出结果后显示在此。", "The experiment is running. Results appear here as its operations complete.")}</p>`
+            : resultView(value, id, !running);
         drawArrays($("#detail-results"));
       }
     } catch (error) {
@@ -312,12 +318,9 @@ export async function inspectRun(id) {
             (b.onclick = () =>
               busy(b, () => downloadFile(files[Number(b.dataset.download)]))),
         );
-        if (!active) {
-          terminalLoaded = true;
-          await loadResult();
-        } else
-          $("#detail-results").innerHTML =
-            `<p class="inline-note">${t("实验正在进行，完成后在此显示汇总结果。", "The experiment is running. Its summary will appear here on completion.")}</p>`;
+        running = active;
+        if (!active) terminalLoaded = true;
+        await loadResult();
       }
       if (active) {
         clearTimeout(detailTimer);

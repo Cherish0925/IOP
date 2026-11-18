@@ -350,7 +350,7 @@ class Handler(BaseHTTPRequestHandler):
                 elif action == 'result' and method == 'POST':
                     result = engine.save_result(run_id, body['result'])
                 elif action == 'result' and method == 'GET':
-                    result = engine.store.get('runs', run_id).get('result')
+                    result = engine.run_result(run_id)
                 elif action == 'artifacts':
                     result = engine.artifact(run_id, body['name'], base64.b64decode(body['data'], validate=True), body.get('operation_ids', [])) if method == 'POST' else engine.store.list('artifacts', run_id, 10000)
                 else:
