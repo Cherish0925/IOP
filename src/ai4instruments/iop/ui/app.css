@@ -1876,7 +1876,11 @@ input::file-selector-button {
 .sweep-fields small {
   color: var(--muted);
 }
-.array-save {
+.array-tools {
+  display: inline-flex;
+  gap: 2px;
+}
+.array-tool {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -1888,16 +1892,17 @@ input::file-selector-button {
   font: inherit;
   cursor: pointer;
 }
-.array-save:hover,
-.array-save:focus-visible {
+.array-tool:hover,
+.array-tool:focus-visible,
+.array-tool[aria-pressed="true"] {
   color: var(--text);
   background: var(--accent-soft);
 }
-.array-save svg {
+.array-tool svg {
   width: 14px;
   height: 14px;
 }
-.array-plot svg {
+.array-chart > svg {
   display: block;
   width: 100%;
   height: 150px;
@@ -1913,6 +1918,12 @@ input::file-selector-button {
 .array-plot polygon.band {
   fill: var(--accent);
   opacity: 0.22;
+}
+.array-plot line.line-mark {
+  stroke: var(--text);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+  vector-effect: non-scaling-stroke;
 }
 .array-axis {
   display: flex;

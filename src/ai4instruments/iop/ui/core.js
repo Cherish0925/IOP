@@ -299,6 +299,32 @@ function map(view) {
       : ""
   }</small>`;
 }
+// Where a coordinate of the axis followed lies across a chart of n values or buckets, through its position;
+// null when the axis lists its coordinates.
+function chartX(view, n, width) {
+  const along = view.along,
+    position = along.step
+      ? (c) =>
+          along.start +
+          (c - (along.step > 0 ? along.low : along.high)) / along.step
+      : along.low === undefined
+        ? (c) => c
+        : null,
+    starts = view.envelope?.position;
+  if (!position) return null;
+  return (c) => {
+    const p = position(c);
+    let i = p - along.start;
+    if (starts) {
+      const k = Math.max(
+        0,
+        starts.findLastIndex((s) => s <= p),
+      );
+      i = k + (p - starts[k]) / ((starts[k + 1] ?? along.stop) - starts[k]);
+    }
+    return n === 1 ? width / 2 : (i * width) / (n - 1);
+  };
+}
 // One chart per array: a map along two axes, otherwise a line with the band between bucket minima and
 // maxima and the mean or exact values.
 function chart(view) {
@@ -347,7 +373,17 @@ function chart(view) {
     along,
     along.coordinates || view.envelope?.coordinate,
   );
-  return `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${esc(String(along.axis))}">${shapes}</svg><div class="array-axis"><span>${esc(String(along.axis))} ${esc(first)}</span><span>${esc(last)}</span></div><small class="muted">${t("最小", "min")} ${esc(quantity(s.min, unit))} @ ${esc(place(s.min_index, s.min_at))} · ${t("最大", "max")} ${esc(quantity(s.max, unit))} @ ${esc(place(s.max_index, s.max_at))} · ${t("均值", "mean")} ${esc(quantity(s.mean, unit))} · σ ${esc(quantity(s.std, unit))}${s.nonfinite ? " · " + s.nonfinite + t(" 个非有限值", " not finite") : ""}${
+  // A line read at a peak or a dip: its center, and its width at half height, where the axis places them.
+  const line = view.peak,
+    lineX = line && chartX(view, n, width),
+    half = line && y((line.value + line.base) / 2),
+    marks = lineX
+      ? `<line class="line-mark" x1="${lineX(line.center)}" x2="${lineX(line.center)}" y1="0" y2="${height}"/>${line.width !== undefined ? `<line class="line-mark" x1="${lineX(line.low)}" x2="${lineX(line.high)}" y1="${half}" y2="${half}"/>` : ""}`
+      : "",
+    lineText = line
+      ? ` · ${line.value >= line.base ? t("峰", "peak") : t("谷", "dip")} ${esc(quantity(line.center, along.unit || ""))}${line.width !== undefined ? ` · ${t("半高宽", "width")} ${esc(quantity(line.width, along.unit || ""))}` : ""}`
+      : "";
+  return `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${esc(String(along.axis))}">${shapes}${marks}</svg><div class="array-axis"><span>${esc(String(along.axis))} ${esc(first)}</span><span>${esc(last)}</span></div><small class="muted">${t("最小", "min")} ${esc(quantity(s.min, unit))} @ ${esc(place(s.min_index, s.min_at))} · ${t("最大", "max")} ${esc(quantity(s.max, unit))} @ ${esc(place(s.max_index, s.max_at))} · ${t("均值", "mean")} ${esc(quantity(s.mean, unit))} · σ ${esc(quantity(s.std, unit))}${s.nonfinite ? " · " + s.nonfinite + t(" 个非有限值", " not finite") : ""}${lineText}${
     view.at
       ? " · " +
         esc(
@@ -359,18 +395,42 @@ function chart(view) {
   }</small>`;
 }
 // One figure per array: source is the view's path under /v1, field the array in a result, at fixes axes
-// such as a stream's channel, map names two axes to draw as a map, keep marks arrays that never change
-// and name is what the whole array is saved as.
-export const arrayFigure = ({
+// such as a stream's channel, map names two axes to draw as a map, line offers the peak or dip of a line
+// along the first axis, keep marks arrays that never change and name is what the whole array is saved as.
+export function arrayFigure({
   source,
   field = "",
   caption,
   keep,
   at,
   map,
+  line,
   name,
-}) =>
-  `<figure class="array-plot" data-array-source="${esc(source)}" data-array-field="${esc(field)}" data-array-name="${esc(name || field || "array")}"${at ? ` data-array-at="${esc(JSON.stringify(at))}"` : ""}${map ? ` data-array-map="${esc(JSON.stringify(map))}"` : ""}${keep ? ' data-array-keep="1"' : ""}><figcaption><span>${caption}</span><button class="array-save" data-array-save title="${t("保存整个数组，NumPy 可直接读取", "Save the whole array for NumPy")}">${icon("download")}.npy</button></figcaption><div class="array-chart"><small class="muted">${t("正在读取…", "Reading…")}</small></div></figure>`;
+}) {
+  const peak =
+    (line && lines.get([source, field, at && JSON.stringify(at)].join("|"))) ||
+    "";
+  const toggles = line
+    ? [
+        [
+          "max",
+          t("峰", "Peak"),
+          t("读出峰的中心和半高宽", "Read the peak's center and width"),
+        ],
+        [
+          "min",
+          t("谷", "Dip"),
+          t("读出谷的中心和半高宽", "Read the dip's center and width"),
+        ],
+      ]
+        .map(
+          ([kind, label, title]) =>
+            `<button class="array-tool" data-array-line="${kind}" aria-pressed="${peak === kind}" title="${title}">${label}</button>`,
+        )
+        .join("")
+    : "";
+  return `<figure class="array-plot" data-array-source="${esc(source)}" data-array-field="${esc(field)}" data-array-name="${esc(name || field || "array")}"${at ? ` data-array-at="${esc(JSON.stringify(at))}"` : ""}${map ? ` data-array-map="${esc(JSON.stringify(map))}"` : ""}${peak ? ` data-array-peak="${peak}"` : ""}${keep ? ' data-array-keep="1"' : ""}><figcaption><span>${caption}</span><span class="array-tools">${toggles}<button class="array-tool" data-array-save title="${t("保存整个数组，NumPy 可直接读取", "Save the whole array for NumPy")}">${icon("download")}.npy</button></span></figcaption><div class="array-chart"><small class="muted">${t("正在读取…", "Reading…")}</small></div></figure>`;
+}
 // Save a file the service sends, such as an artifact or an array as .npy, where the person chooses.
 export async function save(path, name) {
   let handle;
@@ -410,38 +470,67 @@ document.addEventListener("click", (e) => {
     ),
   );
 });
-// The two axes an array is drawn along as a map, an image or a sweep over two parameters: its axes of more
-// than one position other than re/im components, when there are exactly two; otherwise it is drawn as a line.
+// Peak or dip shown on a figure, until it is chosen again.
+document.addEventListener("click", (e) => {
+  const button = e.target.closest?.("[data-array-line]"),
+    figure = button?.closest("figure");
+  if (!figure) return;
+  const kind =
+    figure.dataset.arrayPeak === button.dataset.arrayLine
+      ? ""
+      : button.dataset.arrayLine;
+  remember(lines, figureKey(figure), kind);
+  if (kind) figure.dataset.arrayPeak = kind;
+  else delete figure.dataset.arrayPeak;
+  for (const toggle of figure.querySelectorAll("[data-array-line]"))
+    toggle.setAttribute(
+      "aria-pressed",
+      String(toggle.dataset.arrayLine === kind),
+    );
+  drawArray(figure);
+});
+// The axes an array is drawn along: those of more than one position, other than re/im components. Two make a
+// map, an image or a sweep over two parameters; one, the first, a line where a peak or a dip can be read.
+function drawnAxes(data) {
+  const named = (data.axes || []).length === data.shape.length;
+  return data.shape
+    .map((size, i) => [size, named ? data.axes[i].name : i, i])
+    .filter(
+      ([size], i) =>
+        size > 1 &&
+        !(
+          named &&
+          i === data.shape.length - 1 &&
+          JSON.stringify(data.axes[i].labels) === '["re","im"]'
+        ),
+    );
+}
 export function mapAxes(data) {
-  const named = (data.axes || []).length === data.shape.length,
-    axes = data.shape
-      .map((size, i) => [size, named ? data.axes[i].name : i])
-      .filter(
-        ([size], i) =>
-          size > 1 &&
-          !(
-            named &&
-            i === data.shape.length - 1 &&
-            JSON.stringify(data.axes[i].labels) === '["re","im"]'
-          ),
-      );
+  const axes = drawnAxes(data);
   return axes.length === 2 ? axes.map(([, name]) => name) : null;
+}
+export function lineAxis(data) {
+  const axes = drawnAxes(data);
+  return axes.length === 1 && axes[0][2] === 0;
 }
 // A completed operation's array is read once; a growing stream shows its last chart while one
 // reading at a time renews it.
 const charts = new Map(),
   recent = new Map(),
-  reading = new Map();
+  reading = new Map(),
+  lines = new Map();
 function remember(map, key, value) {
   if (!map.has(key) && map.size >= 200) map.delete(map.keys().next().value);
   map.set(key, value);
 }
-const chartKey = (figure) =>
+const figureKey = (figure) =>
   [
     figure.dataset.arraySource,
     figure.dataset.arrayField,
     figure.dataset.arrayAt,
   ].join("|");
+const chartKey = (figure) =>
+  figureKey(figure) + "|" + (figure.dataset.arrayPeak || "");
 function readChart(figure) {
   const width = figure.clientWidth || 600,
     query = new URLSearchParams(
@@ -459,6 +548,7 @@ function readChart(figure) {
     );
   if (figure.dataset.arrayField) query.set("field", figure.dataset.arrayField);
   if (figure.dataset.arrayAt) query.set("at", figure.dataset.arrayAt);
+  if (figure.dataset.arrayPeak) query.set("peak", figure.dataset.arrayPeak);
   return api(figure.dataset.arraySource + "?" + query).then(chart);
 }
 function show(html, target) {
@@ -537,6 +627,7 @@ export function operationResult(value, operationId) {
           caption: `${esc(path || t("数组", "Array"))} · ${esc(data.dtype)} ${esc(data.shape.join(" × "))}${data.unit ? " · " + esc(data.unit) : ""}`,
           keep: true,
           map: mapAxes(data),
+          line: lineAxis(data),
           name: data.file?.replace(/\.[^./]*$/, "") || path,
         }),
       )

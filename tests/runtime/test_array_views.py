@@ -252,6 +252,8 @@ class ViewCase(unittest.TestCase):
         self.assertEqual(set(line), {'center', 'width', 'low', 'high', 'value', 'base', 'index'})
         image = {'dtype': 'float64', 'shape': [2, 3], 'axes': [{'name': 'row'}, {'name': 'column'}]}
         self.assertEqual(self.view([0, 5, 0, 1, 2, 3], image, along='column', at={'row': 0}, peak='max')['peak']['index'], 1)
+        # An axis of one position, such as the only channel of a stream, is read at it.
+        self.assertEqual(self.view([0, 5, 0], {'dtype': 'float64', 'shape': [3, 1]}, peak='max')['peak']['index'], 1)
         for description, options, message in ((image, {'peak': 'max'}, 'fix the others with at: column'),
                                               (trace, {'peak': 'top'}, 'max, or min for a dip')):
             with self.assertRaisesRegex(ValueError, message):

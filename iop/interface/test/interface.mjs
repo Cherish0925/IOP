@@ -514,6 +514,22 @@ sys.stdout.buffer.write(b.getvalue())`,
     await page.locator("#detail-operation-list .array-plot").innerText(),
     /frequency 1 GHz[\s\S]*1\.1 GHz[\s\S]*0\.2 @ 1\.06 GHz/,
   );
+  // The dip of the trace: its center and its width at half height, marked on the chart.
+  await page.click('#detail-operation-list [data-array-line="min"]');
+  await page.waitForSelector(
+    "#detail-operation-list .array-plot line.line-mark",
+    { state: "attached" },
+  );
+  assert.match(
+    await page.locator("#detail-operation-list .array-plot").innerText(),
+    /(谷|dip) 1\.06 GHz · (半高宽|width) 3\.99\d* MHz/,
+  );
+  assert.equal(
+    await page
+      .locator("#detail-operation-list .array-plot line.line-mark")
+      .count(),
+    2,
+  );
   if (images)
     await page.screenshot({
       path: join(images, "array-view.png"),

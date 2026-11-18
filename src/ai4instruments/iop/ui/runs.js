@@ -26,6 +26,7 @@ import {
   arrayFigure,
   arraysIn,
   mapAxes,
+  lineAxis,
   save,
 } from "./core.js";
 import {
@@ -129,6 +130,7 @@ function streamFigures(id, streams) {
               source,
               caption: caption(String(c.name ?? i)),
               at: { channel: i },
+              line: true,
               name: s.name,
             }),
           )
@@ -136,6 +138,7 @@ function streamFigures(id, streams) {
             arrayFigure({
               source,
               caption: caption(channels[0]?.name),
+              line: true,
               name: s.name,
             }),
           ];
@@ -156,6 +159,7 @@ function heldFigures(id, value, keep) {
         caption: `${esc(path)} · ${esc(data.shape.join(" × "))}${data.unit ? " · " + esc(data.unit) : ""}`,
         keep,
         map: mapAxes(data),
+        line: lineAxis(data),
       }),
     )
     .join("");

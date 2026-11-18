@@ -186,6 +186,11 @@ def plan(data, along=None, at=None, start=None, stop=None, low=None, high=None, 
         # Complex values are read as their modulus unless a component or the argument is chosen.
         complex_mode = 'abs'
         shown[named(component)] = 'abs'
+    if peak is not None:
+        if peak not in ('max', 'min'):
+            raise ValueError('peak is max, or min for a dip')
+        # An axis of one position is read at it.
+        fixed.update((axis, 0) for axis, size in enumerate(shape) if size == 1 and axis not in followed and axis not in fixed)
     starts, stops, coordinates = [], [], []
     for axis, (first, end, lowest, highest) in zip(followed, windows):
         size = shape[axis]
@@ -215,8 +220,6 @@ def plan(data, along=None, at=None, start=None, stop=None, low=None, high=None, 
     summarized = [named(i) for i in range(len(shape)) if i not in fixed and i not in followed
                   and not (i == component and complex_mode)]
     if peak is not None:
-        if peak not in ('max', 'min'):
-            raise ValueError('peak is max, or min for a dip')
         if len(followed) > 1 or summarized:
             raise ValueError('A peak is read along one axis; fix the others with at: ' + ', '.join(map(str, summarized)))
         request['peak'] = peak
