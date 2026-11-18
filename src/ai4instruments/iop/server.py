@@ -274,6 +274,9 @@ class Handler(BaseHTTPRequestHandler):
                 from .streams import describe, chunks
                 if len(parts) == 6 and parts[5] == 'chunks' and method == 'GET':
                     result = chunks(engine, parts[2], parts[4], query.get('after', -1), query.get('limit', 100))
+                elif len(parts) == 6 and parts[5] == 'array' and method == 'GET':
+                    from . import streams, views
+                    result = streams.array_view(engine, parts[2], parts[4], **views.options(query))
                 elif len(parts) == 5:
                     result = describe(engine, parts[2], parts[4], body['definition'] if method == 'POST' else None)
                 else:

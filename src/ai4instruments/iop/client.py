@@ -252,12 +252,9 @@ class Client:
         values as their argument (abs by default). ``start``/``stop`` select positions and ``low``/``high``
         coordinates. ``field`` names the array when a result holds several.
         """
-        query = {key: value for key, value in {'field': field, 'along': along, 'start': start, 'stop': stop,
-                 'low': low, 'high': high, 'points': points}.items() if value is not None}
-        if at is not None:
-            query['at'] = json.dumps(at)
         return self.request('/v1/operations/' + quote(operation_id, safe='') + '/array' +
-                            ('?' + urlencode(query) if query else ''))
+                            view_query(field=field, along=along, at=at, start=start, stop=stop, low=low, high=high,
+                                       points=points))
 
     def maintain(self, platform=None, conditions=None, *, run_id=None, request_id=None, force=False, timeout=None):
         """Verify the conditions that are due and correct those that drifted, in dependency order.
@@ -533,6 +530,12 @@ class Run:
 IOP = Client
 
 
+def view_query(**options):
+    """The URL query of an array view; at is sent as a JSON object."""
+    query = {key: json.dumps(value) if key == 'at' else value for key, value in options.items() if value is not None}
+    return '?' + urlencode(query) if query else ''
+
+
 class DataStream:
     def __init__(self, run, name):
         from urllib.parse import quote
@@ -544,6 +547,12 @@ class DataStream:
 
     def chunks(self, after=-1, limit=100):
         return self.client.request(self.path + '/chunks?' + urlencode({'after': after, 'limit': limit}))
+
+    def read_array(self, *, along=None, at=None, start=None, stop=None, low=None, high=None, points=None):
+        """What a numeric stream (format such as float32-le) says, its chunks read as one array of samples
+        by channels; the options are those of Client.read_array, and at={"channel": name} picks a channel."""
+        return self.client.request(self.path + '/array' + view_query(along=along, at=at, start=start, stop=stop,
+                                                                     low=low, high=high, points=points))
 
     def append(self, data, sequence):
         request = Request(self.client.endpoint + self.path + '/chunks?' + urlencode({'sequence': sequence}),

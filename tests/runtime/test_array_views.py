@@ -166,7 +166,7 @@ class ViewCase(unittest.TestCase):
         for values, description, options in cases:
             holder, path = saved(folder, values, description)
             request, _ = views.plan(holder['data'], **options)
-            request['file'] = str(path)
+            request['segments'] = [[str(path), path.stat().st_size]]
             native = views.native(request)
             if native is None:
                 continue
@@ -181,6 +181,22 @@ class ViewCase(unittest.TestCase):
                     self.assertEqual(native['buckets'][key], python['buckets'][key], key)
                 for a, b in zip(native['buckets']['mean'], python['buckets']['mean']):
                     self.assertTrue(a is b is None or abs(a - b) <= 1e-9 * max(1.0, abs(b)))
+        # The chunks of a stream: the same values split across files at arbitrary byte boundaries.
+        holder, path = saved(folder, nan_trace, {'dtype': 'float64'})
+        payload, parts = path.read_bytes(), []
+        for number, (begin, end) in enumerate(((0, 1001), (1001, 80013), (80013, len(path.read_bytes())))):
+            part = Path(folder) / f'chunk-{number}.bin'
+            part.write_bytes(payload[begin:end])
+            parts.append([str(part), end - begin])
+        request, _ = views.plan(holder['data'], start=9000, stop=15000, points=13)
+        request['segments'] = parts
+        native = views.native(request)
+        if native is not None:
+            compared += 1
+            whole = dict(request, segments=[[str(path), path.stat().st_size]])
+            self.assertEqual(native, views.native(whole))
+            self.assertEqual((native['count'], native['min_index']), (views.python(request)['count'],
+                                                                      views.python(request)['min_index']))
         if compared == 0:
             self.skipTest('iop-execd with array views is not installed')
 
@@ -188,7 +204,7 @@ class ViewCase(unittest.TestCase):
         holder, path = saved(self.folder.name, DIP, {'dtype': 'float64'})
         # An executor that predates views is not used; Python computes the same view.
         with patch.dict(os.environ, {'IOP_EXECD': sys.executable}):
-            self.assertIsNone(views.native({'file': str(path)}))
+            self.assertIsNone(views.native({'segments': [[str(path), path.stat().st_size]]}))
             self.assertEqual(views.view(holder, path, points=5)['summary']['min_index'], [600])
         with patch.object(views, 'PYTHON_LIMIT', 1000), self.assertRaisesRegex(ValueError, 'iop-execd'):
             views.view(holder, path, use_native=False)
@@ -295,6 +311,46 @@ LOCATE = {'id': 'resonance.locate', 'layer': 'standard', 'description': 'Sweep a
           'steps': [{'id': 'sweep', 'device': 'resonator', 'operation': 'sweep'}],
           'result': {'f0': {'step': 'sweep', 'view': {}, 'path': ['summary', 'min_at']},
                      'depth': {'step': 'sweep', 'view': {}, 'path': ['summary', 'min']}}}
+
+
+class StreamViewCase(unittest.TestCase):
+    """Numeric data streams read as arrays of samples by channels."""
+    setUp = fixture.ServiceCase.setUp
+    tearDown = fixture.ServiceCase.tearDown
+
+    def test_stream_formats_describe_their_array(self):
+        from ai4instruments.iop.streams import array
+        two = {'format': 'int16-be', 'channels': [{'name': 'x', 'unit': 'V'}, {'name': 'y', 'unit': 'mV'}],
+               'sample_rate_hz': 1000}
+        self.assertEqual(array(two, 4 * 5 + 3), {
+            'dtype': 'int16', 'byte_order': 'big', 'shape': [5, 2], 'count': 10, 'bytes': 20,
+            'axes': [{'name': 'time', 'unit': 's', 'start': 0.0, 'step': 0.001},
+                     {'name': 'channel', 'labels': ['x', 'y'], 'units': ['V', 'mV']}]})
+        self.assertEqual(array({'format': 'uint8'}, 7)['axes'], [{'name': 'sample'}])
+        for definition in ({'format': 'npy'}, {'format': 'float32'}, {'format': 'float32-le', 'channels': [{}, {}]}):
+            with self.assertRaisesRegex(ValueError, 'numeric type|no complete sample'):
+                array(definition, 4)
+
+    def test_a_streamed_acquisition_reads_as_one_array(self):
+        samples = [(math.sin(i / 50), 1000 * math.cos(i / 50) if i != 777 else math.nan) for i in range(3000)]
+        payload = struct.pack('<6000f', *[v for pair in samples for v in pair])
+        with self.client.start_experiment() as run:
+            stream = run.stream('voltage', {'format': 'float32-le', 'sample_rate_hz': 1000,
+                                            'channels': [{'name': 'x', 'unit': 'V'}, {'name': 'y', 'unit': 'mV'}]})
+            # Chunks need not hold whole samples.
+            for sequence, (begin, end) in enumerate(((0, 9001), (9001, 20000), (20000, len(payload)))):
+                stream.append(payload[begin:end], sequence)
+            seen = stream.read_array(at={'channel': 'y'}, points=6)
+            self.assertEqual((seen['unit'], seen['shape'], seen['along']['unit']), ('mV', [3000, 2], 's'))
+            self.assertEqual((seen['summary']['count'], seen['summary']['nonfinite']), (3000, 1))
+            self.assertAlmostEqual(seen['summary']['max'], 1000, delta=0.1)
+            self.assertEqual(len(seen['envelope']['min']), 6)
+            window = stream.read_array(at={'channel': 'x'}, low=1.0, high=1.004)
+            self.assertEqual((window['unit'], window['along']['start'], len(window['values'])), ('V', 1000, 5))
+            self.assertAlmostEqual(window['values'][0], math.sin(20), places=6)
+            run.stream('frames', {'format': 'npy'})
+            with self.assertRaisesRegex(IOPError, 'numeric type'):
+                run.stream('frames').read_array()
 
 
 class DerivedValueCase(unittest.TestCase):

@@ -39,6 +39,12 @@ export type ArrayView = {
   values?: (number | null)[];
   envelope?: { position: number[]; coordinate?: number[]; min: (number | null)[]; max: (number | null)[]; mean: (number | null)[] };
 };
+/** The URL query of an array view; at is sent as a JSON object. */
+function viewQuery(options: ArrayViewOptions) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(options)) if (value !== undefined) query.set(key, key === 'at' ? JSON.stringify(value) : String(value));
+  return query.size ? '?' + query : '';
+}
 export type ArrayViewOptions = { field?: string; along?: string | number; at?: Record<string, string | number>; start?: number; stop?: number; low?: number; high?: number; points?: number };
 export type Submission = { name?: string; project?: string; experiment?: string; platform?: string; resources?: string[]; requirements?: Record<string, number>; parameters?: Record<string, unknown>; request_id?: string; requires?: string[] };
 export class IOPError extends Error {
@@ -116,9 +122,7 @@ export class IOP {
   }
   /** Summary, envelope or exact window of an array an operation returned, without moving all its values. */
   readArray(operationId: string, options: ArrayViewOptions = {}) {
-    const query = new URLSearchParams();
-    for (const [key, value] of Object.entries(options)) if (value !== undefined) query.set(key, key === 'at' ? JSON.stringify(value) : String(value));
-    return this.request<ArrayView>(`/v1/operations/${encodeURIComponent(operationId)}/array` + (query.size ? '?' + query : ''));
+    return this.request<ArrayView>(`/v1/operations/${encodeURIComponent(operationId)}/array` + viewQuery(options));
   }
   conditions(platform?: string) { return this.request<ConditionState[]>('/v1/conditions' + (platform ? '?' + new URLSearchParams({ platform }) : '')); }
   condition(id: string) { return this.request<Condition & ConditionState & { statistics: Record<string, unknown>; records: Record<string, unknown>[] }>('/v1/conditions/' + encodeURIComponent(id)); }
@@ -283,6 +287,8 @@ export class DataStream {
   constructor(readonly run: Run, name: string) { this.path = `/v1/runs/${encodeURIComponent(run.id)}/streams/${encodeURIComponent(name)}`; }
   info() { return this.run.client.request<{name: string; definition: Record<string, unknown>; chunks: number; bytes: number; next_sequence: number}>(this.path); }
   chunks(after = -1, limit = 100) { return this.run.client.request<{chunks: Record<string, unknown>[]; cursor: number}>(this.path + '/chunks?' + new URLSearchParams({ after: String(after), limit: String(limit) })); }
+  /** What a numeric stream (format such as float32-le) says, its chunks read as one array of samples by channels. */
+  readArray(options: Omit<ArrayViewOptions, 'field'> = {}) { return this.run.client.request<ArrayView & {run_id: string; stream: string}>(this.path + '/array' + viewQuery(options)); }
   async append(data: Blob, sequence: number, signal?: AbortSignal) {
     const response = await fetch(this.run.client.endpoint + this.path + '/chunks?sequence=' + sequence, {
       method: 'POST', headers: { Authorization: 'Bearer ' + this.run.client.token, 'Content-Type': 'application/octet-stream' },

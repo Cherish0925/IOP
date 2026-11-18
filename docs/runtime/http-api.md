@@ -208,6 +208,7 @@ The list of required fields uses `protocol`, `communication_parameters`, `contro
 | POST | `/v1/runs/{id}/resume` | `request_id` | Requeue the same run with a new attempt; requires package `resume:true` and saved progress |
 | GET / POST | `/v1/runs/{id}/streams/{name}` | POST: `definition` with `format` | Data description, bytes, chunk count and next sequence |
 | GET | `/v1/runs/{id}/streams/{name}/chunks` | `after=-1`, `limit=100` | Ordered chunk descriptions and cursor |
+| GET | `/v1/runs/{id}/streams/{name}/array` | View options as for operation arrays, without `field` | A stream of a numeric format read as samples by channels; see [Reading arrays](drivers.md#reading-arrays--读取数组) |
 | POST | `/v1/runs/{id}/streams/{name}/chunks?sequence=N` | Binary body and `Content-Length` | Saved artifact; an identical retry returns the original artifact |
 
 A chunk sequence starts at zero. A different body at an existing sequence returns `chunk_changed`; a gap returns `chunk_out_of_order` with `next_sequence`. Fetch bytes through `/v1/artifacts/{id}`. Descriptions state formats and units; the service does not infer binary layouts. Transfers read at most 256 KiB at a time outside the scheduler lock.

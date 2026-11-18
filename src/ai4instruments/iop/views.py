@@ -13,6 +13,7 @@ import math
 import operator
 import subprocess
 import sys
+from pathlib import Path
 from .arrays import DTYPES, _typecode
 
 POINTS = 64
@@ -155,7 +156,7 @@ def plan(data, along=None, at=None, start=None, stop=None, low=None, high=None, 
         request['complex'] = complex_mode
     summarized = [named(i) for i in range(len(shape)) if i not in fixed and i != along
                   and not (i == component and complex_mode)]
-    return request, {'axes': axes, 'coordinates': coordinates, 'at': shown, 'summarized': summarized}
+    return request, {'axes': axes, 'coordinates': coordinates, 'at': shown, 'summarized': summarized, 'fixed': fixed}
 
 
 def native(request):
@@ -182,13 +183,21 @@ def native(request):
 def _read(request, low, high, stride, width):
     """The raw elements of the first-axis slabs low to high, as an array of numbers."""
     size = DTYPES[request['dtype']]
-    offset = request.get('offset', 0)
-    with open(request['file'], 'rb') as file:
-        file.seek(0, 2)
-        if file.tell() < offset + math.prod(request['shape']) * size:
-            raise ValueError('The file holds fewer bytes than its array description')
-        file.seek(offset + low * stride * width * size)
-        payload = file.read((high - low) * stride * width * size)
+    if sum(n for _, n in request['segments']) < math.prod(request['shape']) * size:
+        raise ValueError('The files hold fewer bytes than the array description')
+    skip, length, payload = low * stride * width * size, (high - low) * stride * width * size, bytearray()
+    for path, n in request['segments']:
+        if skip >= n:
+            skip -= n
+            continue
+        with open(path, 'rb') as file:
+            file.seek(skip)
+            payload += file.read(min(n - skip, length - len(payload)))
+        skip = 0
+        if len(payload) >= length:
+            break
+    if len(payload) < length:
+        raise ValueError('A file holds fewer bytes than recorded')
     flat = array.array(_typecode(request['dtype']))
     flat.frombytes(payload)
     if flat.itemsize > 1 and (request.get('byte_order', 'little') == 'big') != (sys.byteorder == 'big'):
@@ -310,14 +319,18 @@ def _flatten(values):
         yield math.nan if values is None else float(values)
 
 
-def view(holder, path=None, along=None, at=None, start=None, stop=None, low=None, high=None, points=POINTS,
+def view(holder, source=None, along=None, at=None, start=None, stop=None, low=None, high=None, points=POINTS,
          field='', use_native=True):
     """What one array says: a summary, and exact values when each position holds one element within
-    ``points`` positions, otherwise the minimum, maximum and mean of ``points`` buckets of positions."""
+    ``points`` positions, otherwise the minimum, maximum and mean of ``points`` buckets of positions.
+
+    ``source`` is the file that holds the array, or ``[[path, size], ...]`` for the chunks of a stream;
+    without it the inline values are read.
+    """
     data = holder['data']
     request, context = plan(data, along, at, start, stop, low, high, points)
-    if path is not None:
-        request['file'] = str(path)
+    if source is not None:
+        request['segments'] = source if isinstance(source, list) else [[str(source), Path(source).stat().st_size]]
         computed = native(request) if use_native else None
         if computed is None:
             computed = python(request)
@@ -337,7 +350,14 @@ def view(holder, path=None, along=None, at=None, start=None, stop=None, low=None
         following.update({'low': min(ends), 'high': max(ends), 'step': coordinates[1]})
     if axes and isinstance(axes[along].get('unit'), str):
         following['unit'] = axes[along]['unit']
-    unit = 'rad' if request.get('complex') == 'arg' else data.get('unit')
+    unit = data.get('unit')
+    for axis, index in context['fixed'].items():
+        # An axis whose positions are different quantities, such as the channels of a stream, gives each its unit.
+        units = axes[axis].get('units') if axes else None
+        if isinstance(units, list) and index < len(units) and isinstance(units[index], str):
+            unit = units[index]
+    if request.get('complex') == 'arg':
+        unit = 'rad'
     summary = {'count': computed['count']}
     if computed['count'] != computed['finite']:
         summary['nonfinite'] = computed['count'] - computed['finite']

@@ -72,6 +72,8 @@ serve(p)
     assert.equal((await run.resume('next-attempt')).attempt, 2);
     assert.deepEqual(await run.result(),{angle:0});
     assert.equal((await (await run.stream('signal')).info()).chunks, 1);
+    const signal = await (await run.stream('signal')).readArray({points: 4});
+    assert.deepEqual([signal.summary.count, signal.summary.min, signal.summary.max, signal.envelope?.mean], [4096, 7, 7, [7, 7, 7, 7]]);
     const context = await client.context();
     assert.ok(!('connections' in context.discovery));
     const history = await client.deviceHistory('stage');

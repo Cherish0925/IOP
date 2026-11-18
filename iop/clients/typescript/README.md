@@ -20,6 +20,6 @@ The integration test uploads a Node.js experiment package to an actual IOP servi
 
 For adaptive experiments, use `startExperiment`, `run.batch`, `run.saveAcquisition`, then `run.finish`. See [continuous experiments](../../../docs/runtime/external-experiments.md). `lab.release(device)` hands an idle connection to another application; `lab.reconnect(device)` restores it.
 
-`lab.readArray(operationId, {points: 64})` tells what an array an operation returned says: extremes with their index and coordinate, mean, spread, and an envelope or exact values; `along`, `at`, `start`/`stop` and `low`/`high` choose what to read. See [reading arrays](../../../docs/runtime/drivers.md#reading-arrays--读取数组).
+`lab.readArray(operationId, {points: 64})` tells what an array an operation returned says: extremes with their index and coordinate, mean, spread, and an envelope or exact values; `along`, `at`, `start`/`stop` and `low`/`high` choose what to read; `stream.readArray(options)` reads a numeric data stream the same way. See [reading arrays](../../../docs/runtime/drivers.md#reading-arrays--读取数组).
 
 `lab.manualTasks()` lists steps of `manual` devices waiting for a person; `lab.reportManual(operationId, 'done', readings)` records one (`failed` and `unsure` also). `lab.resolveResources(resources, observation)` returns held resources to use after recording what was observed. See [manual steps](../../../docs/runtime/drivers.md#manual-steps--人工步骤).

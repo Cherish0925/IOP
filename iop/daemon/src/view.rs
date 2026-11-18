@@ -3,8 +3,9 @@
 //! One axis is followed; every other axis is either fixed at one index or summarized. The result
 //! holds the statistics of the selected elements and, per bucket of consecutive positions along the
 //! followed axis, their count, extremes and mean. A last axis of re/im pairs can be read as the
-//! modulus or the argument of the complex values. Only the byte range that holds the selected
-//! positions of the first axis is read.
+//! modulus or the argument of the complex values. The bytes of the array are one file or, for a data
+//! stream, its chunk files in order; only the range that holds the selected positions of the first axis
+//! is read.
 use serde_json::{json, Value};
 use std::{
     error::Error,
@@ -86,8 +87,8 @@ enum Complex {
 
 #[derive(Debug)]
 struct Request {
-    file: String,
-    offset: u64,
+    /// Files whose bytes, in order, hold the array, with their sizes.
+    segments: Vec<(String, u64)>,
     kind: Kind,
     big: bool,
     /// Shape of the selected values: without the re/im axis when complex values are derived.
@@ -112,10 +113,16 @@ fn count(value: &Value, what: &str) -> Result<usize, Box<dyn Error>> {
 }
 
 fn parse(request: &Value) -> Result<Request, Box<dyn Error>> {
-    let file = request["file"]
-        .as_str()
-        .ok_or_else(|| invalid("file names the array file"))?
-        .to_string();
+    let segments = request["segments"]
+        .as_array()
+        .filter(|parts| !parts.is_empty())
+        .ok_or_else(|| invalid("segments lists the files that hold the array, with their sizes"))?
+        .iter()
+        .map(|part| match (part[0].as_str(), part[1].as_u64()) {
+            (Some(path), Some(size)) => Ok((path.to_string(), size)),
+            _ => Err(invalid("each segment is [path, size in bytes]")),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let kind = request["dtype"]
         .as_str()
         .and_then(Kind::parse)
@@ -177,8 +184,7 @@ fn parse(request: &Value) -> Result<Request, Box<dyn Error>> {
         return Err(invalid("points must be positive"));
     }
     Ok(Request {
-        file,
-        offset: request["offset"].as_u64().unwrap_or(0),
+        segments,
         kind,
         big,
         shape,
@@ -189,6 +195,60 @@ fn parse(request: &Value) -> Result<Request, Box<dyn Error>> {
         stop,
         points,
     })
+}
+
+/// The bytes of consecutive files read as one sequence, starting at an offset.
+struct Segments<'a> {
+    parts: &'a [(String, u64)],
+    index: usize,
+    file: Option<File>,
+    left: u64,
+}
+
+impl<'a> Segments<'a> {
+    fn at(parts: &'a [(String, u64)], mut offset: u64) -> io::Result<Self> {
+        let mut index = 0;
+        while index < parts.len() && offset >= parts[index].1 {
+            offset -= parts[index].1;
+            index += 1;
+        }
+        let mut segments = Segments {
+            parts,
+            index,
+            file: None,
+            left: 0,
+        };
+        if index < parts.len() {
+            let mut file = File::open(&parts[index].0)?;
+            file.seek(SeekFrom::Start(offset))?;
+            segments.file = Some(file);
+            segments.left = parts[index].1 - offset;
+        }
+        Ok(segments)
+    }
+}
+
+impl Read for Segments<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        while self.left == 0 {
+            self.index += 1;
+            if self.index >= self.parts.len() {
+                return Ok(0);
+            }
+            self.file = Some(File::open(&self.parts[self.index].0)?);
+            self.left = self.parts[self.index].1;
+        }
+        let wanted = buffer.len().min(self.left as usize);
+        let read = self.file.as_mut().unwrap().read(&mut buffer[..wanted])?;
+        if read == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "a file holds fewer bytes than recorded",
+            ));
+        }
+        self.left -= read as u64;
+        Ok(read)
+    }
 }
 
 #[derive(Clone)]
@@ -237,14 +297,12 @@ fn view(r: &Request) -> Result<Value, Box<dyn Error>> {
     } else {
         (0, r.shape[0])
     };
-    let mut file = File::open(&r.file)?;
-    let needed = r.offset + (total * unit) as u64;
-    if file.metadata()?.len() < needed {
+    if r.segments.iter().map(|part| part.1).sum::<u64>() < (total * unit) as u64 {
         return Err(invalid(
-            "The file holds fewer bytes than its array description",
+            "The files hold fewer bytes than the array description",
         ));
     }
-    file.seek(SeekFrom::Start(r.offset + (low * stride[0] * unit) as u64))?;
+    let mut file = Segments::at(&r.segments, (low * stride[0] * unit) as u64)?;
     let mut remaining = (high - low) * stride[0];
 
     let n = r.stop - r.start;
@@ -405,7 +463,8 @@ mod tests {
     }
 
     fn request(name: &str, shape: &[usize], extra: Value) -> Value {
-        let mut value = json!({"file": name, "dtype": "float64", "shape": shape, "along": 0,
+        let size = std::fs::metadata(name).unwrap().len();
+        let mut value = json!({"segments": [[name, size]], "dtype": "float64", "shape": shape, "along": 0,
                                "start": 0, "stop": shape[0], "points": 4});
         for (k, v) in extra.as_object().unwrap() {
             value[k] = v.clone();
@@ -481,6 +540,20 @@ mod tests {
         assert_eq!(rows["buckets"]["min"], json!([0.0, 10.0, 20.0]));
         assert_eq!(rows["buckets"]["max"], json!([3.0, 13.0, 23.0]));
         assert_eq!(rows["max_index"], json!([2, 3]));
+    }
+
+    #[test]
+    fn the_chunks_of_a_stream_read_as_one_array() {
+        // Two channels in three chunks that split samples and values anywhere.
+        let values: Vec<f64> = (0..12).map(|i| i as f64).collect();
+        let (_a, first) = file(&values[..3]);
+        let (_b, second) = file(&values[3..8]);
+        let (_c, third) = file(&values[8..]);
+        let segments = json!([[first, 24], [second, 40], [third, 32]]);
+        let request = json!({"segments": segments, "dtype": "float64", "shape": [6, 2], "along": 0,
+                             "fixed": [[1, 1]], "start": 1, "stop": 6, "points": 8});
+        let v = view(&parse(&request).unwrap()).unwrap();
+        assert_eq!(v["buckets"]["mean"], json!([3.0, 5.0, 7.0, 9.0, 11.0]));
     }
 
     #[test]

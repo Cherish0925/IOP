@@ -384,12 +384,19 @@ def create_server(client, *, http=False, selection=None):
         return compact(client.request('/v1/operations/' + quote(operation_id, safe='')), values)
 
     @tool(annotations=read_only)
-    def read_array(operation_id: str, field: str | None = None, along: str | int | None = None,
+    def read_array(operation_id: str | None = None, field: str | None = None, along: str | int | None = None,
                    at: dict[str, str | int] | None = None, start: int | None = None, stop: int | None = None,
-                   low: float | None = None, high: float | None = None, points: int = 32) -> dict:
-        """Read what an array an operation returned says without all its values: count, min and max with their index and coordinate, mean and std; then exact values when each position holds one element and there are at most points positions, otherwise the min, max and mean of points buckets. along names the axis followed (default the first); at fixes other axes by index or label, e.g. {"channel": 2}; complex values (axis labels re, im) read as abs unless at chooses re, im or arg. Zoom with start/stop (positions) or low/high (coordinates). field names the array when a result holds several."""
-        return client.read_array(operation_id, field, along=along, at=at, start=start, stop=stop, low=low,
-                                 high=high, points=points)
+                   low: float | None = None, high: float | None = None, points: int = 32,
+                   run_id: str | None = None, stream: str | None = None) -> dict:
+        """Read what an array says without all its values: an array an operation returned (operation_id), or a numeric data stream of an experiment (run_id and stream, samples by channels). Returns count, min and max with their index and coordinate, mean and std; then exact values when each position holds one element and there are at most points positions, otherwise the min, max and mean of points buckets. along names the axis followed (default the first); at fixes other axes by index or label, e.g. {"channel": "x"}; complex values (axis labels re, im) read as abs unless at chooses re, im or arg. Zoom with start/stop (positions) or low/high (coordinates). field names the array when a result holds several."""
+        options = dict(along=along, at=at, start=start, stop=stop, low=low, high=high, points=points)
+        if stream is not None:
+            if run_id is None or operation_id is not None:
+                raise ValueError('Read a stream with run_id and stream, or an operation array with operation_id')
+            return client.run(run_id).stream(stream).read_array(**options)
+        if operation_id is None:
+            raise ValueError('Give operation_id, or run_id and stream')
+        return client.read_array(operation_id, field, **options)
 
     @tool()
     def continue_program(run_id: str, request_id: str | None = None) -> dict:
