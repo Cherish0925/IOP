@@ -22,7 +22,7 @@ TOOLSETS = {
               'retry_instrument_discovery', 'available_adapters', 'configure_platform', 'configure_resources'),
     'experiments': ('saved_operations', 'operating_conditions', 'run_procedure', 'submit_experiment', 'start_experiment', 'invoke_operation',
                     'finish_experiment', 'submit_operations', 'save_acquisition', 'submit_program', 'continue_program',
-                    'experiment', 'cancel_experiment', 'experiment_updates', 'experiment_files', 'operation_result',
+                    'experiment', 'cancel_experiment', 'experiment_updates', 'experiment_files', 'operation_result', 'read_array',
                     'save_experiment_file', 'download_file'),
     'attention': ('reconnect_instrument', 'release_instrument', 'resolve_resources', 'manual_tasks', 'report_manual_step'),
     'episodes': ('begin_episode', 'record_transition', 'research_episodes'),
@@ -380,8 +380,16 @@ def create_server(client, *, http=False, selection=None):
 
     @tool(annotations=read_only)
     def operation_result(operation_id: str, values: bool = False) -> dict:
-        """Read one recorded operation and its result without repeating an instrument action. Arrays longer than 64 values show their description unless values is true."""
+        """Read one recorded operation and its result without repeating an instrument action. Arrays longer than 64 values show their description unless values is true; read_array summarizes them."""
         return compact(client.request('/v1/operations/' + quote(operation_id, safe='')), values)
+
+    @tool(annotations=read_only)
+    def read_array(operation_id: str, field: str | None = None, along: str | int | None = None,
+                   at: dict[str, str | int] | None = None, start: int | None = None, stop: int | None = None,
+                   low: float | None = None, high: float | None = None, points: int = 32) -> dict:
+        """Read what an array an operation returned says without all its values: count, min and max with their index and coordinate, mean and std; then exact values when each position holds one element and there are at most points positions, otherwise the min, max and mean of points buckets. along names the axis followed (default the first); at fixes other axes by index or label, e.g. {"channel": 2}; complex values (axis labels re, im) read as abs unless at chooses re, im or arg. Zoom with start/stop (positions) or low/high (coordinates). field names the array when a result holds several."""
+        return client.read_array(operation_id, field, along=along, at=at, start=start, stop=stop, low=low,
+                                 high=high, points=points)
 
     @tool()
     def continue_program(run_id: str, request_id: str | None = None) -> dict:

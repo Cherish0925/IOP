@@ -20,6 +20,14 @@ from ai4instruments.iop.engine import Engine
 from ai4instruments.iop.cli import serve
 import socketserver, threading
 import ai4instruments.iop.discovery as discovery
+import array
+from ai4instruments.iop import Driver, arrays
+class Analyzer(Driver):
+    def describe(self): return {'operations':{'sweep':{'parameters':{},'effect':'observe'}}}
+    def invoke(self, operation, arguments, context):
+        dip = array.array('d', [1 - 0.8 / (1 + ((i - 600) / 20) ** 2) for i in range(1001)])
+        axis = {'name':'frequency','unit':'Hz','start':1e9,'step':1e5}
+        return arrays.result(dip.tobytes(), arrays.check_result({'dtype':'float64','axes':[axis]}), context, 'trace')
 p=home_path(sys.argv[1]); c=initialize(p,False,0);c['discovery_interval']=0;c['resource_pools']={'cpu':8,'gpu':2};save_json(p/'config.json',c)
 class Instrument(socketserver.StreamRequestHandler):
     def handle(self):
@@ -480,6 +488,28 @@ sys.stdout.buffer.write(b.getvalue())`,
       !document.querySelector('[data-condition="axis.in_range"] .error-text'),
   );
   assert.equal((await api("conditions"))[0].state, "holds");
+  // An array result is drawn from its view: bucket extremes, the mean and coordinates.
+  await api("devices", { id: "analyzer", driver: "__main__:Analyzer" });
+  const sweep = await api("runs", {
+    name: "Resonance sweep",
+    steps: [{ id: "sweep", device: "analyzer", operation: "sweep" }],
+  });
+  await page.evaluate(
+    (id) => document.dispatchEvent(new CustomEvent("iop:run", { detail: id })),
+    sweep.id,
+  );
+  await page.waitForSelector("#detail-operation-list .array-plot svg polyline");
+  assert.match(
+    await page.locator("#detail-operation-list .array-plot").innerText(),
+    /frequency 1 GHz[\s\S]*1\.1 GHz[\s\S]*0\.2 @ 1\.06 GHz/,
+  );
+  if (images)
+    await page.screenshot({
+      path: join(images, "array-view.png"),
+      fullPage: true,
+      style: "#toast{visibility:hidden}",
+    });
+  await page.click("#modal-close");
   const lasting = await api("runs", {
     name: "Continues after browser closes",
     steps: [
@@ -502,7 +532,7 @@ sys.stdout.buffer.write(b.getvalue())`,
   assert.equal(continued.state, "completed", JSON.stringify(continued));
   assert.deepEqual(errors, []);
   console.log(
-    "Interface passed: discovery, registration, topology, workflow, results, resources, search, language, themes, mobile, program ZIP, file download, manual steps, held resources, saved operations, operating conditions and service continuity.",
+    "Interface passed: discovery, registration, topology, workflow, results, resources, search, language, themes, mobile, program ZIP, file download, manual steps, held resources, saved operations, operating conditions, array views and service continuity.",
   );
 } finally {
   if (browser) await browser.close();

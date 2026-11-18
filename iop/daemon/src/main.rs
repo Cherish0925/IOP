@@ -1,4 +1,5 @@
 //! Own one SDK process, forward its messages, and terminate it on timeout or EOF.
+//! With `--array-view`, summarize a saved array instead (see view.rs).
 use serde_json::{json, Value};
 use std::{env, io, process::Stdio, time::Duration};
 use tokio::{
@@ -8,6 +9,7 @@ use tokio::{
 };
 mod job;
 mod process_tree;
+mod view;
 
 pub(crate) async fn emit(value: &Value) -> io::Result<()> {
     let mut output = tokio::io::stdout();
@@ -43,6 +45,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if args == ["--job"] {
         return job::run().await;
+    }
+    if args == ["--array-view"] {
+        return view::run();
     }
     let mut timeout = 300.0_f64;
     if args.first().map(String::as_str) == Some("--timeout") && args.len() >= 2 {

@@ -241,6 +241,24 @@ class Client:
         """One condition with its definition, state, statistics and latest records."""
         return self.request('/v1/conditions/' + quote(condition_id, safe=''))
 
+    def read_array(self, operation_id, field=None, *, along=None, at=None, start=None, stop=None, low=None,
+                   high=None, points=None):
+        """What an array an operation returned says, without moving all its values.
+
+        Returns the count, extremes with their index (and coordinate), mean and standard deviation,
+        then exact values when each position holds one element and there are at most ``points``
+        positions, otherwise the minimum, maximum and mean of ``points`` buckets. ``along`` names the
+        axis followed; ``at`` fixes others by index or label, and ``{"component": "arg"}`` reads complex
+        values as their argument (abs by default). ``start``/``stop`` select positions and ``low``/``high``
+        coordinates. ``field`` names the array when a result holds several.
+        """
+        query = {key: value for key, value in {'field': field, 'along': along, 'start': start, 'stop': stop,
+                 'low': low, 'high': high, 'points': points}.items() if value is not None}
+        if at is not None:
+            query['at'] = json.dumps(at)
+        return self.request('/v1/operations/' + quote(operation_id, safe='') + '/array' +
+                            ('?' + urlencode(query) if query else ''))
+
     def maintain(self, platform=None, conditions=None, *, run_id=None, request_id=None, force=False, timeout=None):
         """Verify the conditions that are due and correct those that drifted, in dependency order.
 

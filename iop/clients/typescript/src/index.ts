@@ -29,6 +29,17 @@ export type ArtifactRecord = { id: string; run_id: string; name: string; size: n
 export type Event = { sequence: number; kind: string; run_id?: string; [key: string]: unknown };
 export type ManualTask = { operation_id: string; run_id: string | null; device: string; operation: string; instruction: string; arguments: Record<string, unknown>; readings: Record<string, Record<string, unknown>>; created: string };
 export type RunUpdates = { run: RunRecord; changes: Event[]; operations: OperationRecord[]; cursor: number; has_more: boolean };
+/** What an array an operation returned says: see Client.readArray. */
+export type ArrayView = {
+  operation_id: string; field: string; dtype: string; shape: number[]; unit?: string;
+  along: { axis: string | number; start: number; stop: number; low?: number; high?: number; step?: number; unit?: string };
+  at?: Record<string, string | number>; summarized?: (string | number)[];
+  summary: { count: number; nonfinite?: number; min: number | null; max: number | null; mean: number | null; std: number | null;
+    min_index?: number[]; max_index?: number[]; min_at?: number; max_at?: number };
+  values?: (number | null)[];
+  envelope?: { position: number[]; coordinate?: number[]; min: (number | null)[]; max: (number | null)[]; mean: (number | null)[] };
+};
+export type ArrayViewOptions = { field?: string; along?: string | number; at?: Record<string, string | number>; start?: number; stop?: number; low?: number; high?: number; points?: number };
 export type Submission = { name?: string; project?: string; experiment?: string; platform?: string; resources?: string[]; requirements?: Record<string, number>; parameters?: Record<string, unknown>; request_id?: string; requires?: string[] };
 export class IOPError extends Error {
   constructor(message: string, readonly status: number, readonly details: Record<string, unknown> = {}) { super(message); this.name = 'IOPError'; }
@@ -102,6 +113,12 @@ export class IOP {
   }
   programFile(id: string, name: string) {
     return this.request<{ text: string | null }>(`/v1/library/${encodeURIComponent(id)}/files/${name.split('/').map(encodeURIComponent).join('/')}`);
+  }
+  /** Summary, envelope or exact window of an array an operation returned, without moving all its values. */
+  readArray(operationId: string, options: ArrayViewOptions = {}) {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(options)) if (value !== undefined) query.set(key, key === 'at' ? JSON.stringify(value) : String(value));
+    return this.request<ArrayView>(`/v1/operations/${encodeURIComponent(operationId)}/array` + (query.size ? '?' + query : ''));
   }
   conditions(platform?: string) { return this.request<ConditionState[]>('/v1/conditions' + (platform ? '?' + new URLSearchParams({ platform }) : '')); }
   condition(id: string) { return this.request<Condition & ConditionState & { statistics: Record<string, unknown>; records: Record<string, unknown>[] }>('/v1/conditions/' + encodeURIComponent(id)); }

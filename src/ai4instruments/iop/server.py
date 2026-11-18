@@ -253,6 +253,9 @@ class Handler(BaseHTTPRequestHandler):
                 result = {'events':rows, 'cursor':rows[-1]['sequence'] if rows else int(query.get('after',0))}
             elif len(parts) == 3 and parts[:2] == ['v1','operations'] and method == 'GET':
                 result = engine.store.wait_operation(parts[2], query.get('wait', 0))
+            elif len(parts) == 4 and parts[:2] == ['v1', 'operations'] and parts[3] == 'array' and method == 'GET':
+                from . import views
+                result = views.operation_array(engine, parts[2], **views.options(query))
             elif len(parts) == 3 and parts[:2] == ['v1','runs'] and method == 'GET':
                 result = engine.run_info(parts[2], details=query.get('details', 'true') != 'false')
             elif len(parts) in (4, 5, 6) and parts[:2] == ['v1', 'runs'] and parts[3] == 'episodes':

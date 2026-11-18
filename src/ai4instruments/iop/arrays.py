@@ -37,7 +37,32 @@ def _order(value):
     return value
 
 
-def check_result(spec):
+def check_axis(axis, queries=False):
+    """Validate one axis: name, optional labels and unit, and coordinates start with step or stop.
+
+    With ``queries`` (SCPI), a coordinate can be ``{"query": command}``, read after the array.
+    """
+    name = axis['name']
+    if 'labels' in axis and (not isinstance(axis['labels'], list) or any(not isinstance(x, str) for x in axis['labels'])):
+        raise ValueError(f'Axis {name}: labels is a list of strings')
+    if 'unit' in axis and not isinstance(axis['unit'], str):
+        raise ValueError(f'Axis {name}: unit is a string')
+    for key in ('start', 'step', 'stop'):
+        if key not in axis:
+            continue
+        value = axis[key]
+        if queries and isinstance(value, dict):
+            if set(value) != {'query'} or not isinstance(value['query'], str) or not value['query'].strip():
+                raise ValueError(f'Axis {name}: {key} is a number or {{"query": command}}')
+        elif isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError(f'Axis {name}: {key} is a number' + (' or {"query": command}' if queries else ''))
+    if ('step' in axis or 'stop' in axis) != ('start' in axis) or ('step' in axis and 'stop' in axis):
+        raise ValueError(f'Axis {name}: coordinates are start with either step or stop')
+    if axis.get('step') == 0:
+        raise ValueError(f'Axis {name}: step is not zero')
+
+
+def check_result(spec, queries=False):
     """Validate an operation's array result description; return it with defaults filled in."""
     encoding = spec.get('encoding', 'block')
     if encoding not in ('block', 'ascii'):
@@ -67,6 +92,8 @@ def check_result(spec):
             raise ValueError('axes is a list of objects with a name')
         if shape is not None and len(axes) != len(shape):
             raise ValueError('Describe one axis for each dimension of shape')
+        for axis in axes:
+            check_axis(axis, queries)
         checked['axes'] = axes
     limit = spec.get('inline_limit', INLINE_LIMIT)
     if type(limit) is not int or limit < 0:

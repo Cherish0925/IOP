@@ -54,6 +54,10 @@ A platform describes the conditions required by its experiments: observations, t
 
 Experiments name their conditions with `requires`. The Runtime checks their recorded state before each dependent operation, keeps the observations with the results, and marks relevant intervals when a later observation reveals drift. Bounded `tune` provides a local numerical search; saved operations and programs express other methods. Classification and dependencies remain configurable for each platform. See [operating conditions](docs/runtime/conditions.md).
 
+## Measured arrays
+
+Traces, spectra, images and buffers are saved with their type, shape, unit and axes; axis coordinates can come from the instrument, such as a sweep's start and stop. `read_array` and the clients tell what an array says without moving it: extremes and where they lie, mean and spread, an envelope along an axis, or exact values in a chosen window; complex values read as modulus, argument or one component. Rust `iop-execd` computes these views outside the service process. See [reading arrays](docs/runtime/drivers.md#reading-arrays--读取数组).
+
 ## Research and learning
 
 Episode records retain the experiment trajectory alongside the three operation roles. Python, TypeScript and MCP clients can save versioned task/policy identities, observations, rewards and termination information. Each transition links to completed operations in that experiment. Identical retries return the saved record; reconnection preserves the sequence. JSON Lines export supports downstream data processing and learning.

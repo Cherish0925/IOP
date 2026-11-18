@@ -55,7 +55,7 @@ Physical topology and experimental timing are separate. A trigger cable alone do
 | Component | Implementation |
 | --- | --- |
 | Persistent service | Python HTTP API, scheduler, experiment processes and CLI. |
-| Native executor | Rust `iop-execd` owns SDK, command and experiment process trees, progress, cancellation and exit. |
+| Native executor | Rust `iop-execd` owns SDK, command and experiment process trees, progress, cancellation and exit, and computes array views outside the service process. |
 | Scheduling | Ready dependencies, rotation between experiments, result bindings, device concurrency and counted resources. |
 | Drivers | SCPI and other text command protocols over TCP / serial / VISA, Modbus TCP / RTU, synchronous/asynchronous HTTP, OPC UA, EPICS Channel Access, QCoDeS drivers, Python libraries and vendor SDKs by description, executable programs, Python packages and SDK workers; manual steps performed by people. |
 | Clients | Python, TypeScript, HTTP, CLI, native desktop and browser interface. |

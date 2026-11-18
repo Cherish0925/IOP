@@ -149,6 +149,11 @@ def parser():
         if action == 'run': q.add_argument('procedure')
     p = sub.add_parser('call'); p.add_argument('device'); p.add_argument('operation'); p.add_argument('--arguments', default='{}')
     p.add_argument('--run-id'); p.add_argument('--request-id')
+    p = sub.add_parser('array', help='Summarize an array an operation returned, or read a window of it')
+    p.add_argument('operation_id'); p.add_argument('--field'); p.add_argument('--along')
+    p.add_argument('--at', help='JSON object fixing other axes, e.g. {"component": "arg"}')
+    p.add_argument('--start', type=int); p.add_argument('--stop', type=int)
+    p.add_argument('--low', type=float); p.add_argument('--high', type=float); p.add_argument('--points', type=int)
     p = sub.add_parser('runs'); p.add_argument('--limit',type=int,default=20)
     for name in ['result','cancel','files','finish']:
         p = sub.add_parser(name); p.add_argument('run_id')
@@ -286,6 +291,10 @@ def main():
             else:
                 run = client.procedure(args.id, 'initialize' if action == 'initialize' else args.procedure)
                 output(run.result() if args.wait else {'run_id':run.id})
+        elif args.command == 'array':
+            output(client.read_array(args.operation_id, args.field, along=args.along,
+                                     at=json.loads(args.at) if args.at else None, start=args.start, stop=args.stop,
+                                     low=args.low, high=args.high, points=args.points))
         elif args.command == 'call':
             if args.request_id and not args.run_id:
                 raise ValueError('Use --run-id with --request-id to retry an experiment operation')

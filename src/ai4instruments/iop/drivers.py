@@ -189,7 +189,7 @@ class SCPI(Driver):
             if spec.get('result', {}).get('type') == 'array':
                 if 'query' not in spec:
                     raise ValueError('an array result needs a query')
-                self.arrays[name] = arrays.check_result(spec['result'])
+                self.arrays[name] = arrays.check_result(spec['result'], queries=True)
             if 'data' in spec:
                 if 'write' not in spec:
                     raise ValueError('binary data is sent with a write command')
@@ -431,6 +431,8 @@ class SCPI(Driver):
             if array_spec['encoding'] == 'ascii':
                 value = arrays.encode(arrays.parse_ascii(value, array_spec['separator']), 'float64', array_spec['byte_order'])
             result.update(arrays.result(value, array_spec, cancelled, operation))
+            if any(isinstance(axis.get(key), dict) for axis in array_spec.get('axes', []) for key in ('start', 'step', 'stop')):
+                result['data']['axes'] = self._coordinates(array_spec['axes'], arguments)
         elif is_query:
             encoding = spec.get("result", {})
             reader = self.readers.get(operation)
@@ -452,6 +454,23 @@ class SCPI(Driver):
         if completion:
             result["completion_response"] = observed
         return result
+
+    def _coordinates(self, axes, arguments):
+        """Axis coordinates the instrument reports for the data just read, such as a sweep's start and stop."""
+        resolved = []
+        for axis in axes:
+            axis = dict(axis)
+            for key in ('start', 'step', 'stop'):
+                if isinstance(axis.get(key), dict):
+                    command = axis[key]['query'].format_map(arguments)
+                    reply = self.exchange(command, True)
+                    self._accept(command, reply)
+                    try:
+                        axis[key] = float(reply.strip())
+                    except ValueError:
+                        raise ValueError(f"Axis {axis['name']}: {command} returned {reply!r}, not a number") from None
+            resolved.append(axis)
+        return resolved
 
     def _accept(self, command, reply, expected=None):
         """Fail when the instrument answered with an error; it did not act, so nothing is unconfirmed."""

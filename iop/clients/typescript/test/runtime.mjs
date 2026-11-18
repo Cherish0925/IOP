@@ -39,9 +39,16 @@ with zipfile.ZipFile(p/'package.zip','w') as z:
  z.writestr('package.json',json.dumps({'command':['node','experiment.mjs'],'resume':True}))
  for name in ('experiment.mjs','iop.mjs'): z.write(p/name,name)
 `,home],{env});
-    child = spawn(python,['-u','-c',`import sys
+    child = spawn(python,['-u','-c',`import sys, array
+from ai4instruments.iop import Driver, arrays
 from ai4instruments.iop.config import initialize,save_json,home_path
 from ai4instruments.iop.cli import serve
+class Analyzer(Driver):
+    def describe(self): return {'operations':{'sweep':{'parameters':{},'effect':'observe'}}}
+    def invoke(self, operation, arguments, context):
+        dip = array.array('d', [1 - 0.8 / (1 + ((i - 600) / 20) ** 2) for i in range(1001)])
+        axis = {'name':'frequency','unit':'Hz','start':1e9,'step':1e5}
+        return arrays.result(dip.tobytes(), arrays.check_result({'dtype':'float64','axes':[axis]}), context, 'trace')
 p=home_path(sys.argv[1]); c=initialize(p,True,0);c['discovery_interval']=0;save_json(p/'config.json',c)
 serve(p)
 `,home],{env,stdio:['ignore','pipe','pipe']});
@@ -116,6 +123,14 @@ serve(p)
     assert.equal((await (await client.submit(relying,{requires:['stage.in_range']})).wait()).state,'completed');
     assert.equal((await client.condition('stage.in_range')).statistics.verifications,1);
     assert.equal((await client.invalidate(['stage.in_range'],'the stage was touched'))[0].state,'due');
+    await client.register({id:'analyzer',driver:'__main__:Analyzer'});
+    const sweep = await client.submit([{id:'sweep',device:'analyzer',operation:'sweep'}]);
+    assert.equal((await sweep.wait()).state,'completed');
+    const swept = (await sweep.operations()).operations[0].id;
+    const view = await client.readArray(swept,{points:8});
+    assert.deepEqual([view.summary.min_index, view.envelope?.min.length, view.along.unit],[[600],8,'Hz']);
+    assert.ok(Math.abs((view.summary.min_at ?? 0) - 1.06e9) < 1);
+    assert.equal((await client.readArray(swept,{low:1.0598e9,high:1.0602e9})).values?.length,5);
     await client.register({id:'bench',driver:'manual',config:{operations:{mount:{instruction:'Mount {sample}',
       parameters:{sample:{type:'string'}},readings:{mass_g:{type:'number',minimum:0}}}}}});
     const mounting = await client.submit([{id:'mount',device:'bench',operation:'mount',arguments:{sample:'S-1'}}]);

@@ -19,6 +19,7 @@ import {
   readJSON,
   uniqueID,
   operationResult,
+  drawArrays,
 } from "./core.js";
 let filter = "",
   kind = "all",
@@ -717,7 +718,8 @@ export async function inspectDevice(id) {
         );
         if (!body.isConnected) break;
         const operation = page.operations[0];
-        output.innerHTML = `<div class="section-title"><h3>${t("返回内容", "Response")}</h3>${badge(operation?.state || "queued")}</div>${operation?.error ? `<p class="error-text">${esc(operation.error)}</p>` : operationResult(operation?.result)}<button class="button small" data-device-run>${t("查看实验记录", "View experiment record")}${icon("arrow")}</button>`;
+        output.innerHTML = `<div class="section-title"><h3>${t("返回内容", "Response")}</h3>${badge(operation?.state || "queued")}</div>${operation?.error ? `<p class="error-text">${esc(operation.error)}</p>` : operationResult(operation?.result, operation?.state === "completed" ? operation.id : undefined)}<button class="button small" data-device-run>${t("查看实验记录", "View experiment record")}${icon("arrow")}</button>`;
+        drawArrays(output);
         trace();
         if (
           operation &&

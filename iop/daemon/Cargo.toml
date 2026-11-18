@@ -3,7 +3,7 @@ name = "iop-execd"
 version = "0.10.0"
 edition = "2021"
 license = "MIT"
-description = "IOP native driver-process supervisor"
+description = "IOP native helper: driver-process supervision and array views"
 
 [dependencies]
 tokio = { version = "1", features = ["rt", "macros", "process", "io-util", "io-std", "time"] }

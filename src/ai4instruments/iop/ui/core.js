@@ -167,9 +167,178 @@ export function modal(title, html, eyebrow = "") {
   return $("#modal-body");
 }
 export const closeModal = () => $("#modal").close();
-export function operationResult(value) {
+// Arrays inside a result: [path, description] with path "" for the result itself, as the service names them.
+export function arraysIn(value, path = "") {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  const own =
+    value.data &&
+    typeof value.data === "object" &&
+    typeof value.data.dtype === "string" &&
+    Array.isArray(value.data.shape)
+      ? [[path, value.data]]
+      : [];
+  return own.concat(
+    ...Object.entries(value)
+      .filter(([k]) => k !== "data" && k !== "values")
+      .map(([k, v]) => arraysIn(v, path ? path + "." + k : k)),
+  );
+}
+const SI = [
+  "Hz",
+  "V",
+  "A",
+  "s",
+  "W",
+  "m",
+  "F",
+  "H",
+  "Ω",
+  "T",
+  "K",
+  "J",
+  "N",
+  "Pa",
+  "g",
+];
+export function quantity(value, unit = "") {
+  if (value === null || value === undefined) return "—";
+  const size = Math.abs(value);
+  if (SI.includes(unit) && value !== 0 && (size >= 1e3 || size < 1)) {
+    for (const [scale, prefix] of [
+      [1e12, "T"],
+      [1e9, "G"],
+      [1e6, "M"],
+      [1e3, "k"],
+      [1, ""],
+      [1e-3, "m"],
+      [1e-6, "µ"],
+      [1e-9, "n"],
+      [1e-12, "p"],
+    ])
+      if (size >= scale)
+        return `${Number((value / scale).toPrecision(5))} ${prefix}${unit}`;
+  }
+  return `${Number(value.toPrecision(5))}${unit ? " " + unit : ""}`;
+}
+// One line chart per array: the band between bucket minima and maxima, and the mean or exact values.
+function chart(view) {
+  const s = view.summary,
+    width = 600,
+    height = 150;
+  if (s.min === null)
+    return `<small class="muted">${t("没有有限数值", "No finite values")}</small>`;
+  const series = view.values
+    ? { min: view.values, max: view.values, mean: view.values }
+    : view.envelope;
+  const n = series.mean.length,
+    span = s.max - s.min || 1;
+  const x = (i) => (n === 1 ? width / 2 : (i * width) / (n - 1));
+  const y = (v) => 4 + (1 - (v - s.min) / span) * (height - 8);
+  const runs = [];
+  series.mean.forEach((v, i) => {
+    if (v === null) return runs.push(null);
+    if (!runs.length || runs[runs.length - 1] === null) runs.push([]);
+    runs[runs.length - 1].push(i);
+  });
+  const shapes = runs
+    .filter(Boolean)
+    .map((r) => {
+      const band = view.values
+        ? ""
+        : `<polygon class="band" points="${r.map((i) => x(i) + "," + y(series.max[i])).join(" ")} ${r
+            .slice()
+            .reverse()
+            .map((i) => x(i) + "," + y(series.min[i]))
+            .join(" ")}"/>`;
+      return `${band}<polyline points="${r.map((i) => x(i) + "," + y(series.mean[i])).join(" ")}"/>`;
+    })
+    .join("");
+  const along = view.along,
+    unit = view.unit || "",
+    place = (v, at) =>
+      at === undefined ? "#" + v : quantity(at, along.unit || "");
+  const ends =
+    along.low !== undefined
+      ? [
+          quantity(along.low, along.unit || ""),
+          quantity(along.high, along.unit || ""),
+        ]
+      : ["#" + along.start, "#" + (along.stop - 1)];
+  if (along.step < 0) ends.reverse();
+  return `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${esc(String(along.axis))}">${shapes}</svg><div class="array-axis"><span>${esc(String(along.axis))} ${esc(ends[0])}</span><span>${esc(ends[1])}</span></div><small class="muted">${t("最小", "min")} ${esc(quantity(s.min, unit))} @ ${esc(place(s.min_index?.[0], s.min_at))} · ${t("最大", "max")} ${esc(quantity(s.max, unit))} @ ${esc(place(s.max_index?.[0], s.max_at))} · ${t("均值", "mean")} ${esc(quantity(s.mean, unit))} · σ ${esc(quantity(s.std, unit))}${s.nonfinite ? " · " + s.nonfinite + t(" 个非有限值", " not finite") : ""}${
+    view.at
+      ? " · " +
+        esc(
+          Object.entries(view.at)
+            .map(([k, v]) => k + "=" + v)
+            .join(", "),
+        )
+      : ""
+  }</small>`;
+}
+// A completed operation's arrays do not change: each chart is read once and kept for redraws.
+const charts = new Map();
+const chartKey = (figure) =>
+  figure.dataset.arrayOperation + "|" + figure.dataset.arrayField;
+function drawArray(figure) {
+  const key = chartKey(figure),
+    target = figure.querySelector(".array-chart");
+  if (!charts.has(key)) {
+    const query = new URLSearchParams({
+      points: String(
+        Math.max(
+          32,
+          Math.min(600, Math.round((figure.clientWidth || 600) / 2)),
+        ),
+      ),
+    });
+    if (figure.dataset.arrayField)
+      query.set("field", figure.dataset.arrayField);
+    if (charts.size >= 200) charts.delete(charts.keys().next().value);
+    const reading = api(
+      "operations/" +
+        encodeURIComponent(figure.dataset.arrayOperation) +
+        "/array?" +
+        query,
+    ).then(chart);
+    reading.catch(() => charts.delete(key));
+    charts.set(key, reading);
+  }
+  charts.get(key).then(
+    (html) => (target.innerHTML = html),
+    (error) =>
+      (target.innerHTML = `<small class="muted">${esc(error.message)}</small>`),
+  );
+}
+const visible =
+  "IntersectionObserver" in window
+    ? new IntersectionObserver((entries) => {
+        for (const entry of entries)
+          if (entry.isIntersecting) {
+            visible.unobserve(entry.target);
+            drawArray(entry.target);
+          }
+      })
+    : null;
+// Draw the arrays operationResult placed inside root once they are on screen; views are redrawn
+// every few seconds, so only the current ones are observed.
+export function drawArrays(root) {
+  visible?.disconnect();
+  for (const figure of root.querySelectorAll("[data-array-operation]"))
+    if (!visible || charts.has(chartKey(figure))) drawArray(figure);
+    else visible.observe(figure);
+}
+export function operationResult(value, operationId) {
   if (value === undefined || value === null)
     return `<p class="inline-note">${t("等待仪器返回", "Waiting for the instrument")}</p>`;
+  const found = operationId ? arraysIn(value) : [];
+  if (found.length)
+    return found
+      .map(
+        ([path, data]) =>
+          `<figure class="array-plot" data-array-operation="${esc(operationId)}" data-array-field="${esc(path)}"><figcaption>${esc(path || t("数组", "Array"))} · ${esc(data.dtype)} ${esc(data.shape.join(" × "))}${data.unit ? " · " + esc(data.unit) : ""}</figcaption><div class="array-chart"><small class="muted">${t("正在读取…", "Reading…")}</small></div></figure>`,
+      )
+      .join("");
   const labels = {
     manufacturer: t("制造商", "Manufacturer"),
     model: t("型号", "Model"),

@@ -71,6 +71,13 @@ Traces, spectra and other numerical arrays are read with `result.type: "array"`.
 
 The result carries `data`: `dtype`, `byte_order`, `shape`, `count`, `bytes`, `sha256`, and `unit` and `axes` when described. The payload is saved unchanged as `<operation>.bin` (or `result.file`) in the operation's output directory. Arrays up to `inline_limit` elements (default 1024) are also returned as nested lists in `values`. The operation record lists its files in `files` as soon as it ends, so a running experiment can download them. Drivers for cameras, digitizers or other SDKs can produce the same description with `ai4instruments.iop.arrays.result(payload, arrays.check_result(spec), context, name)`. / 结果中的 `data` 描述元素类型、字节序、形状、数量、字节数、校验值以及单位和坐标轴。原始数据原样保存在操作输出目录，小数组同时以 `values` 返回；操作结束时文件即列入操作记录，实验进行中即可下载。相机、采集卡等 SDK 驱动可用同一函数生成相同描述。
 
+An axis can carry coordinates: `start` with either `step` or `stop`, and `unit`. For SCPI, each of them can also be `{"query": command}`, read after the array, because sweep settings change between acquisitions; the result then holds the numbers the instrument reported. A last axis labelled `re`, `im` holds complex values. / 坐标轴可带坐标：`start` 加 `step` 或 `stop`，以及 `unit`。SCPI 中它们也可写成 `{"query": 命令}`，在读完数组后向仪器查询，结果中记录仪器报告的数值。最后一维标为 `re`、`im` 时表示复数。
+
+```json
+"axes": [{"name": "frequency", "unit": "Hz", "start": {"query": "SENS1:FREQ:STAR?"}, "stop": {"query": "SENS1:FREQ:STOP?"}},
+         {"name": "component", "labels": ["re", "im"]}]
+```
+
 A write with `data` sends one block after its command. `data.parameter` names an array parameter; `dtype` and `byte_order` encode its values. / 带 `data` 的写操作在命令后发送一个二进制块，用于任意波形表等大数组。
 
 ```json
@@ -83,6 +90,21 @@ A write with `data` sends one block after its command. `data.parameter` names an
 ```
 
 `max_block_bytes` (default 256 MiB) limits a received block. `block_terminated: false` is for instruments that send no terminator after a block. Indefinite-length blocks (`#0`) are refused; select a definite-length format. A block read ends with an error after `timeout` seconds without new bytes, so long transfers continue while data arrives. / `max_block_bytes` 限制单个接收块大小；块后不发终止符的仪器设 `block_terminated: false`；不支持 `#0` 不定长块。读取块时，`timeout` 指连续无新数据的时长。
+
+### Reading arrays / 读取数组
+
+`GET /v1/operations/{id}/array`, `read_array` in MCP, `Client.read_array` and `readArray` in TypeScript tell what an array says without moving all of its values. One axis is followed (`along`, default the first); `at` fixes the others by index or label, and an axis not fixed is summarized. Complex values read as `abs` unless `at` chooses `re`, `im` or `arg` (radians). `start`/`stop` select positions, `low`/`high` coordinates. / 不搬运全部数值即可读出数组的内容：沿一个轴读取，`at` 按序号或标签固定其他轴，未固定的轴被汇总；复数默认取模，也可取 `re`、`im` 或 `arg`（弧度）；`start`/`stop` 按位置、`low`/`high` 按坐标选取范围。
+
+The reply holds `summary` (count, minimum and maximum with their index and coordinate, mean, standard deviation, and how many values are not finite), then `values` when each of at most `points` positions holds one element, otherwise `envelope`: the minimum, maximum and mean of `points` consecutive buckets. Zooming into the bucket that matters gives its exact values. / 返回 `summary`（数量、极值及其位置和坐标、均值、标准差、非有限值个数）；位置不超过 `points` 且每个位置一个元素时返回精确的 `values`，否则返回 `points` 段的最小、最大和平均值 `envelope`。在关心的一段上缩小范围，即得到精确值。
+
+```json
+{"along": {"axis": "frequency", "start": 0, "stop": 1001, "low": 1.0e9, "high": 1.1e9, "step": 1.0e5, "unit": "Hz"},
+ "at": {"component": "abs"},
+ "summary": {"count": 1001, "min": 0.2, "min_index": [600], "min_at": 1.06e9, "max": 0.999, "mean": 0.951, "std": 0.133},
+ "envelope": {"position": [0, 16, ...], "coordinate": [1.0e9, 1.0016e9, ...], "min": [...], "max": [...], "mean": [...]}}
+```
+
+`iop-execd --array-view` computes views in its own process and reads only the slabs that hold the selected positions; the service stays responsive while it reads large files. Without it, Python computes the same view when it reads at most 4,000,000 elements. / 视图由 `iop-execd` 在独立进程中计算，只读取所选位置所在的数据段，读取大文件时不占用运行服务；没有它时，Python 在读取不超过 400 万个元素时给出相同结果。
 
 ### Other text command protocols / 其他文本指令协议
 
