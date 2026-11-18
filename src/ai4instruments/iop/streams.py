@@ -35,6 +35,15 @@ def describe(engine, run_id, name, definition=None):
         return {**json.loads(row[0]), 'chunks': count, 'bytes': size, 'next_sequence': count}
 
 
+def listing(engine, run_id):
+    """The data streams of an experiment with their descriptions, chunk counts and sizes."""
+    engine.store.get('runs', run_id)
+    with engine.store.lock:
+        rows = engine.store.db.execute('SELECT body,chunks,bytes FROM streams WHERE run_id=? ORDER BY name',
+                                       (run_id,)).fetchall()
+    return [{**json.loads(body), 'chunks': count, 'bytes': size, 'next_sequence': count} for body, count, size in rows]
+
+
 def chunks(engine, run_id, name, after=-1, limit=100):
     description = describe(engine, run_id, name)
     with engine.store.lock:

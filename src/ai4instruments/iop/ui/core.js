@@ -276,57 +276,97 @@ function chart(view) {
       : ""
   }</small>`;
 }
-// A completed operation's arrays do not change: each chart is read once and kept for redraws.
-const charts = new Map();
+// One figure per array: source is the view's path under /v1, at fixes axes such as a stream's
+// channel, and keep marks arrays that never change.
+export const arrayFigure = (source, field, caption, keep, at) =>
+  `<figure class="array-plot" data-array-source="${esc(source)}" data-array-field="${esc(field)}"${at ? ` data-array-at="${esc(JSON.stringify(at))}"` : ""}${keep ? ' data-array-keep="1"' : ""}><figcaption>${caption}</figcaption><div class="array-chart"><small class="muted">${t("正在读取…", "Reading…")}</small></div></figure>`;
+// A completed operation's array is read once; a growing stream shows its last chart while one
+// reading at a time renews it.
+const charts = new Map(),
+  recent = new Map(),
+  reading = new Map();
+function remember(map, key, value) {
+  if (!map.has(key) && map.size >= 200) map.delete(map.keys().next().value);
+  map.set(key, value);
+}
 const chartKey = (figure) =>
-  figure.dataset.arrayOperation + "|" + figure.dataset.arrayField;
-function drawArray(figure) {
-  const key = chartKey(figure),
-    target = figure.querySelector(".array-chart");
-  if (!charts.has(key)) {
-    const query = new URLSearchParams({
-      points: String(
-        Math.max(
-          32,
-          Math.min(600, Math.round((figure.clientWidth || 600) / 2)),
-        ),
-      ),
-    });
-    if (figure.dataset.arrayField)
-      query.set("field", figure.dataset.arrayField);
-    if (charts.size >= 200) charts.delete(charts.keys().next().value);
-    const reading = api(
-      "operations/" +
-        encodeURIComponent(figure.dataset.arrayOperation) +
-        "/array?" +
-        query,
-    ).then(chart);
-    reading.catch(() => charts.delete(key));
-    charts.set(key, reading);
-  }
-  charts.get(key).then(
-    (html) => (target.innerHTML = html),
+  [
+    figure.dataset.arraySource,
+    figure.dataset.arrayField,
+    figure.dataset.arrayAt,
+  ].join("|");
+function readChart(figure) {
+  const query = new URLSearchParams({
+    points: String(
+      Math.max(32, Math.min(600, Math.round((figure.clientWidth || 600) / 2))),
+    ),
+  });
+  if (figure.dataset.arrayField) query.set("field", figure.dataset.arrayField);
+  if (figure.dataset.arrayAt) query.set("at", figure.dataset.arrayAt);
+  return api(figure.dataset.arraySource + "?" + query).then(chart);
+}
+function show(html, target) {
+  html.then(
+    (value) => (target.innerHTML = value),
     (error) =>
       (target.innerHTML = `<small class="muted">${esc(error.message)}</small>`),
   );
 }
+function drawArray(figure) {
+  const key = chartKey(figure),
+    target = figure.querySelector(".array-chart");
+  if (figure.dataset.arrayKeep === "1") {
+    if (!charts.has(key)) {
+      const read = readChart(figure);
+      read.catch(() => charts.delete(key));
+      remember(charts, key, read);
+    }
+    return show(charts.get(key), target);
+  }
+  if (recent.has(key)) target.innerHTML = recent.get(key);
+  if (!reading.has(key)) {
+    const read = readChart(figure);
+    read
+      .then(
+        (html) => remember(recent, key, html),
+        () => {},
+      )
+      .finally(() => reading.delete(key));
+    reading.set(key, read);
+  }
+  show(reading.get(key), target);
+}
+const observed = new Set();
 const visible =
   "IntersectionObserver" in window
     ? new IntersectionObserver((entries) => {
         for (const entry of entries)
           if (entry.isIntersecting) {
             visible.unobserve(entry.target);
+            observed.delete(entry.target);
             drawArray(entry.target);
           }
       })
     : null;
-// Draw the arrays operationResult placed inside root once they are on screen; views are redrawn
-// every few seconds, so only the current ones are observed.
+// Draw the array figures inside root once they are on screen. Views are rendered again every few
+// seconds, so figures no longer in the page stop being observed.
 export function drawArrays(root) {
-  visible?.disconnect();
-  for (const figure of root.querySelectorAll("[data-array-operation]"))
-    if (!visible || charts.has(chartKey(figure))) drawArray(figure);
-    else visible.observe(figure);
+  for (const figure of observed)
+    if (!figure.isConnected) {
+      visible.unobserve(figure);
+      observed.delete(figure);
+    }
+  for (const figure of root.querySelectorAll("[data-array-source]"))
+    if (
+      !visible ||
+      charts.has(chartKey(figure)) ||
+      recent.has(chartKey(figure))
+    )
+      drawArray(figure);
+    else {
+      visible.observe(figure);
+      observed.add(figure);
+    }
 }
 export function operationResult(value, operationId) {
   if (value === undefined || value === null)
@@ -334,9 +374,13 @@ export function operationResult(value, operationId) {
   const found = operationId ? arraysIn(value) : [];
   if (found.length)
     return found
-      .map(
-        ([path, data]) =>
-          `<figure class="array-plot" data-array-operation="${esc(operationId)}" data-array-field="${esc(path)}"><figcaption>${esc(path || t("数组", "Array"))} · ${esc(data.dtype)} ${esc(data.shape.join(" × "))}${data.unit ? " · " + esc(data.unit) : ""}</figcaption><div class="array-chart"><small class="muted">${t("正在读取…", "Reading…")}</small></div></figure>`,
+      .map(([path, data]) =>
+        arrayFigure(
+          "operations/" + encodeURIComponent(operationId) + "/array",
+          path,
+          `${esc(path || t("数组", "Array"))} · ${esc(data.dtype)} ${esc(data.shape.join(" × "))}${data.unit ? " · " + esc(data.unit) : ""}`,
+          true,
+        ),
       )
       .join("");
   const labels = {

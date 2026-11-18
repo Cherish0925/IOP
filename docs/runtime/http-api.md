@@ -206,6 +206,7 @@ The list of required fields uses `protocol`, `communication_parameters`, `contro
 | GET | `/v1/runs/{id}/checkpoints` | — | Named program progress, state and revisions |
 | POST | `/v1/runs/{id}/checkpoints` | `name` (default `main`), `state` | Saved progress after this program's instrument operations finish |
 | POST | `/v1/runs/{id}/resume` | `request_id` | Requeue the same run with a new attempt; requires package `resume:true` and saved progress |
+| GET | `/v1/runs/{id}/streams` | — | The experiment's streams with description, bytes and chunk count |
 | GET / POST | `/v1/runs/{id}/streams/{name}` | POST: `definition` with `format` | Data description, bytes, chunk count and next sequence |
 | GET | `/v1/runs/{id}/streams/{name}/chunks` | `after=-1`, `limit=100` | Ordered chunk descriptions and cursor |
 | GET | `/v1/runs/{id}/streams/{name}/array` | View options as for operation arrays, without `field` | A stream of a numeric format read as samples by channels; see [Reading arrays](drivers.md#reading-arrays--读取数组) |

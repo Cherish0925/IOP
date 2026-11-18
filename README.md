@@ -69,7 +69,7 @@ An episode does not reset equipment. Use an explicit preparation procedure and m
 | Component | Source |
 | --- | --- |
 | Service, scheduler, drivers and Python client | [src/ai4instruments/iop](src/ai4instruments/iop/) |
-| Native process supervisor | [iop/daemon](iop/daemon/) |
+| Native process supervisor and array views | [iop/daemon](iop/daemon/) |
 | TypeScript client | [iop/clients/typescript](iop/clients/typescript/) |
 | Desktop and browser | [iop/interface](iop/interface/) |
 | Instrument and platform formats | [iop/schema](iop/schema/), [iop/instruments](iop/instruments/) |

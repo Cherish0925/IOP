@@ -351,6 +351,8 @@ class StreamViewCase(unittest.TestCase):
             run.stream('frames', {'format': 'npy'})
             with self.assertRaisesRegex(IOPError, 'numeric type'):
                 run.stream('frames').read_array()
+            self.assertEqual([(s['name'], s['chunks'], s['bytes']) for s in run.streams()],
+                             [('frames', 0, 0), ('voltage', 3, len(payload))])
 
 
 class DerivedValueCase(unittest.TestCase):

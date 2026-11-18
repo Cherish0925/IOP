@@ -510,6 +510,53 @@ sys.stdout.buffer.write(b.getvalue())`,
       style: "#toast{visibility:hidden}",
     });
   await page.click("#modal-close");
+  // A numeric data stream is drawn per channel from its view.
+  const streamed = await api("runs", {
+    kind: "external",
+    name: "Streamed voltages",
+    request_id: "streamed-voltages",
+  });
+  await api("runs/" + streamed.id + "/streams/voltage", {
+    definition: {
+      format: "float32-le",
+      sample_rate_hz: 1000,
+      channels: [
+        { name: "x", unit: "V" },
+        { name: "y", unit: "V" },
+      ],
+    },
+  });
+  const samples = Float32Array.from({ length: 4000 }, (_, i) =>
+    Math.sin(i / 80),
+  );
+  const appended = await fetch(
+    endpoint + `/v1/runs/${streamed.id}/streams/voltage/chunks?sequence=0`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + token,
+        "Content-Type": "application/octet-stream",
+      },
+      body: Buffer.from(samples.buffer),
+    },
+  );
+  assert.ok(appended.ok);
+  await page.evaluate(
+    (id) => document.dispatchEvent(new CustomEvent("iop:run", { detail: id })),
+    streamed.id,
+  );
+  await page.click('[data-detail-tab="files"]');
+  await page.waitForFunction(
+    () =>
+      document.querySelectorAll("#detail-files .array-plot svg polyline")
+        .length === 2,
+  );
+  assert.match(
+    await page.locator("#detail-files .array-plot").first().innerText(),
+    /voltage · x · float32-le[\s\S]*time 0 s[\s\S]*1\.999 s/,
+  );
+  await page.click("#modal-close");
+  await api("runs/" + streamed.id + "/finish", {});
   const lasting = await api("runs", {
     name: "Continues after browser closes",
     steps: [
@@ -532,7 +579,7 @@ sys.stdout.buffer.write(b.getvalue())`,
   assert.equal(continued.state, "completed", JSON.stringify(continued));
   assert.deepEqual(errors, []);
   console.log(
-    "Interface passed: discovery, registration, topology, workflow, results, resources, search, language, themes, mobile, program ZIP, file download, manual steps, held resources, saved operations, operating conditions, array views and service continuity.",
+    "Interface passed: discovery, registration, topology, workflow, results, resources, search, language, themes, mobile, program ZIP, file download, manual steps, held resources, saved operations, operating conditions, array and stream views and service continuity.",
   );
 } finally {
   if (browser) await browser.close();

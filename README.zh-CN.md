@@ -67,7 +67,7 @@ Episode 记录实验轨迹，与三类操作并存。Python、TypeScript 和 MCP
 ## 工程结构
 
 - 服务、调度器、驱动和 Python SDK：[`src/ai4instruments/iop/`](src/ai4instruments/iop/)。
-- Rust 进程执行器：[`iop/daemon/`](iop/daemon/)。
+- Rust 进程执行器与数组视图：[`iop/daemon/`](iop/daemon/)。
 - TypeScript SDK：[`iop/clients/typescript/`](iop/clients/typescript/)。
 - 桌面与网页：[`iop/interface/`](iop/interface/)。
 - 仪器说明、平台格式与插件：[`iop/`](iop/)。

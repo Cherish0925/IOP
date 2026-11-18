@@ -177,6 +177,7 @@ export class Run {
   checkpoints() { return this.client.request<Record<string, {name: string; revision: number; updated: string; state: unknown}>>(`/v1/runs/${encodeURIComponent(this.id)}/checkpoints`); }
   checkpoint(state: unknown, name = 'main') { return this.client.request(`/v1/runs/${encodeURIComponent(this.id)}/checkpoints`, { name, state }); }
   resume(requestId = crypto.randomUUID()) { return this.client.request<RunRecord>(`/v1/runs/${encodeURIComponent(this.id)}/resume`, { request_id: requestId }); }
+  streams() { return this.client.request<{name: string; definition: Record<string, unknown>; chunks: number; bytes: number; next_sequence: number}[]>(`/v1/runs/${encodeURIComponent(this.id)}/streams`); }
   async stream(name: string, definition?: Record<string, unknown>) {
     const stream = new DataStream(this, name);
     if (definition) await this.client.request(stream.path, { definition });

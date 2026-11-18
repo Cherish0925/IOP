@@ -390,6 +390,10 @@ class Run:
     def resume(self, request_id=None):
         return self.client.request('/v1/runs/' + self.id + '/resume', {'request_id': request_id or str(uuid.uuid4())})
 
+    def streams(self):
+        """The data streams of this experiment with their descriptions, chunk counts and sizes."""
+        return self.client.request('/v1/runs/' + self.id + '/streams')
+
     def stream(self, name, definition=None):
         stream = DataStream(self, name)
         if definition is not None:

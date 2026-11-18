@@ -270,6 +270,9 @@ class Handler(BaseHTTPRequestHandler):
                         engine, parts[2], parts[4], query.get('after', -1), query.get('limit', 100))
                 else:
                     raise KeyError(url.path)
+            elif len(parts) == 4 and parts[:2] == ['v1', 'runs'] and parts[3] == 'streams' and method == 'GET':
+                from .streams import listing
+                result = listing(engine, parts[2])
             elif len(parts) in (5, 6) and parts[:2] == ['v1', 'runs'] and parts[3] == 'streams':
                 from .streams import describe, chunks
                 if len(parts) == 6 and parts[5] == 'chunks' and method == 'GET':

@@ -23,6 +23,7 @@ import {
   uniqueID,
   operationResult,
   drawArrays,
+  arrayFigure,
 } from "./core.js";
 import { parametersHTML, parameterValues } from "./devices.js";
 let query = "",
@@ -101,6 +102,28 @@ export function bindRuns() {
         renderTable();
       }),
   );
+}
+// Streams of a numeric format, such as float32-le, are drawn per channel from their views.
+const NUMERIC = /^(u?int8(-(le|be))?|(u?int(16|32|64)|float(32|64))-(le|be))$/;
+function streamFigures(id, streams) {
+  return streams
+    .filter((s) => s.bytes && NUMERIC.test(s.definition?.format || ""))
+    .flatMap((s) => {
+      const source = `runs/${encodeURIComponent(id)}/streams/${encodeURIComponent(s.name)}/array`,
+        channels = (s.definition.channels || []).filter(
+          (c) => c && typeof c === "object" && !Array.isArray(c),
+        ),
+        caption = (channel) =>
+          `${esc(s.name)}${channel === undefined ? "" : " · " + esc(channel)} · ${esc(s.definition.format)} · ${size(s.bytes)}`;
+      return channels.length > 1
+        ? channels.map((c, i) =>
+            arrayFigure(source, "", caption(String(c.name ?? i)), false, {
+              channel: i,
+            }),
+          )
+        : [arrayFigure(source, "", caption(channels[0]?.name), false)];
+    })
+    .join("");
 }
 function resultView(value) {
   if (value === null || value === undefined)
@@ -254,20 +277,24 @@ export async function inspectRun(id) {
         "Page " + (pages.length + 1),
       );
       if (!terminalLoaded || active) {
-        const files = await api(
-          "runs/" + encodeURIComponent(id) + "/artifacts",
-        );
+        const [files, streams] = await Promise.all([
+          api("runs/" + encodeURIComponent(id) + "/artifacts"),
+          api("runs/" + encodeURIComponent(id) + "/streams"),
+        ]);
         if ($("#modal").dataset.runDetail !== id || !body.isConnected) return;
-        $("#detail-files").innerHTML = files.length
-          ? `<div class="table-wrap"><table><thead><tr><th>${t("文件", "File")}</th><th>${t("大小", "Size")}</th><th></th></tr></thead><tbody>${files.map((f, i) => `<tr><td>${icon("file")} <span class="mono">${esc(f.name)}</span></td><td class="nowrap">${size(f.size)}</td><td><button class="button small" data-download="${i}">${icon("download")}${t("下载", "Download")}</button></td></tr>`).join("")}</tbody></table></div>`
-          : empty(
-              "file",
-              t("暂无文件", "No files yet"),
-              t(
-                "程序输出与上传的数据将保存在这里。",
-                "Program outputs and uploaded data will appear here.",
-              ),
-            );
+        $("#detail-files").innerHTML =
+          streamFigures(id, streams) +
+          (files.length
+            ? `<div class="table-wrap"><table><thead><tr><th>${t("文件", "File")}</th><th>${t("大小", "Size")}</th><th></th></tr></thead><tbody>${files.map((f, i) => `<tr><td>${icon("file")} <span class="mono">${esc(f.name)}</span></td><td class="nowrap">${size(f.size)}</td><td><button class="button small" data-download="${i}">${icon("download")}${t("下载", "Download")}</button></td></tr>`).join("")}</tbody></table></div>`
+            : empty(
+                "file",
+                t("暂无文件", "No files yet"),
+                t(
+                  "程序输出与上传的数据将保存在这里。",
+                  "Program outputs and uploaded data will appear here.",
+                ),
+              ));
+        drawArrays($("#detail-files"));
         $$("[data-download]", body).forEach(
           (b) =>
             (b.onclick = () =>
