@@ -24,7 +24,7 @@ from .config import save_json
 from .device_configuration import METADATA, allowed
 from .drivers import make_driver, parameters
 from .store import Store, dumps, finite, now
-from . import library
+from . import library, views
 from . import platforms as platform_model
 from .resources import Allocator, QueueFull, capacities, quantities
 from .execution import Context
@@ -852,7 +852,8 @@ class Engine:
                 "after":platform_model.dependencies(step), "state":"queued", "created":now(),
                 "resources":sorted(set(self._resources([device_id], name) + self._resources(step.get("resources", [])))),
                 "request_id":step.get("request_id"),
-                "device_revision":self.descriptions[device_id].get('revision'), **recorded}
+                "device_revision":self.descriptions[device_id].get('revision'), **recorded,
+                **({'derive': step['derive']} if step.get('derive') else {})}
 
     def submit(self, spec, package=None):
         with self.lock:
@@ -1351,11 +1352,9 @@ class Engine:
             future = self.futures[op_id]
             op = self.operations[op_id]; run = self.runs[op['run_id']]
             try:
-                result = future.result()
-                try:
-                    op['result'] = json.loads(dumps(result))
-                except ValueError:
-                    op['result'] = json.loads(dumps(finite(result)))
+                op['result'], derived = future.result()
+                if derived is not None:
+                    op['derived'] = derived
                 if op['operation'] == 'identify' and self.device_records[op['device']]['driver'] == 'scpi' and op['result'].get('identity'):
                     self.learn_identity(op['device'], op['result']['identity'])
                 op['state'] = 'completed'
@@ -1437,7 +1436,8 @@ class Engine:
                         run['result'] = {self.operations[oid]['step']: self.operations[oid].get('result') for oid in run['operations']}
                         if run.get('calls'):
                             # Each saved operation used as a step returns its named result under that step.
-                            run['result'].update(library.results(run['calls'], run['result']))
+                            run['result'].update(library.results(
+                                run['calls'], {self.operations[oid]['step']: self.operations[oid] for oid in run['operations']}))
                     self._finish(run, 'completed')
         if self.stopping:
             return
@@ -1510,10 +1510,8 @@ class Engine:
                     args = dict(op['arguments'])
                     for name, binding in op['bindings'].items():
                         source = op.get('binding_ids', {}).get(name) or self.step_ids[rid][binding['step']]
-                        value = (self.operations.get(source) or self.store.get('operations', source))['result']
-                        for key in binding.get('path', []):
-                            value = value[key]
-                        args[name] = value
+                        args[name] = library.value(self.operations.get(source) or self.store.get('operations', source),
+                                                   binding)
                     op['arguments'] = parameters(self.descriptions[op['device']]['operations'][op['operation']], args)
                 error = None
             except Exception as error:
@@ -1542,15 +1540,26 @@ class Engine:
                 from concurrent.futures import Future
                 future = Future(); future.set_exception(error)
             elif getattr(self.devices[op['device']], 'dedicated_thread', False):
-                future = self._own_thread(self.devices[op['device']].invoke, op['operation'], op['arguments'], context)
+                future = self._own_thread(self._call, self.devices[op['device']], op, context)
                 self.waiting_steps.add(op_id)
             else:
-                future = self.pool.submit(self.devices[op['device']].invoke, op['operation'], op['arguments'], context)
+                future = self.pool.submit(self._call, self.devices[op['device']], op, context)
             self.futures[op_id] = future
             def completed(_, oid=op_id):
                 self.completed.put(oid)
                 self.wake.set()
             future.add_done_callback(completed)
+
+    @staticmethod
+    def _call(driver, op, context):
+        """Run one operation on its driver outside the scheduler lock. Its result is made JSON here, and the
+        views that bindings and named results read from its arrays are computed from the files it saved."""
+        result = driver.invoke(op['operation'], op['arguments'], context)
+        try:
+            result = json.loads(dumps(result))
+        except ValueError:
+            result = json.loads(dumps(finite(result)))
+        return result, views.derive(result, context.output_dir, op['derive']) if op.get('derive') else None
 
     @staticmethod
     def _own_thread(function, *args):

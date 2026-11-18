@@ -104,6 +104,8 @@ The reply holds `summary` (count, minimum and maximum with their index and coord
  "envelope": {"position": [0, 16, ...], "coordinate": [1.0e9, 1.0016e9, ...], "min": [...], "max": [...], "mean": [...]}}
 ```
 
+Saved operations and step bindings can take a value through a view, such as the frequency of a resonance; see [operations](operations.md). / 已保存操作和步骤绑定也可以经视图取值，例如谐振频率，见[操作](operations.md)。
+
 `iop-execd --array-view` computes views in its own process and reads only the slabs that hold the selected positions; the service stays responsive while it reads large files. Without it, Python computes the same view when it reads at most 4,000,000 elements. / 视图由 `iop-execd` 在独立进程中计算，只读取所选位置所在的数据段，读取大文件时不占用运行服务；没有它时，Python 在读取不超过 400 万个元素时给出相同结果。
 
 ### Other text command protocols / 其他文本指令协议

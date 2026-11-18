@@ -121,6 +121,6 @@ def describe(engine, run_id, request_id, wait=0):
                 receipt = {'request_id': request_id, 'run_id': run_id, 'complete': not pending, 'operations': operations}
                 if batch.get('calls'):
                     # The named result of each saved operation used in this batch.
-                    receipt['results'] = library.results(batch['calls'], {op['step']: op.get('result') for op in operations})
+                    receipt['results'] = library.results(batch['calls'], {op['step']: op for op in operations})
                 return receipt
             engine.store.changed.wait(remaining)

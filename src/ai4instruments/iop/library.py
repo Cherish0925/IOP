@@ -11,6 +11,7 @@ Basic Operations before scheduling, or runs the program, and records every use.
 import copy
 import re
 from collections import deque
+from . import views
 from .drivers import parameters
 from .platforms import dependencies, name
 
@@ -127,9 +128,11 @@ def check(definition, lookup):
     if not isinstance(result, dict):
         raise ValueError('result names values taken from steps')
     for key, source in result.items():
-        if (not isinstance(source, dict) or source.get('step') not in identifiers
+        if (not isinstance(source, dict) or source.get('step') not in identifiers or set(source) - {'step', 'path', 'view'}
                 or not isinstance(source.get('path', []), list)):
-            raise ValueError(f'Result {key}: give the step and an optional path into its result')
+            raise ValueError(f'Result {key}: give the step, an optional view of its array and a path')
+        if 'view' in source:
+            views.check(source['view'], f'Result {key}')
     return definition
 
 
@@ -143,7 +146,7 @@ def expand(steps, lookup):
     if not isinstance(steps, list) or any(not isinstance(step, dict) for step in steps):
         raise ValueError('Each step must be an object')
     if all('device' in step for step in steps):
-        return steps, {}
+        return derived(steps, {}), {}
     queue = deque((copy.deepcopy(step), []) for step in steps)
     flat, calls, finishes = [], {}, {}
     while queue:
@@ -212,7 +215,7 @@ def expand(steps, lookup):
         finishes[call] = last
         calls[call] = {'operation': definition['id'], 'revision': definition['revision'], 'layer': definition['layer'],
                        'arguments': arguments, 'enclosing': enclosing,
-                       'result': {key: {'step': f'{call}.{source["step"]}', 'path': list(source.get('path', []))}
+                       'result': {key: {**source, 'step': f'{call}.{source["step"]}', 'path': list(source.get('path', []))}
                                   for key, source in definition.get('result', {}).items()}}
 
     def finished(step_id, depth=0):
@@ -224,13 +227,17 @@ def expand(steps, lookup):
 
     def source(binding):
         """Follow a binding into saved operations until it names a Basic Operation."""
-        step_id, path = binding['step'], list(binding.get('path', []))
+        step_id, path, view = binding['step'], list(binding.get('path', [])), binding.get('view')
         while step_id in calls:
+            if view is not None:
+                raise ValueError(f'{step_id} is a saved operation; a view reads an array a device operation returned, '
+                                 'so name the value in the result of the saved operation')
             named = calls[step_id]['result']
             if not path or path[0] not in named:
                 raise ValueError(f'{step_id} returns ' + (', '.join(named) or 'no named result') + '; bind one of them')
-            step_id, path = named[path[0]]['step'], named[path[0]]['path'] + path[1:]
-        return {'step': step_id, 'path': path}
+            inner = named[path[0]]
+            step_id, path, view = inner['step'], inner['path'] + path[1:], inner.get('view')
+        return {'step': step_id, 'path': path, **({'view': view} if view is not None else {})}
 
     for step in flat:
         step['after'] = list(dict.fromkeys(final for parent in step.get('after', []) for final in finished(parent)))
@@ -239,7 +246,20 @@ def expand(steps, lookup):
     for call, record in calls.items():
         record['result'] = {key: source(item) for key, item in record['result'].items()}
         record['steps'] = [step['id'] for step in flat if call in step.get('calls', [])]
-    return flat, calls
+    return derived(flat, calls), calls
+
+
+def derived(flat, calls):
+    """Give each device step the views that bindings and named results read from its arrays."""
+    wanted = {}
+    sources = [b for step in flat for b in step.get('bindings', {}).values() if isinstance(b, dict)]
+    for item in sources + [s for record in calls.values() for s in record['result'].values()]:
+        if 'view' in item:
+            wanted.setdefault(item['step'], {})[views.key(item)] = {'view': item['view'], 'path': list(item.get('path', []))}
+    if not wanted:
+        return flat
+    # Steps a caller submitted are not changed in place: an identical retry compares them.
+    return [{**step, 'derive': list(wanted[step['id']].values())} if step.get('id') in wanted else step for step in flat]
 
 
 def program_step(steps, lookup):
@@ -264,18 +284,29 @@ def program_step(steps, lookup):
             'layer': 'workflow', 'arguments': arguments}
 
 
+def value(operation, source):
+    """What a binding or named result takes from a completed operation: a path into its result, or into a view
+    of one of its arrays computed when it completed."""
+    if 'view' in source:
+        found = operation.get('derived', {}).get(views.key(source))
+        if found is None or 'error' in found:
+            raise ValueError(f"{operation.get('step')}: view of its array: " + (found or {}).get('error', 'not computed'))
+        return found['value']
+    item = operation.get('result')
+    for part in source.get('path', []):
+        item = item[part]
+    return item
+
+
 def results(calls, by_step):
-    """The named result of each use, from the results of its completed steps."""
+    """The named result of each use, from the records of its completed steps."""
     values = {}
     for call, record in calls.items():
-        value = {}
+        named = {}
         for key, source in record['result'].items():
-            item = by_step.get(source['step'])
             try:
-                for part in source['path']:
-                    item = item[part]
-            except (KeyError, IndexError, TypeError):
-                item = None
-            value[key] = item
-        values[call] = value
+                named[key] = value(by_step[source['step']], source)
+            except (KeyError, IndexError, TypeError, ValueError):
+                named[key] = None
+        values[call] = named
     return values

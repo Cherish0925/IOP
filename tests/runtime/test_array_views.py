@@ -266,5 +266,95 @@ class ServiceViewCase(unittest.TestCase):
             arrays.check_result({'dtype': 'float64', 'axes': [{'name': 'f', 'start': {'query': 'X?'}, 'step': 1}]})
 
 
+
+class Resonator(Driver):
+    """A resonance at 1.0 GHz plus 10 MHz per volt of bias, seen by a sweep from 1.0 to 1.1 GHz."""
+    def __init__(self, *args):
+        super().__init__(*args)
+        self.volts = 6.0
+
+    def describe(self):
+        return {'operations': {
+            'set_bias': {'parameters': {'volts': {'type': 'number', 'minimum': 0, 'maximum': 10, 'unit': 'V'}}},
+            'bias': {'parameters': {}, 'effect': 'observe'}, 'sweep': {'parameters': {}, 'effect': 'observe'},
+            'probe': {'parameters': {'hz': {'type': 'number', 'unit': 'Hz'}}}}}
+
+    def invoke(self, operation, arguments, context):
+        if operation == 'set_bias':
+            self.volts = arguments['volts']
+        if operation in ('set_bias', 'bias'):
+            return {'value': self.volts, 'unit': 'V'}
+        if operation == 'probe':
+            return {'value': arguments['hz'], 'unit': 'Hz'}
+        trace = [1.0 - 0.8 / (1 + ((i - 100 * self.volts) / 20) ** 2) for i in range(1001)]
+        return arrays.result(_payload(trace, {}), arrays.check_result({'dtype': 'float64', 'axes': [FREQUENCY]}),
+                             context, 'trace')
+
+
+LOCATE = {'id': 'resonance.locate', 'layer': 'standard', 'description': 'Sweep and locate the resonance dip',
+          'steps': [{'id': 'sweep', 'device': 'resonator', 'operation': 'sweep'}],
+          'result': {'f0': {'step': 'sweep', 'view': {}, 'path': ['summary', 'min_at']},
+                     'depth': {'step': 'sweep', 'view': {}, 'path': ['summary', 'min']}}}
+
+
+class DerivedValueCase(unittest.TestCase):
+    """Saved operations, bindings and operating conditions take values from arrays through views."""
+    setUp = fixture.ServiceCase.setUp
+    tearDown = fixture.ServiceCase.tearDown
+
+    def register(self):
+        self.client.register({'id': 'resonator', 'driver': Resonator.__module__ + ':Resonator'})
+        self.client.save_operation(LOCATE)
+
+    def test_named_results_and_bindings_read_values_from_arrays(self):
+        self.register()
+        with self.client.start_experiment(resources=['resonator']) as run:
+            found = run.call('resonance.locate')
+        self.assertAlmostEqual(found['f0'], 1.06e9)
+        self.assertAlmostEqual(found['depth'], 0.2)
+        # A later step receives the value; the sweep keeps what was derived from it.
+        follow = self.client.submit([
+            {'id': 'find', 'operation': 'resonance.locate'},
+            {'id': 'hold', 'device': 'resonator', 'operation': 'probe', 'bindings': {'hz': {'step': 'find', 'path': ['f0']}}},
+            {'id': 'band', 'device': 'resonator', 'operation': 'probe', 'after': ['find.sweep'], 'bindings': {'hz': {
+                'step': 'find.sweep', 'view': {'low': 1.0e9, 'high': 1.05e9}, 'path': ['summary', 'max_at']}}}])
+        result = follow.result(10)
+        self.assertAlmostEqual(result['hold']['value'], 1.06e9)
+        self.assertAlmostEqual(result['find']['f0'], 1.06e9)
+        self.assertEqual(result['band']['value'], 1.0e9)
+        sweep = next(op for op in follow.operations()['operations'] if op['step'] == 'find.sweep')
+        self.assertEqual(len(sweep['derived']), 3)
+        # A view that cannot be read fails the step that needs it, with the reason.
+        failing = self.client.submit([
+            {'id': 'sweep', 'device': 'resonator', 'operation': 'sweep'},
+            {'id': 'probe', 'device': 'resonator', 'operation': 'probe',
+             'bindings': {'hz': {'step': 'sweep', 'view': {'field': 'items.trace'}, 'path': ['summary', 'min_at']}}}])
+        self.assertEqual(failing.wait(10)['state'], 'failed')
+        probe = next(op for op in failing.operations()['operations'] if op['step'] == 'probe')
+        self.assertIn("No array at 'items.trace'", probe['error'])
+        for steps, message in (
+                ([{'id': 'find', 'operation': 'resonance.locate'},
+                  {'id': 'p', 'device': 'resonator', 'operation': 'probe',
+                   'bindings': {'hz': {'step': 'find', 'view': {}, 'path': ['f0']}}}], 'a view reads an array'),
+                ([{'id': 's', 'device': 'resonator', 'operation': 'sweep'},
+                  {'id': 'p', 'device': 'resonator', 'operation': 'probe',
+                   'bindings': {'hz': {'step': 's', 'view': {'colour': 'red'}}}}], 'view takes field, along')):
+            with self.assertRaisesRegex(IOPError, message):
+                self.client.submit(steps)
+
+    def test_a_condition_tunes_a_bias_until_the_resonance_is_on_target(self):
+        self.register()
+        self.client.configure_platform({'schema_version': 1, 'id': 'tunable', 'devices': ['resonator'], 'conditions': [{
+            'id': 'resonance.on_target', 'description': 'The resonance lies within 1 MHz of 1.05 GHz',
+            'verify': {'operation': 'resonance.locate'}, 'accept': {'value': ['f0'], 'minimum': 1.049e9, 'maximum': 1.051e9},
+            'correct': {'tune': {'device': 'resonator', 'operation': 'set_bias', 'argument': 'volts', 'step': 0.5,
+                                 'minimum': 0, 'maximum': 10, 'read': {'device': 'resonator', 'operation': 'bias'}}}}]})
+        report = self.client.maintain('tunable')
+        self.assertEqual((report['holds'], report['report'][-1]['result']), (True, 'corrected'))
+        state = self.client.condition('resonance.on_target')
+        self.assertAlmostEqual(state['value'], 1.05e9, delta=1e6)
+        self.assertAlmostEqual(self.engine.devices['resonator'].volts, 5.0, delta=0.1)
+
+
 if __name__ == '__main__':
     unittest.main()

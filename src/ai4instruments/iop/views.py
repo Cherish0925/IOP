@@ -390,17 +390,66 @@ def options(query):
             'points': integer('points') if 'points' in query else POINTS}
 
 
-def operation_array(engine, operation_id, field=None, **options):
-    """The view of an array a completed operation returned, read from the file saved with it."""
+def read(result, folder, field=None, **options):
+    """The view of an array in an operation's result, read from the file the operation saved in folder."""
     from .engine import relative_path
-    op = engine.store.get('operations', operation_id)
-    if op['state'] != 'completed':
-        raise ValueError('Arrays are read from completed operations')
-    field, holder = select(op.get('result') or {}, field)
+    field, holder = select(result or {}, field)
     name, path = holder['data'].get('file'), None
     if name:
-        folder = engine.home / 'runs' / op['run_id'] / 'output' / 'operations' / operation_id
         path = folder / relative_path(name)
         if not path.resolve().is_relative_to(folder.resolve()) or not path.is_file():
             raise ValueError('The array file of this operation is missing')
-    return {'operation_id': operation_id, **view(holder, path, field=field, **options)}
+    return view(holder, path, field=field, **options)
+
+
+def operation_array(engine, operation_id, field=None, **options):
+    """The view of an array a completed operation returned."""
+    op = engine.store.get('operations', operation_id)
+    if op['state'] != 'completed':
+        raise ValueError('Arrays are read from completed operations')
+    folder = engine.home / 'runs' / op['run_id'] / 'output' / 'operations' / operation_id
+    return {'operation_id': operation_id, **read(op.get('result'), folder, field, **options)}
+
+
+# A step binding or a saved operation's named result can take its value through a view of an array:
+# {"step": ..., "view": {...}, "path": [...]} reads path inside the view. These views are computed
+# once, when the operation that returned the array completes, and kept in its record as "derived".
+OPTIONS = ('field', 'along', 'at', 'start', 'stop', 'low', 'high', 'points')
+
+
+def check(value, what):
+    """Validate the view of a binding or named result; axis names are resolved against the array later."""
+    if not isinstance(value, dict) or set(value) - set(OPTIONS):
+        raise ValueError(f'{what}: view takes ' + ', '.join(OPTIONS))
+    kinds = {'field': (str,), 'along': (str, int), 'at': (dict,), 'start': (int,), 'stop': (int,),
+             'low': (int, float), 'high': (int, float), 'points': (int,)}
+    for key, item in value.items():
+        if isinstance(item, bool) or not isinstance(item, kinds[key]):
+            raise ValueError(f'{what}: view {key} has the wrong type')
+    return value
+
+
+def key(source):
+    """The name under which a view and a path into it are kept in an operation's derived values."""
+    return json.dumps({'view': source['view'], 'path': list(source.get('path', []))}, sort_keys=True,
+                      separators=(',', ':'))
+
+
+def derive(result, folder, sources):
+    """Compute the views requested on an operation's arrays: {key: {"value": ...} or {"error": ...}}.
+
+    The measurement stands whatever happens here; a view that cannot be read leaves its reason for the
+    step or named result that needs it.
+    """
+    derived = {}
+    for source in sources:
+        try:
+            value = read(result, folder, **source['view'])
+            for part in source.get('path', []):
+                value = value[part]
+            derived[key(source)] = {'value': value}
+        except (KeyError, IndexError, TypeError) as error:
+            derived[key(source)] = {'error': f'the view has no {error}'}
+        except Exception as error:
+            derived[key(source)] = {'error': str(error) if isinstance(error, ValueError) else f'{type(error).__name__}: {error}'}
+    return derived

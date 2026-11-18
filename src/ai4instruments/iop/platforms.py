@@ -4,6 +4,7 @@ from collections import deque
 import json
 import math
 import re
+from . import views
 
 
 def name(value, what='ID'):
@@ -30,6 +31,8 @@ def dependencies(step):
             raise ValueError('Each binding needs a parameter name and a source step')
         if not isinstance(binding.get('path', []), list) or any(type(k) not in (str, int) for k in binding.get('path', [])):
             raise ValueError('Binding paths contain object keys or array indices')
+        if 'view' in binding:
+            views.check(binding['view'], f'Binding {field}')
         if binding['step'] not in result:
             result.append(binding['step'])
     return result

@@ -230,6 +230,44 @@
                             "integer"
                           ]
                         }
+                      },
+                      "view": {
+                        "type": "object",
+                        "description": "Read the value from a view of an array this step returned: field, along, at, start, stop, low, high, points; path then selects inside the view (see docs/runtime/drivers.md, Reading arrays)",
+                        "additionalProperties": false,
+                        "properties": {
+                          "field": {
+                            "type": "string"
+                          },
+                          "along": {
+                            "type": [
+                              "string",
+                              "integer"
+                            ]
+                          },
+                          "at": {
+                            "type": "object"
+                          },
+                          "start": {
+                            "type": "integer",
+                            "minimum": 0
+                          },
+                          "stop": {
+                            "type": "integer",
+                            "minimum": 1
+                          },
+                          "low": {
+                            "type": "number"
+                          },
+                          "high": {
+                            "type": "number"
+                          },
+                          "points": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 2000
+                          }
+                        }
                       }
                     }
                   }

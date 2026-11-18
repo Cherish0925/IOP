@@ -43,7 +43,7 @@ A Workflow Operation that decides from results is a saved program and runs as it
 | `requires` | Names of [platform conditions](conditions.md) that must hold when the operation is used; an experiment using it is accepted while they hold / 使用该操作时必须成立的[平台条件](conditions.md)名称；条件成立时使用它的实验才被受理 |
 | `parameters` | Described like operation parameters; arguments are checked before anything runs / 与操作参数格式相同，执行前校验 |
 | `steps` | Run in the order written; `after: []` starts a parallel branch and `after: [ids]` joins branches. `"${name}"` in `arguments` or `device` inserts a parameter with its type / 按书写顺序执行；`after: []` 开始并行分支，`after: [ids]` 汇合。`"${name}"` 按类型代入参数 |
-| `result` | Names the values returned: a step and an optional path into its result / 为返回值命名：取自某一步结果中的路径 |
+| `result` | Names the values returned: a step and an optional path into its result, or into a `view` of an array it returned / 为返回值命名：取自某一步结果中的路径，或该步所返回数组的 `view` 中的路径 |
 
 Save with `POST /v1/library` `{"definition": {...}}`, Python `save_operation`, MCP `saved_operations(definition)`, or `iop operations --save file.json`. Saving the same name creates a new revision; earlier revisions stay readable at `/v1/library/{id}/history`, and each experiment records the revision it used. [operations.json](../../examples/iop/operations.json) holds the three operations of this page for the demonstration devices. / 同名保存产生新版本，旧版本仍可读取，每次实验记录所用版本。
 
@@ -82,6 +82,17 @@ Save it with `save_operation(definition, program="path/to/folder")`, MCP `saved_
 ```
 
 The same form works in workflows, batches of a continuous experiment and platform procedures. The experiment result holds the named result of each use under its step (`m`), beside every Basic Operation it ran (`m.first.move`, `m.capture.measure`, …). A binding takes one of the named results of an earlier use, and a parameter can itself be bound to an earlier result. / 工作流、连续实验的批量操作和平台过程都用同一写法。实验结果在该步骤名下给出具名结果，同时保留它执行的每个基础操作。后续步骤可以绑定其具名结果，参数本身也可以绑定到之前的结果。
+
+A named result or a binding can read through a `view` of an array the step returned, with the options of [reading arrays](drivers.md#reading-arrays--读取数组); `path` then selects inside the view. A trace becomes a number that later steps, other saved operations and [operating conditions](conditions.md) use: / 具名结果和绑定可以经由该步返回数组的 `view` 取值（选项同[读取数组](drivers.md#reading-arrays--读取数组)），`path` 在视图中选取。一条迹线由此成为后续步骤、其他已保存操作和[工作条件](conditions.md)可用的数值：
+
+```json
+{"id": "resonance.locate", "layer": "standard", "description": "Sweep and locate the resonance dip",
+ "steps": [{"id": "sweep", "device": "vna", "operation": "read_trace"}],
+ "result": {"f0": {"step": "sweep", "view": {"at": {"component": "abs"}}, "path": ["summary", "min_at"]},
+            "depth": {"step": "sweep", "view": {"at": {"component": "abs"}}, "path": ["summary", "min"]}}}
+```
+
+These views are computed once, when the step that returned the array completes, and kept in its operation record as `derived`; the value does not change when it is read again. A view reads an array a device operation returned, so a binding to a saved operation takes one of its named results. / 这些视图在返回数组的那一步完成时计算一次，记入其操作记录的 `derived`，之后再读也不会变。视图只作用于设备操作返回的数组；绑定已保存操作时取其具名结果。
 
 `GET /v1/library` lists the saved operations with their layer, description, parameters and use counts; `GET /v1/library/{id}` returns one with its steps, so a method can be read, changed and saved again. The laboratory overview lists the names by role, which is what an agent sees first. / 列表给出每个操作的角色、说明、参数和使用次数；单个查询返回其步骤，方法可以读出、修改后再保存。实验室概况按角色列出名称，Agent 连接后首先看到的就是这些。
 
