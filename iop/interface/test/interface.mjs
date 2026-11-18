@@ -115,9 +115,16 @@ try {
   await page.click("#overview-discover");
   await page.waitForSelector('[data-register="0"]');
   assert.equal(await page.locator("#discovery-section pre").count(), 0);
-  const identified = (await api("devices")).find(
-    (d) => d.identity?.model === "SR830",
-  );
+  // The connections can be listed before identification of the SR830 has finished.
+  const identifying = performance.now() + 10000;
+  let identified;
+  do {
+    identified = (await api("devices")).find(
+      (d) => d.identity?.model === "SR830",
+    );
+    if (identified) break;
+    await pause(50);
+  } while (performance.now() < identifying);
   assert.ok(identified);
   await page.click(`[data-device="${identified.id}"]`);
   assert.ok(
