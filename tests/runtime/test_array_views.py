@@ -136,12 +136,40 @@ class ViewCase(unittest.TestCase):
         self.assertEqual(seen['values'], [1.0, None, 3.0, None, -2.0])
         self.assertEqual(json.loads(json.dumps(seen, allow_nan=False)), seen)
 
-    @unittest.skipUnless(importlib.util.find_spec('numpy'), 'Adapters that return NumPy arrays use this')
-    def test_evenly_spaced_points_give_coordinates(self):
-        self.assertEqual(arrays.spacing([2.0, 2.5, 3.0, 3.5]), {'start': 2.0, 'step': 0.5})
-        self.assertEqual(arrays.spacing([1.0e9 + 1e5 * i for i in range(1001)]), {'start': 1.0e9, 'step': 1.0e5})
-        for values in ([1.0, 2.0, 4.0], [3.0], [1.0, 1.0], [0.0, math.nan]):
-            self.assertEqual(arrays.spacing(values), {})
+    def test_points_give_their_axis_coordinates(self):
+        self.assertEqual(arrays.coordinates([2.0, 2.5, 3.0, 3.5]), {'start': 2.0, 'step': 0.5})
+        self.assertEqual(arrays.coordinates([1.0e9 + 1e5 * i for i in range(1001)]), {'start': 1.0e9, 'step': 1.0e5})
+        for values in ([1.0, 2.0, 4.0], [3.0], [1.0, 1.0]):
+            self.assertEqual(arrays.coordinates(values), {'coordinates': values})
+        for values in ([0.0, math.nan], [], [[1.0, 2.0]], [0.0] * (arrays.COORDINATES_LIMIT + 1)):
+            self.assertEqual(arrays.coordinates(values), {})
+
+    def test_listed_coordinates_place_positions_that_are_not_evenly_spaced(self):
+        # A logarithmic sweep from 10 Hz to 100 kHz with the response falling above 1 kHz.
+        hz = [10 * 10 ** (k / 10) for k in range(41)]
+        response = [1 / math.sqrt(1 + (f / 1e3) ** 2) for f in hz]
+        trace = {'dtype': 'float64', 'unit': 'V', 'axes': [{'name': 'frequency', 'unit': 'Hz', 'coordinates': hz}]}
+        seen = self.view(response, trace, points=8)
+        self.assertEqual(seen['along'], {'axis': 'frequency', 'start': 0, 'stop': 41, 'low': 10.0, 'high': hz[-1],
+                                         'unit': 'Hz'})
+        self.assertEqual((seen['summary']['max_at'], seen['summary']['min_at']), (10.0, hz[-1]))
+        self.assertEqual(seen['envelope']['coordinate'][:2], [10.0, float(f'{hz[6]:.7g}')])
+        window = self.view(response, trace, low=900, high=1200)
+        self.assertEqual((window['along']['start'], window['along']['coordinates']), (20, hz[20:21]))
+        self.assertAlmostEqual(window['values'][0], math.sqrt(0.5))
+        # Coordinates that fall are selected the same way; those that go back and forth only by position.
+        falling = {**trace, 'axes': [{**trace['axes'][0], 'coordinates': hz[::-1]}]}
+        self.assertEqual(self.view(response[::-1], falling, low=900, high=1200)['along']['start'], 20)
+        tangled = {**trace, 'axes': [{**trace['axes'][0], 'coordinates': [1.0, 3.0, 2.0] + hz[3:]}]}
+        with self.assertRaisesRegex(ValueError, 'increase or decrease'):
+            self.view(response, tangled, low=1, high=2)
+        self.assertEqual(self.view(response, tangled, start=1, stop=3)['along']['coordinates'], [3.0, 2.0])
+        for axis, message in (({'coordinates': hz, 'start': 10}, 'not both'), ({'coordinates': []}, 'list of numbers'),
+                              ({'coordinates': hz[:5]}, 'each of its 41 positions')):
+            with self.assertRaisesRegex(ValueError, message):
+                arrays.check_result({'dtype': 'float64', 'shape': [41], 'axes': [{'name': 'frequency', **axis}]})
+        with self.assertRaisesRegex(ValueError, 'lists 5 coordinates for its 41 positions'):
+            self.view(response, {'dtype': 'float64', 'axes': [{'name': 'frequency', 'coordinates': hz[:5]}]})
 
     def test_inline_values_are_viewed_without_a_file(self):
         holder = arrays.result(_payload(DIP[:100], {}), arrays.check_result({'dtype': 'float64'}), None)

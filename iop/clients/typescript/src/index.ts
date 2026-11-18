@@ -32,7 +32,7 @@ export type RunUpdates = { run: RunRecord; changes: Event[]; operations: Operati
 /** What an array an operation returned says: see Client.readArray. */
 export type ArrayView = {
   operation_id: string; field: string; dtype: string; shape: number[]; unit?: string;
-  along: { axis: string | number; start: number; stop: number; low?: number; high?: number; step?: number; unit?: string };
+  along: { axis: string | number; start: number; stop: number; low?: number; high?: number; step?: number; coordinates?: number[]; unit?: string };
   at?: Record<string, string | number>; summarized?: (string | number)[];
   summary: { count: number; nonfinite?: number; min: number | null; max: number | null; mean: number | null; std: number | null;
     min_index?: number[]; max_index?: number[]; min_at?: number; max_at?: number };

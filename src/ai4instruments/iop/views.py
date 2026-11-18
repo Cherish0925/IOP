@@ -72,7 +72,13 @@ def _number(value):
 
 
 def _coordinates(axis, size):
-    """Start and step of a uniformly spaced axis, or None."""
+    """The coordinates of an axis: start and step when evenly spaced, a list with one for each position, or None."""
+    listed = axis.get('coordinates')
+    if listed is not None:
+        if not isinstance(listed, list) or len(listed) != size or not all(map(_number, listed)):
+            raise ValueError(f"Axis {axis.get('name')!r} lists {len(listed) if isinstance(listed, list) else 'no'} "
+                             f"coordinates for its {size} positions")
+        return [float(c) for c in listed]
     if not _number(axis.get('start')):
         return None
     if _number(axis.get('step')) and axis['step']:
@@ -82,8 +88,25 @@ def _coordinates(axis, size):
     return None
 
 
+def _place(coordinates):
+    """The coordinate of a position."""
+    if isinstance(coordinates, list):
+        return coordinates.__getitem__
+    start, step = coordinates
+    return lambda p: start + p * step
+
+
 def _positions(coordinates, size, low, high):
     """The positions whose coordinate lies between low and high."""
+    if isinstance(coordinates, list):
+        pairs = list(zip(coordinates, coordinates[1:]))
+        if not (all(a < b for a, b in pairs) or all(a > b for a, b in pairs)):
+            raise ValueError('low and high select along coordinates that increase or decrease; '
+                             'select positions with start and stop')
+        inside = [p for p, c in enumerate(coordinates) if min(low, high) <= c <= max(low, high)]
+        if not inside:
+            raise ValueError(f'No position of this axis lies between {low} and {high}')
+        return inside[0], inside[-1] + 1
     start, step = coordinates
     # Fractional positions of the two bounds, kept finite so that open bounds select to the end.
     lo, hi = sorted(min(max((c - start) / step, -1.0), float(size)) for c in (low, high))
@@ -343,11 +366,14 @@ def view(holder, source=None, along=None, at=None, start=None, stop=None, low=No
             raise ValueError('The inline values do not match the array shape')
         computed = python(request, flat)
     axes, along, coordinates = context['axes'], request['along'], context['coordinates']
-    place = (lambda p: coordinates[0] + p * coordinates[1]) if coordinates else None
+    place = _place(coordinates) if coordinates else None
     following = {'axis': axes[along]['name'] if axes else along, 'start': request['start'], 'stop': request['stop']}
+    listed = coordinates[request['start']:request['stop']] if isinstance(coordinates, list) else None
     if coordinates:
-        ends = place(request['start']), place(request['stop'] - 1)
-        following.update({'low': min(ends), 'high': max(ends), 'step': coordinates[1]})
+        span = listed or (place(request['start']), place(request['stop'] - 1))
+        following.update({'low': min(span), 'high': max(span)})
+        if not listed:
+            following['step'] = coordinates[1]
     if axes and isinstance(axes[along].get('unit'), str):
         following['unit'] = axes[along]['unit']
     unit = data.get('unit')
@@ -375,6 +401,9 @@ def view(holder, source=None, along=None, at=None, start=None, stop=None, low=No
     buckets = computed['buckets']
     if all(c == 1 for c in buckets['count']):
         result['values'] = buckets['mean']
+        if listed:
+            # Listed coordinates are not implied by a step: each value comes with its own.
+            following['coordinates'] = listed
     else:
         result['envelope'] = {'position': buckets['start'],
                               **({'coordinate': [_short(place(p)) for p in buckets['start']]} if coordinates else {}),

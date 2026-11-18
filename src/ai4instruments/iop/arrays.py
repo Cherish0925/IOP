@@ -38,15 +38,23 @@ def _order(value):
 
 
 def check_axis(axis, queries=False):
-    """Validate one axis: name, optional labels and unit, and coordinates start with step or stop.
+    """Validate one axis: name, optional labels and unit, and coordinates: start with step or stop, or a list
+    with one for each position.
 
-    With ``queries`` (SCPI), a coordinate can be ``{"query": command}``, read after the array.
+    With ``queries`` (SCPI), start, step and stop can be ``{"query": command}``, read after the array.
     """
     name = axis['name']
     if 'labels' in axis and (not isinstance(axis['labels'], list) or any(not isinstance(x, str) for x in axis['labels'])):
         raise ValueError(f'Axis {name}: labels is a list of strings')
     if 'unit' in axis and not isinstance(axis['unit'], str):
         raise ValueError(f'Axis {name}: unit is a string')
+    if 'coordinates' in axis:
+        listed = axis['coordinates']
+        if (not isinstance(listed, list) or not listed
+                or any(isinstance(c, bool) or not isinstance(c, (int, float)) or not math.isfinite(c) for c in listed)):
+            raise ValueError(f'Axis {name}: coordinates is a list of numbers, one for each position')
+        if {'start', 'step', 'stop'} & axis.keys():
+            raise ValueError(f'Axis {name}: give coordinates as a list or as start with step or stop, not both')
     for key in ('start', 'step', 'stop'):
         if key not in axis:
             continue
@@ -92,8 +100,10 @@ def check_result(spec, queries=False):
             raise ValueError('axes is a list of objects with a name')
         if shape is not None and len(axes) != len(shape):
             raise ValueError('Describe one axis for each dimension of shape')
-        for axis in axes:
+        for index, axis in enumerate(axes):
             check_axis(axis, queries)
+            if 'coordinates' in axis and shape is not None and shape[index] > 0 and len(axis['coordinates']) != shape[index]:
+                raise ValueError(f"Axis {axis['name']}: list one coordinate for each of its {shape[index]} positions")
         checked['axes'] = axes
     limit = spec.get('inline_limit', INLINE_LIMIT)
     if type(limit) is not int or limit < 0:
@@ -230,16 +240,23 @@ def result(payload, spec, context=None, name='data'):
     return fields
 
 
-def spacing(values):
-    """Axis coordinates for evenly spaced points, such as the setpoints of a sweep: start and step, or {}."""
-    import numpy
-    points = numpy.asarray(values, dtype=float).ravel()
-    if points.size < 2 or not numpy.isfinite(points).all():
+COORDINATES_LIMIT = 10_000
+
+
+def coordinates(values):
+    """The coordinates an axis takes from its points, such as the setpoints of a sweep: start and step when
+    they are evenly spaced, otherwise the list of them when it is short, or {}."""
+    try:
+        points = [float(value) for value in values]
+    except (TypeError, ValueError):
         return {}
-    step = (points[-1] - points[0]) / (points.size - 1)
-    if step == 0 or not numpy.allclose(numpy.diff(points), step, rtol=1e-6, atol=0):
+    if not points or not all(map(math.isfinite, points)):
         return {}
-    return {'start': float(points[0]), 'step': float(step)}
+    if len(points) > 1:
+        step = (points[-1] - points[0]) / (len(points) - 1)
+        if step and all(abs(b - a - step) <= 1e-6 * abs(step) for a, b in zip(points, points[1:])):
+            return {'start': points[0], 'step': step}
+    return {'coordinates': points} if len(points) <= COORDINATES_LIMIT else {}
 
 
 _NUMPY = {'float64': 'float64', 'float32': 'float32', 'int8': 'int8', 'int16': 'int16', 'int32': 'int32',

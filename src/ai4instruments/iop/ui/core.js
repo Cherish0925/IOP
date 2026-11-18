@@ -264,7 +264,14 @@ function chart(view) {
           quantity(along.high, along.unit || ""),
         ]
       : ["#" + along.start, "#" + (along.stop - 1)];
-  if (along.step < 0) ends.reverse();
+  const listed = along.coordinates || view.envelope?.coordinate;
+  if (
+    along.step < 0 ||
+    (along.step === undefined &&
+      listed?.length > 1 &&
+      listed[0] > listed.at(-1))
+  )
+    ends.reverse();
   return `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${esc(String(along.axis))}">${shapes}</svg><div class="array-axis"><span>${esc(String(along.axis))} ${esc(ends[0])}</span><span>${esc(ends[1])}</span></div><small class="muted">${t("最小", "min")} ${esc(quantity(s.min, unit))} @ ${esc(place(s.min_index?.[0], s.min_at))} · ${t("最大", "max")} ${esc(quantity(s.max, unit))} @ ${esc(place(s.max_index?.[0], s.max_at))} · ${t("均值", "mean")} ${esc(quantity(s.mean, unit))} · σ ${esc(quantity(s.std, unit))}${s.nonfinite ? " · " + s.nonfinite + t(" 个非有限值", " not finite") : ""}${
     view.at
       ? " · " +

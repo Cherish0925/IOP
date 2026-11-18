@@ -146,9 +146,9 @@ class QCoDeS(Driver):
         value = parameter.get()
         result = {'time': now(), 'source': 'device'}
         if isinstance(parameter, ParameterWithSetpoints):
-            # Evenly spaced setpoints also become the coordinates of their axis.
+            # Setpoints also become the coordinates of their axis.
             points = [sp.get() for sp in parameter.setpoints]
-            axes = [{'name': sp.short_name, **({'unit': sp.unit} if sp.unit else {}), **arrays.spacing(values)}
+            axes = [{'name': sp.short_name, **({'unit': sp.unit} if sp.unit else {}), **arrays.coordinates(values)}
                     for sp, values in zip(parameter.setpoints, points)]
             result.update(array_fields(value, cancelled, name, unit, axes))
             result['setpoints'] = [array_fields(values, cancelled, name + '-' + sp.short_name, sp.unit)
