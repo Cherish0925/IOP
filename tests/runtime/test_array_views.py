@@ -268,10 +268,11 @@ class ViewCase(unittest.TestCase):
         self.assertEqual(self.view([0, 5, 0, 1, 2, 3], image, along='column', at={'row': 0}, peak='max')['peak']['index'], 1)
         # An axis of one position, such as the only channel of a stream, is read at it.
         self.assertEqual(self.view([0, 5, 0], {'dtype': 'float64', 'shape': [3, 1]}, peak='max')['peak']['index'], 1)
-        for description, options, message in ((image, {'peak': 'max'}, 'fix the others with at: column'),
+        cube = {'dtype': 'float64', 'shape': [2, 3, 2], 'axes': [{'name': 'row'}, {'name': 'column'}, {'name': 'depth'}]}
+        for description, options, message in ((cube, {'peak': 'max'}, 'at most one other; fix the others with at: column, depth'),
                                               (trace, {'peak': 'top'}, 'max, or min for a dip')):
             with self.assertRaisesRegex(ValueError, message):
-                self.view(DIP, description, **options) if description is trace else self.view([0] * 6, image, **options)
+                self.view(DIP, description, **options) if description is trace else self.view([0] * 12, cube, **options)
 
     def test_peaks_fit_actual_coordinates_in_both_directions(self):
         for coordinates, values, peak in (([0, 1, 3], [0, 2, 0], 'max'),
@@ -318,9 +319,8 @@ class ViewCase(unittest.TestCase):
         for level in (math.inf, 'high'):
             with self.assertRaisesRegex(ValueError, 'level is a finite number'):
                 self.view(DIP, {'dtype': 'float64'}, level=level)
-        with self.assertRaisesRegex(ValueError, 'A level is read along one axis; fix the others with at: column'):
-            self.view([0] * 6, {'dtype': 'float64', 'shape': [2, 3], 'axes': [{'name': 'row'}, {'name': 'column'}]},
-                      level=0)
+        with self.assertRaisesRegex(ValueError, 'A level is read along one axis, at each position of at most one other'):
+            self.view([0] * 12, {'dtype': 'float64', 'shape': [2, 3, 2]}, level=0)
 
     def test_a_straight_line_through_the_straight_part_of_a_trace(self):
         # A laser gives 0.4 W/A above its threshold at 25 mA and a little spontaneous light throughout. The line
@@ -333,9 +333,28 @@ class ViewCase(unittest.TestCase):
         self.assertEqual(fit['count'], 31)
         with self.assertRaisesRegex(ValueError, 'fit is line'):
             self.view(light, {'dtype': 'float64'}, fit='curve')
-        with self.assertRaisesRegex(ValueError, 'A fit is read along one axis; fix the others with at: column'):
-            self.view([0] * 6, {'dtype': 'float64', 'shape': [2, 3], 'axes': [{'name': 'row'}, {'name': 'column'}]},
-                      fit='line')
+        with self.assertRaisesRegex(ValueError, 'A fit is read along one axis, at each position of at most one other'):
+            self.view([0] * 12, {'dtype': 'float64', 'shape': [2, 3, 2]}, fit='line')
+
+    def test_lines_crossings_and_fits_at_each_position_of_another_axis(self):
+        # A line that moves 10 nm per volt, read along wavelength at each bias: its center tunes with the bias.
+        volts = {'name': 'volts', 'unit': 'V', 'start': 0, 'step': 1}
+        wavelength = {'name': 'wavelength', 'unit': 'nm', 'start': 400, 'step': 0.1}
+        spectra = [100 / (1 + ((400 + 0.1 * i - 500 - 10 * v) / 2) ** 2) for v in range(4) for i in range(2000)]
+        rows = self.view(spectra, {'dtype': 'float64', 'shape': [4, 2000], 'axes': [volts, wavelength]},
+                         along='wavelength', peak='max', level=50, fit='line')['rows']
+        self.assertEqual((rows['axis'], rows['unit'], rows['coordinates']), ('volts', 'V', [0, 1, 2, 3]))
+        self.assertEqual([round(line['center'], 6) for line in rows['peak']], [500, 510, 520, 530])
+        self.assertEqual([[round(c['at'], 3) for c in row] for row in rows['crossings']],
+                         [[498, 502], [508, 512], [518, 522], [528, 532]])
+        self.assertEqual([fit['count'] for fit in rows['fit']], [2000] * 4)
+        # A labelled axis gives its labels; prominence reads one trace.
+        labelled = self.view([0, 1, 0, 2, 3, 2], {'dtype': 'float64', 'shape': [2, 3],
+                                                 'axes': [{'name': 'channel', 'labels': ['x', 'y']}, {'name': 'k'}]},
+                             along='k', peak='max')['rows']
+        self.assertEqual((labelled['labels'], [line['index'] for line in labelled['peak']]), (['x', 'y'], [1, 1]))
+        with self.assertRaisesRegex(ValueError, 'prominence reads the lines of one trace'):
+            self.view(spectra, {'dtype': 'float64', 'shape': [4, 2000]}, along=1, peak='max', prominence=1)
 
     def test_inline_values_are_viewed_without_a_file(self):
         holder = arrays.result(_payload(DIP[:100], {}), arrays.check_result({'dtype': 'float64'}), None)
@@ -375,6 +394,10 @@ class ViewCase(unittest.TestCase):
             (nan_trace, {'dtype': 'float64'}, {'points': 37, 'fit': 'line'}),
             (DIP, {'dtype': 'float64', 'axes': [FREQUENCY]}, {'low': 1.05e9, 'high': 1.07e9, 'fit': 'line', 'level': 0.5}),
             ([1, 3, 2, 5], {'dtype': 'float64', 'axes': [{'name': 'x', 'coordinates': [0, 2, 1, 3]}]}, {'fit': 'line'}),
+            (cube, {'dtype': 'float64', 'shape': [6, 7, 50], 'axes': [{'name': 'a'}, {'name': 'b'}, {'name': 'c'}]},
+             {'along': 'c', 'at': {'a': 4}, 'peak': 'max', 'level': 70, 'fit': 'line'}),
+            (nan_trace[:20000], {'dtype': 'float32', 'byte_order': 'big', 'shape': [100, 200]},
+             {'along': 0, 'start': 3, 'stop': 97, 'peak': 'min', 'level': 3.2e9}),
         ]
         compared = 0
         for values, description, options in cases:
@@ -399,6 +422,7 @@ class ViewCase(unittest.TestCase):
                 self.assertEqual(native.get('peaks'), python.get('peaks'))
                 self.assertEqual(native.get('crossings'), python.get('crossings'))
                 self.assertEqual(native.get('fit'), python.get('fit'))
+                self.assertEqual(native.get('rows'), python.get('rows'))
         # The chunks of a stream: the same values split across files at arbitrary byte boundaries.
         holder, path = saved(folder, nan_trace, {'dtype': 'float64'})
         payload, parts = path.read_bytes(), []

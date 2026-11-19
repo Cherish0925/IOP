@@ -506,6 +506,10 @@ class SweepCase(unittest.TestCase):
         for volts in range(4):
             seen = run.read_array('map.spectrum', along='wavelength', at={'volts': volts}, points=50)
             self.assertAlmostEqual(seen['summary']['max_at'], 500 + 10 * volts)
+        # Read at every bias at once, from the four files: the line's center against the bias.
+        rows = run.read_array('map.spectrum', along='wavelength', peak='max', points=1)['rows']
+        self.assertEqual((rows['axis'], rows['coordinates'], [round(line['center'], 6) for line in rows['peak']]),
+                         ('volts', [0, 1, 2, 3], [500, 510, 520, 530]))
         self.assertEqual(run.read_array('map.spectrum', along='volts', at={'wavelength': 1000})['values'][0], 100)
         # As a map: each bias a row, wavelengths 505 to 535 nm in columns of 2 nm.
         seen = run.read_array('map.spectrum', along=['volts', 'wavelength'], low=[None, 505], high=[None, 535],

@@ -123,6 +123,8 @@ struct Request {
     level: Option<f64>,
     /// Fit a straight line through the trace.
     fit: bool,
+    /// The one other axis not fixed, if any: lines, crossings and fits are read at each of its positions.
+    rows: Option<usize>,
     /// Listed coordinates for the selected trace; uniform axes can use positions.
     coordinates: Option<Vec<f64>>,
 }
@@ -265,15 +267,24 @@ fn parse(request: &Value) -> Result<Request, Box<dyn Error>> {
         _ => return Err(invalid("fit is line, a straight line through the trace")),
     };
     let traced = peak.is_some() || level.is_some() || fit;
+    let mut rows = None;
     if traced {
-        let one =
-            along.len() == 1 && (0..shape.len()).all(|d| d == along[0].axis || fixed[d].is_some());
-        if !one {
+        let free: Vec<usize> = (0..shape.len())
+            .filter(|&d| d != along[0].axis && fixed[d].is_none())
+            .collect();
+        if along.len() != 1 || free.len() > 1 {
             return Err(invalid(
-                "A peak, a level or a fit is read along one axis, with every other axis fixed",
+                "A peak, a level or a fit is read along one axis, at each position of at most one other",
             ));
         }
-        if along[0].stop - along[0].start > TRACE {
+        rows = free.first().copied();
+        let count = rows.map_or(1, |d| shape[d]);
+        if count > LINES {
+            return Err(invalid(format!(
+                "A peak, a level or a fit is read at most at {LINES} positions of another axis; fix it with at"
+            )));
+        }
+        if (along[0].stop - along[0].start) * count > TRACE {
             return Err(invalid(format!(
                 "A peak, a level or a fit is read over at most {TRACE} positions; select fewer with start and stop"
             )));
@@ -290,6 +301,11 @@ fn parse(request: &Value) -> Result<Request, Box<dyn Error>> {
             }
         },
     };
+    if prominence.is_some() && rows.is_some() {
+        return Err(invalid(
+            "prominence reads the lines of one trace; fix the other axes",
+        ));
+    }
     let coordinates = if request["coordinates"].is_null() {
         None
     } else {
@@ -329,6 +345,7 @@ fn parse(request: &Value) -> Result<Request, Box<dyn Error>> {
         prominence,
         level,
         fit,
+        rows,
         coordinates,
     })
 }
@@ -460,13 +477,21 @@ fn view(r: &Request) -> Result<Value, Box<dyn Error>> {
         min_index: Vec::new(),
         max_index: Vec::new(),
     };
-    // Along one axis with the others fixed, positions are read in order: the trace a line is found in.
+    // Along one axis, positions are read in order: the trace a line is found in, one for each position of the
+    // other axis not fixed when there is one.
     let traced = r.peak.is_some() || r.level.is_some() || r.fit;
-    let mut trace = Vec::with_capacity(if traced {
+    let length = if traced {
         r.along[0].stop - r.along[0].start
     } else {
         0
-    });
+    };
+    let mut traces: Vec<Vec<f64>> = (0..if traced {
+        r.rows.map_or(1, |d| r.shape[d])
+    } else {
+        0
+    })
+        .map(|_| Vec::with_capacity(length))
+        .collect();
     let mut index = vec![0usize; dims];
     index[0] = low;
     let per_chunk = (1 << 20) / unit.max(1) + 1;
@@ -504,7 +529,7 @@ fn view(r: &Request) -> Result<Value, Box<dyn Error>> {
                             / (f.stop - f.start) as u128) as usize
                 });
                 if traced {
-                    trace.push(value);
+                    traces[r.rows.map_or(0, |d| index[d])].push(value);
                 }
                 let b = &mut buckets[cell];
                 b.count += 1;
@@ -568,20 +593,53 @@ fn view(r: &Request) -> Result<Value, Box<dyn Error>> {
                 .collect::<Vec<_>>(),
         }
     });
-    if let Some(peak) = r.peak {
-        let coordinates = r.coordinates.as_deref();
-        match r.prominence {
-            Some(least) => {
-                found["peaks"] = lines(&trace, r.along[0].start, peak, coordinates, least)?
+    if traced {
+        let mut each = traces
+            .iter()
+            .map(|trace| read_trace(trace, r))
+            .collect::<Result<Vec<_>, _>>()?;
+        if r.rows.is_none() {
+            for (key, value) in each.remove(0) {
+                found[key.as_str()] = value;
             }
-            None => found["peak"] = line(&trace, r.along[0].start, peak, coordinates),
+        } else {
+            // At each position of the other axis, what one trace gives, in a list for each kind.
+            let mut rows = serde_json::Map::new();
+            for key in each[0].keys().cloned().collect::<Vec<_>>() {
+                let values: Vec<Value> = each
+                    .iter_mut()
+                    .map(|row| row.remove(&key).unwrap_or(Value::Null))
+                    .collect();
+                rows.insert(key, Value::Array(values));
+            }
+            found["rows"] = Value::Object(rows);
         }
     }
+    Ok(found)
+}
+
+/// What a peak, a level and a fit read in one trace.
+fn read_trace(
+    trace: &[f64],
+    r: &Request,
+) -> Result<serde_json::Map<String, Value>, Box<dyn Error>> {
+    let (first, coordinates) = (r.along[0].start, r.coordinates.as_deref());
+    let mut found = serde_json::Map::new();
+    if let Some(peak) = r.peak {
+        let line = match r.prominence {
+            Some(least) => ("peaks", lines(trace, first, peak, coordinates, least)?),
+            None => ("peak", line(trace, first, peak, coordinates)),
+        };
+        found.insert(line.0.into(), line.1);
+    }
     if let Some(level) = r.level {
-        found["crossings"] = crossings(&trace, r.along[0].start, level, r.coordinates.as_deref())?;
+        found.insert(
+            "crossings".into(),
+            crossings(trace, first, level, coordinates)?,
+        );
     }
     if r.fit {
-        found["fit"] = line_through(&trace, r.along[0].start, r.coordinates.as_deref());
+        found.insert("fit".into(), line_through(trace, first, coordinates));
     }
     Ok(found)
 }
@@ -1050,11 +1108,11 @@ mod tests {
             (flat["left"].clone(), flat["right"].clone()),
             (Value::Null, Value::Null)
         );
-        let (_image, name) = file(&[0.0; 6]);
-        assert!(parse(&request(&name, &[2, 3], json!({"peak": "max"}))).is_err());
+        let (_image, name) = file(&[0.0; 12]);
+        assert!(parse(&request(&name, &[2, 2, 3], json!({"peak": "max"}))).is_err());
         assert!(parse(&request(
             &name,
-            &[2, 3],
+            &[2, 2, 3],
             json!({"peak": "max", "fixed": [[1, 0]]})
         ))
         .is_ok());
@@ -1180,7 +1238,7 @@ mod tests {
         assert_eq!(looped[0]["coordinates"], json!(true));
         let (_keep, name) = file(&sine);
         assert!(parse(&request(&name, &[100], json!({"level": "zero"}))).is_err());
-        assert!(parse(&request(&name, &[50, 2], json!({"level": 0.0}))).is_err());
+        assert!(parse(&request(&name, &[10, 5, 2], json!({"level": 0.0}))).is_err());
         assert!(parse(&request(
             &name,
             &[3],
@@ -1248,6 +1306,62 @@ mod tests {
         );
         let (_keep, name) = file(&line);
         assert!(parse(&request(&name, &[10], json!({"fit": "curve"}))).is_err());
+    }
+
+    #[test]
+    fn lines_crossings_and_fits_are_read_at_each_position_of_another_axis() {
+        // A line moving 10 positions further at each of three rows, rising through 0.5 and falling back.
+        let shape = |x: f64, c: f64| 1.0 / (1.0 + ((x - c) / 3.0).powi(2));
+        let values: Vec<f64> = (0..3)
+            .flat_map(|row| (0..100).map(move |x| shape(x as f64, 40.25 + 10.0 * row as f64)))
+            .collect();
+        let (_keep, name) = file(&values);
+        let read = |extra: Value| {
+            view(&parse(&request(&name, &[3, 100], extra)).unwrap()).unwrap()["rows"].clone()
+        };
+        let rows = read(
+            json!({"along": 1, "stop": 100, "points": 1, "peak": "max", "level": 0.5, "fit": "line"}),
+        );
+        for (row, center) in [40.25, 50.25, 60.25].iter().enumerate() {
+            let line = &rows["peak"][row];
+            assert!(
+                (line["position"].as_f64().unwrap() - center).abs() < 0.05,
+                "{line}"
+            );
+            let crossings = rows["crossings"][row].as_array().unwrap();
+            assert_eq!(crossings.len(), 2);
+            assert!(
+                (crossings[1]["position"].as_f64().unwrap()
+                    - crossings[0]["position"].as_f64().unwrap()
+                    - 6.0)
+                    .abs()
+                    < 0.1
+            );
+            assert_eq!(rows["fit"][row]["count"], json!(100));
+        }
+        // The rows along the first axis are its positions in turn; with it fixed, one trace is read.
+        let column = read(json!({"along": 0, "points": 1, "level": 0.5}));
+        assert_eq!(column["crossings"].as_array().unwrap().len(), 100);
+        let one = view(
+            &parse(&request(
+                &name,
+                &[3, 100],
+                json!({"along": 1, "stop": 100, "points": 1, "fixed": [[0, 2]], "peak": "max"}),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            (one["rows"].clone(), one["peak"]["index"].clone()),
+            (Value::Null, json!(60))
+        );
+        // Lines in the rows of a map read one trace each, not every line of each.
+        assert!(parse(&request(
+            &name,
+            &[3, 100],
+            json!({"along": 1, "stop": 100, "peak": "max", "prominence": 0.1})
+        ))
+        .is_err());
     }
 
     #[test]

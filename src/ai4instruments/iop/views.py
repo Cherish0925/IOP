@@ -230,12 +230,22 @@ def plan(data, along=None, at=None, start=None, stop=None, low=None, high=None, 
                'start': starts, 'stop': stops, 'points': counts}
     if complex_mode:
         request['complex'] = complex_mode
-    summarized = [named(i) for i in range(len(shape)) if i not in fixed and i not in followed
-                  and not (i == component and complex_mode)]
+    free = [i for i in range(len(shape)) if i not in fixed and i not in followed and not (i == component and complex_mode)]
+    summarized = [named(i) for i in free]
     if traced:
-        if len(followed) > 1 or summarized:
-            what = 'peak' if peak is not None else 'level' if level is not None else 'fit'
-            raise ValueError(f'A {what} is read along one axis; fix the others with at: ' + ', '.join(map(str, summarized)))
+        what = 'peak' if peak is not None else 'level' if level is not None else 'fit'
+        if len(followed) > 1 or len(free) > 1:
+            raise ValueError(f'A {what} is read along one axis, at each position of at most one other; fix the others '
+                             'with at: ' + ', '.join(map(str, summarized)))
+        if free:
+            # At each position of the one other axis not fixed, the trace along the axis followed is read.
+            if prominence is not None:
+                raise ValueError('prominence reads the lines of one trace; fix the other axes with at: '
+                                 + ', '.join(map(str, summarized)))
+            if shape[free[0]] > LINES:
+                raise ValueError(f'A {what} is read at most at {LINES} positions of another axis; fix '
+                                 f'{summarized[0]} with at')
+            request['rows'] = free[0]
         if peak is not None:
             request['peak'] = peak
         if prominence is not None:
@@ -351,12 +361,6 @@ def python(request, values=None):
         else:
             seq = list(map(float, flat[first:end:step]))
         counted = [bounds[b + 1] - bounds[b] for b in range(points)]
-        if 'prominence' in request:
-            line = _lines(seq, start, request['peak'], request.get('coordinates'), request['prominence'])
-        elif request.get('peak'):
-            line = _line(seq, start, request['peak'], request.get('coordinates'))
-        crossed = _crossings(seq, start, request['level'], request.get('coordinates')) if 'level' in request else None
-        fitted = _fit(seq, start, request.get('coordinates')) if 'fit' in request else None
         clean = math.isfinite(sum(seq))
         parts = [seq[bounds[b] - start:bounds[b + 1] - start] for b in range(points)]
         if not clean:
@@ -376,11 +380,12 @@ def python(request, values=None):
                 'buckets': {'start': [bounds[:-1]], 'count': counted, 'finite': [len(p) for p in parts],
                             'min': [min(p) if p else None for p in parts], 'max': [max(p) if p else None for p in parts],
                             'mean': [math.fsum(p) / len(p) if p else None for p in parts]},
-                **({'peaks' if 'prominence' in request else 'peak': line} if request.get('peak') else {}),
-                **({'crossings': crossed} if crossed is not None else {}),
-                **({'fit': fitted} if 'fit' in request else {})}
+                **_traced(seq, start, request)}
 
     # Several elements per position, or two axes followed: walk the slabs read in storage order, as iop-execd does.
+    # A peak, a level or a fit along one axis is read in the trace at each position of the other axis not fixed.
+    rows = request.get('rows')
+    traces = [[] for _ in range(logical[rows])] if rows is not None else None
     count = finite = 0
     mean = m2 = 0.0
     smallest = largest = None
@@ -395,6 +400,8 @@ def python(request, values=None):
                      else re * re + im * im)
             else:
                 x = float(flat[offset])
+            if traces is not None:
+                traces[position[rows]].append(x)
             cell = 0
             for (axis, start, stop, _), n in zip(followed, counts):
                 cell = cell * n + (position[axis] - start) * n // (stop - start)
@@ -418,13 +425,32 @@ def python(request, values=None):
             if position[d] < logical[d] or d == 0:
                 break
             position[d] = 0
-    return {'count': count, 'finite': finite, 'min': smallest and smallest[0], 'max': largest and largest[0],
-            'mean': mean if finite else None, 'std': math.sqrt(m2 / finite) if finite else None,
-            'min_index': smallest and index(smallest[1]), 'max_index': largest and index(largest[1]),
-            'buckets': {'start': [b[:-1] for b in bounds], 'count': [b[0] for b in buckets],
-                        'finite': [b[1] for b in buckets],
-                        'min': [b[2] if b[1] else None for b in buckets], 'max': [b[3] if b[1] else None for b in buckets],
-                        'mean': [b[4] / b[1] if b[1] else None for b in buckets]}}
+    found = {'count': count, 'finite': finite, 'min': smallest and smallest[0], 'max': largest and largest[0],
+             'mean': mean if finite else None, 'std': math.sqrt(m2 / finite) if finite else None,
+             'min_index': smallest and index(smallest[1]), 'max_index': largest and index(largest[1]),
+             'buckets': {'start': [b[:-1] for b in bounds], 'count': [b[0] for b in buckets],
+                         'finite': [b[1] for b in buckets],
+                         'min': [b[2] if b[1] else None for b in buckets], 'max': [b[3] if b[1] else None for b in buckets],
+                         'mean': [b[4] / b[1] if b[1] else None for b in buckets]}}
+    if traces is not None:
+        each = [_traced(trace, followed[0][1], request) for trace in traces]
+        found['rows'] = {key: [row[key] for row in each] for key in each[0]}
+    return found
+
+
+def _traced(seq, first, request):
+    """What a peak, a level and a fit read in one trace that starts at position ``first``, as iop-execd reads them."""
+    found = {}
+    if request.get('peak'):
+        if 'prominence' in request:
+            found['peaks'] = _lines(seq, first, request['peak'], request.get('coordinates'), request['prominence'])
+        else:
+            found['peak'] = _line(seq, first, request['peak'], request.get('coordinates'))
+    if 'level' in request:
+        found['crossings'] = _crossings(seq, first, request['level'], request.get('coordinates'))
+    if 'fit' in request:
+        found['fit'] = _fit(seq, first, request.get('coordinates'))
+    return found
 
 
 def _finite(value):
@@ -647,9 +673,11 @@ def view(holder, source=None, along=None, at=None, start=None, stop=None, low=No
     if source is not None:
         request['segments'] = source if isinstance(source, list) else [[str(source), Path(source).stat().st_size]]
         computed = native(request) if use_native else None
-        if (computed is None or peak is not None and ('peaks' if prominence is not None else 'peak') not in computed
-                or request.get('coordinates') and computed.get('peak') and not computed['peak'].get('coordinates')
-                or level is not None and 'crossings' not in computed or fit is not None and 'fit' not in computed):
+        wanted = ['rows'] if 'rows' in request else (
+            [('peaks' if prominence is not None else 'peak')] * (peak is not None) + ['crossings'] * (level is not None)
+            + ['fit'] * (fit is not None))
+        if (computed is None or any(key not in computed for key in wanted)
+                or request.get('coordinates') and computed.get('peak') and not computed['peak'].get('coordinates')):
             # An iop-execd that does not find lines, crossings or fits leaves them to Python.
             computed = python(request)
     else:
@@ -705,14 +733,26 @@ def view(holder, source=None, along=None, at=None, start=None, stop=None, low=No
     result = {'field': field, 'dtype': data['dtype'], 'shape': data['shape'], **({'unit': unit} if unit else {}),
               'along': following[0] if one else following, **({'at': context['at']} if context['at'] else {}),
               **({'summarized': context['summarized']} if context['summarized'] else {}), 'summary': summary}
-    if computed.get('peak'):
-        result['peak'] = _peak(computed['peak'], context['coordinates'][0])
-    if 'peaks' in computed:
-        result['peaks'] = [_peak(line, context['coordinates'][0]) for line in computed['peaks']]
-    if 'crossings' in computed:
-        result['crossings'] = [_crossing(found, context['coordinates'][0]) for found in computed['crossings']]
-    if 'fit' in computed:
-        result['fit'] = _fitted(computed['fit'], context['coordinates'][0])
+    # Lines, crossings and fits are given in the coordinates of the axis followed.
+    shown = {'peak': lambda line: line and _peak(line, context['coordinates'][0]),
+             'peaks': lambda lines: [_peak(line, context['coordinates'][0]) for line in lines],
+             'crossings': lambda found: [_crossing(item, context['coordinates'][0]) for item in found],
+             'fit': lambda fit: _fitted(fit, context['coordinates'][0])}
+    result.update({key: shown[key](computed[key]) for key in shown if key in computed and computed[key] is not None})
+    if 'rows' in computed:
+        # At each position of the other axis: its coordinate or label, then what the trace there gave.
+        axis = request['rows']
+        rows = {'axis': axes[axis]['name'] if axes else axis}
+        found = _coordinates(axes[axis], data['shape'][axis]) if axes else None
+        if axes and isinstance(axes[axis].get('unit'), str):
+            rows['unit'] = axes[axis]['unit']
+        if axes and isinstance(axes[axis].get('labels'), list):
+            rows['labels'] = axes[axis]['labels']
+        elif found is not None:
+            rows['coordinates'] = found if isinstance(found, list) else [_place(found)(p) for p in range(data['shape'][axis])]
+        rows.update({key: [shown[key](item) if item is not None else None for item in items]
+                     for key, items in computed['rows'].items()})
+        result['rows'] = rows
     sizes = [len(starts) for starts in buckets['start']]
     shaped = (lambda values: values) if one else (lambda values: _nest(values, sizes))
     if exact:
