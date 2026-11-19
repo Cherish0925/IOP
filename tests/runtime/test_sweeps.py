@@ -92,6 +92,10 @@ class Noisy(Driver):
                                'probe': {'parameters': {'hz': {'type': 'number', 'unit': 'Hz'}}, 'effect': 'observe'}}}
 
     def invoke(self, operation, arguments, context):
+        return self.read(operation, arguments)
+
+    @staticmethod
+    def read(operation, arguments):
         Noisy.seed = (Noisy.seed * 6364136223846793005 + 1442695040888963407) % 2 ** 64
         noise = (Noisy.seed >> 11) / 2 ** 53 - 0.5
         if operation == 'read':
@@ -139,7 +143,11 @@ class GatherCase(unittest.TestCase):
         self.assertEqual(sweeps.adapted(spec, []), [0])
         self.assertEqual(sweeps.adapted(spec, [0.0, 0.0]), [0, 8, 4])
         self.assertEqual(sweeps.adapted(spec, [0.0, 0.0, 1.0, 1.0]), [0, 8, 4, 2, 6])
-        self.assertEqual(sweeps.adapted({**spec, 'stop': 8.0}, [0.0, 3.0, 1.0])[3], 6.0)
+        # A difference counts by how far it exceeds twice the median one: a step that stands out draws the next
+        # point; differences like the others, as from noise, do not, and the widest interval, here the first, does.
+        finer = {**spec, 'stop': 8.0, 'points': 9}
+        self.assertEqual(sweeps.adapted(finer, [0.0, 3.0, 0.0, 0.0, 0.0], [0, 8, 4, 2, 6])[5], 7.0)
+        self.assertEqual(sweeps.adapted(finer, [0.0, 0.0, 0.0, 0.1, 0.1], [0, 8, 4, 2, 6])[5], 1.0)
         # Values already found are kept; a reading that is not a number counts only by its spacing.
         self.assertEqual(sweeps.adapted(spec, [0.0, None, 1.0], [0, 8, 4]), [0, 8, 4, 2])
         for sweep, message in (({'x': {**spec, 'adapt': 'power'}}, 'path to the number'),
@@ -149,6 +157,18 @@ class GatherCase(unittest.TestCase):
                                ({'x': spec, 'y': [1, 2]}, 'varies one parameter')):
             with self.subTest(sweep=sweep), self.assertRaisesRegex(ValueError, message):
                 sweeps.grid(sweep)
+
+    def test_an_adaptive_range_finds_a_narrow_line_through_noise(self):
+        # A line 3% of the range wide under noise of 2% of its height: 40 adaptive points put some on it from each
+        # of ten noise sequences, then gather there, as spacing alone would not.
+        spec = {'start': 1.0e9, 'stop': 1.1e9, 'points': 40, 'adapt': ['power']}
+        for seed in range(1, 11):
+            Noisy.seed, readings, values = seed, [], []
+            for index in range(40):
+                values = sweeps.adapted(spec, readings, values)
+                readings.append(Noisy.read('probe', {'hz': values[index]})['power'])
+            with self.subTest(seed=seed):
+                self.assertGreaterEqual(sum(abs(f - 1.0613e9) < 1.5e6 for f in values), 4)
 
     def test_values_and_axes_of_a_sweep(self):
         points, shape, axes = sweeps.grid({'axis': ['x', 'y'], 'volts': {'start': 0, 'stop': 1, 'points': 3}})
@@ -371,9 +391,9 @@ class SweepCase(unittest.TestCase):
         hz = result['adaptive']['power']['data']['axes'][0]
         self.assertEqual((hz['name'], hz['unit'], len(hz['coordinates'])), ('hz', 'Hz', 40))
         self.assertEqual(hz['coordinates'], sorted(hz['coordinates']))
-        # Half of the 40 points lie within a line width of the center; spaced evenly, three do.
+        # 16 of the 40 points lie within a line width of the center; spaced evenly, three do.
         near = [f for f in hz['coordinates'] if abs(f - 1.0613e9) < 3e6]
-        self.assertEqual((len(near) >= 20, sum(abs(1e9 + 1e8 * i / 39 - 1.0613e9) < 3e6 for i in range(40))), (True, 3))
+        self.assertEqual((len(near) >= 15, sum(abs(1e9 + 1e8 * i / 39 - 1.0613e9) < 3e6 for i in range(40))), (True, 3))
         adaptive, even = (run.read_array(f'{name}.power', peak='max')['peak'] for name in ('adaptive', 'even'))
         self.assertAlmostEqual(adaptive['center'], 1.0613e9, delta=2e4)
         self.assertAlmostEqual(adaptive['width'], 3e6, delta=6e4)
@@ -507,7 +527,7 @@ class SweepCase(unittest.TestCase):
         self.assertEqual(stopped['point'], len(values) - 1)
         self.assertAlmostEqual(stopped['reading'], error[1], delta=1e-12)
         # An adaptive sweep over 100 MHz, until a Lorentzian through what it gathered gives the line's center to
-        # 20 kHz: here after 22 of the 200 points it may take.
+        # 20 kHz: here after 18 of the 200 points it may take.
         run = self.submit([{'id': 'find', 'device': 'noisy', 'operation': 'probe',
                             'sweep': {'hz': {'start': 1.0e9, 'stop': 1.1e9, 'points': 200, 'adapt': ['power']}},
                             'until': {'view': {'field': 'power', 'fit': 'lorentzian'}, 'path': ['fit', 'errors', 'center'],

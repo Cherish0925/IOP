@@ -129,10 +129,12 @@ def _divisible(spec):
 def adapted(spec, readings, known=()):
     """The values of an adaptive range once its points have given these readings, one value more than them:
     its two ends, then each time the middle of the interval between neighbouring values whose ends differ
-    most, in spacing over the range and in reading over the readings' spread so far. Intervals narrower than
-    1/FINEST of the even spacing are not divided, so an edge does not take every point, and integer ends give
-    integers. A reading that is not a finite number counts only by its spacing. ``known`` are values already
-    found for the first of these readings."""
+    most, in spacing over the range and in reading over the readings' spread so far. A difference in reading
+    counts by how far it exceeds twice the typical one, the median between neighbours, so that noise does not
+    draw the points while a line is still to be found. Intervals narrower than 1/FINEST of the even spacing
+    are not divided, so an edge does not take every point, and integer ends give integers. A reading that is
+    not a finite number counts only by its spacing. ``known`` are values already found for the first of these
+    readings."""
     start, stop = _divisible(spec)
     integer = type(start) is int and type(stop) is int
     span = abs(stop - start)
@@ -145,6 +147,9 @@ def adapted(spec, readings, known=()):
         order = sorted(range(count), key=values.__getitem__)
         finite = [y for y in readings[:count] if _number(y)]
         height = max(finite) - min(finite) if len(finite) > 1 else 0
+        steps = sorted(abs(readings[b] - readings[a]) for a, b in zip(order, order[1:])
+                       if _number(readings[a]) and _number(readings[b]))
+        typical = steps[len(steps) // 2] if steps else 0
         largest, chosen = -1.0, None
         for a, b in zip(order, order[1:]):
             spacing = values[b] - values[a]
@@ -152,7 +157,7 @@ def adapted(spec, readings, known=()):
                 continue
             loss = (spacing / span) ** 2
             if height and _number(readings[a]) and _number(readings[b]):
-                loss += ((readings[b] - readings[a]) / height) ** 2
+                loss += (max(0, abs(readings[b] - readings[a]) - 2 * typical) / height) ** 2
             if loss > largest:
                 largest, chosen = loss, (values[a], spacing)
         if chosen is None:
