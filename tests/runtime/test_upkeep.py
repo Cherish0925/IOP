@@ -1,6 +1,7 @@
 """Upkeep: a platform that declares it has its conditions kept by the Runtime while its instruments are idle."""
 import time
 import unittest
+from datetime import datetime, timezone
 from ai4instruments.iop.conditions import upkeep
 from . import test_service as fixture
 from .test_conditions import PATH, SOURCE, WORLD, Part
@@ -122,14 +123,15 @@ class UpkeepCase(unittest.TestCase):
             self.client.maintain('chain', force=True)
         held = self.client.condition('source.stable')
         self.assertGreater(held['forecast'], held['accepted'])
-        # The line through the accepted values crosses the tolerance soon: upkeep looks again then.
+        # The line through the accepted values crosses the tolerance soon, as soon as the three verifications
+        # followed each other on this machine: upkeep looks again then.
         self.client.configure_platform(chain(SOURCE, ahead_s=3600), expected_revision=1)
-        last = self.until(self.last)
+        crossing = datetime.fromisoformat(held['forecast']).timestamp()
+        last = self.until(self.last, timeout=5 + max(0.0, crossing - time.time()))
         self.assertEqual(self.client.request('/v1/maintenance/' + last['id'])['reasons'],
                          {'source.stable': 'forecast reaches the tolerance'})
 
     def test_each_foreseen_moment_triggers_one_observation(self):
-        from datetime import datetime, timezone
         from ai4instruments.iop.conditions import seconds
         stamp = lambda t: datetime.fromtimestamp(t, timezone.utc).isoformat()
         self.client.configure_platform(chain(SOURCE, ahead_s=60))
