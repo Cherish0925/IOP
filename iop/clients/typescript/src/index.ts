@@ -34,7 +34,7 @@ export type PlatformDefinition = {
   upkeep?: Upkeep;
 };
 export type Platform = { id: string; revision: number; updated: string; definition: PlatformDefinition; active_runs?: string[]; missing_devices?: string[] };
-export type RunRecord = { id: string; state: string; result?: unknown; error?: string; platform?: Platform; [key: string]: unknown };
+export type RunRecord = { id: string; state: string; result?: unknown; error?: string; platform?: Platform; operation_states?: Record<string, number>; [key: string]: unknown };
 export type OperationRecord = RunRecord & { run_id: string; device: string; operation: string; device_revision?: number };
 export type BatchRecord = { request_id: string; run_id: string; complete: boolean; operations: OperationRecord[] };
 export type ArtifactRecord = { id: string; run_id: string; name: string; size: number; media_type: string; created: string; operation_ids?: string[] };

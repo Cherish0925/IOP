@@ -653,6 +653,30 @@ sys.stdout.buffer.write(b.getvalue())`,
   for (const [x, y] of drawn)
     assert.ok(Math.abs(y - (146 - (x / 600) * 142)) < 0.01, `${x},${y}`);
   await page.click("#modal-close");
+  // A sweep stopped by its until shows how many of its points were skipped.
+  const stopped = await api("runs", {
+    name: "Stopped turn",
+    steps: [
+      {
+        id: "turn",
+        device: "sim-axis",
+        operation: "move_to",
+        arguments: { duration: 0 },
+        sweep: { angle_deg: { start: 0, stop: 30, points: 4 } },
+        until: { path: ["angle_actual"], above: 15 },
+      },
+    ],
+  });
+  await page.evaluate(
+    (id) => document.dispatchEvent(new CustomEvent("iop:run", { detail: id })),
+    stopped.id,
+  );
+  await page.waitForSelector("#run-detail-summary .badge.completed");
+  assert.equal(
+    await page.textContent("#run-detail-summary .run-states"),
+    "Completed 3 · Skipped 1",
+  );
+  await page.click("#modal-close");
   // A numeric data stream is drawn per channel from its view.
   const streamed = await api("runs", {
     kind: "external",

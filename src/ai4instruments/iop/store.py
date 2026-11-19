@@ -213,6 +213,14 @@ class Store:
             rows = self.db.execute(f"SELECT {body} FROM {table}{where} ORDER BY rowid DESC LIMIT ?", args)
             return [json.loads(r[0]) for r in rows]
 
+    def operation_states(self, run_id):
+        """How many of an experiment's operations are in each state, in the order a run goes through them."""
+        with self.lock:
+            counts = dict(self.db.execute('SELECT state, COUNT(*) FROM operations WHERE run_id=? GROUP BY state',
+                                          (run_id,)).fetchall())
+        order = ('queued', 'running', 'completed', 'skipped', 'cancelled', 'failed', 'interrupted')
+        return {state: counts.pop(state) for state in order if state in counts} | counts
+
     def event(self, kind, run_id=None, **data):
         self.db.execute("INSERT INTO events(time,run_id,kind,body) VALUES(?,?,?,?)",
                         (now(), run_id, kind, dumps(data)))

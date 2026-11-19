@@ -1402,6 +1402,7 @@ class Engine:
 
     def run_info(self, run_id, details=True):
         result = self.store.get('runs', run_id, summary=not details)
+        result['operation_states'] = self.store.operation_states(run_id)
         result['progress'] = {name: {k: v for k, v in record.items() if k != 'state'}
                               for name, record in self.store.checkpoints(run_id).items()}
         result['can_resume'] = (result['state'] in TERMINAL - {'completed'} and

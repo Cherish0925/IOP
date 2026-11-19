@@ -368,6 +368,7 @@ class SweepCase(unittest.TestCase):
         # The current first exceeds 1 mA at 0.54 V: the source is given no higher voltage, then returns to zero.
         self.assertEqual((run.info(details=False)['state'], max(Diode.given), Diode.given[-1], len(Diode.given)),
                          ('completed', 0.54, 0, 56))
+        self.assertEqual(run.info(details=False)['operation_states'], {'completed': 56, 'skipped': 46})
         self.assertEqual((current['data']['shape'], current['data']['unit'], current['values'][55:]), ([101], 'A', [None] * 46))
         self.assertAlmostEqual(current['values'][54], 1.18e-3, delta=1e-5)
         ops = {op['step']: op for op in run.info()['operation_records']}

@@ -1315,6 +1315,11 @@ input::file-selector-button {
   display: block;
   margin-bottom: 4px;
 }
+.run-states {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+}
 .run-error {
   border-left: 2px solid var(--danger);
   padding: 10px 14px;
