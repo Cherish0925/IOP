@@ -300,6 +300,28 @@ class ViewCase(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, message):
                 self.view(MODES, trace, **options)
 
+    def test_where_a_trace_crosses_a_level(self):
+        # The current of a diode reaches 1 mA between 0.53 and 0.54 V; on the straight line between them, at 0.5352.
+        volts = {'name': 'volts', 'unit': 'V', 'start': 0, 'step': 0.01}
+        current = [1e-12 * math.expm1(0.01 * i / 0.02585) for i in range(60)]
+        found = self.view(current, {'dtype': 'float64', 'axes': [volts]}, level=1e-3)['crossings']
+        self.assertEqual((len(found), found[0]['rising'], found[0]['index']), (1, True, 53))
+        self.assertAlmostEqual(found[0]['at'], 0.5352, delta=1e-4)
+        # A dip crosses a level on its way down and back up, placed at the coordinates of its axis.
+        self.assertEqual(self.view(DIP, {'dtype': 'float64', 'axes': [FREQUENCY]}, level=0.6)['crossings'],
+                         [{'at': 1.058e9, 'rising': False, 'index': 580}, {'at': 1.062e9, 'rising': True, 'index': 619}])
+        # A magnetization loop swept up and back over listed fields crosses zero at the coercive field each way.
+        fields = [round(-1 + 0.1 * k, 10) for k in range(21)] + [round(1 - 0.1 * k, 10) for k in range(1, 21)]
+        moments = [math.tanh((h - 0.3 if k <= 20 else h + 0.3) / 0.1) for k, h in enumerate(fields)]
+        loop = self.view(moments, {'dtype': 'float64', 'axes': [{'name': 'field', 'coordinates': fields}]}, level=0)
+        self.assertEqual([(round(c['at'], 6), c['rising']) for c in loop['crossings']], [(0.3, True), (-0.3, False)])
+        for level in (math.inf, 'high'):
+            with self.assertRaisesRegex(ValueError, 'level is a finite number'):
+                self.view(DIP, {'dtype': 'float64'}, level=level)
+        with self.assertRaisesRegex(ValueError, 'A level is read along one axis; fix the others with at: column'):
+            self.view([0] * 6, {'dtype': 'float64', 'shape': [2, 3], 'axes': [{'name': 'row'}, {'name': 'column'}]},
+                      level=0)
+
     def test_inline_values_are_viewed_without_a_file(self):
         holder = arrays.result(_payload(DIP[:100], {}), arrays.check_result({'dtype': 'float64'}), None)
         self.assertEqual(views.view(holder, points=4)['envelope']['position'], [0, 25, 50, 75])
@@ -332,6 +354,9 @@ class ViewCase(unittest.TestCase):
              {'at': {'component': 'power'}, 'points': 40, 'peak': 'max'}),
             (cube, {'dtype': 'float64', 'shape': [6, 7, 50], 'axes': [{'name': 'a'}, {'name': 'b'}, {'name': 'c'}]},
              {'along': 'c', 'at': {'a': 4, 'b': 2}, 'peak': 'max'}),
+            (nan_trace, {'dtype': 'float64'}, {'points': 37, 'level': 3e9}),
+            (nan_trace, {'dtype': 'float32', 'byte_order': 'big'}, {'start': 101, 'stop': 9000, 'level': 3.5e9, 'peak': 'max'}),
+            ([-1, 1, -1, 1], {'dtype': 'float64', 'axes': [{'name': 'x', 'coordinates': [0, 2, 1, 3]}]}, {'level': 0}),
         ]
         compared = 0
         for values, description, options in cases:
@@ -354,6 +379,7 @@ class ViewCase(unittest.TestCase):
                     self.assertTrue(a is b is None or abs(a - b) <= 1e-9 * max(1.0, abs(b)))
                 self.assertEqual(native.get('peak'), python.get('peak'))
                 self.assertEqual(native.get('peaks'), python.get('peaks'))
+                self.assertEqual(native.get('crossings'), python.get('crossings'))
         # The chunks of a stream: the same values split across files at arbitrary byte boundaries.
         holder, path = saved(folder, nan_trace, {'dtype': 'float64'})
         payload, parts = path.read_bytes(), []
@@ -401,10 +427,14 @@ class ServiceViewCase(unittest.TestCase):
         self.assertEqual(self.client.read_array(sweep['id'], peak='min', points=2)['peak']['center'], 1.06e9)
         self.assertEqual([line['index'] for line in self.client.read_array(sweep['id'], peak='min', prominence=0.5)['peaks']],
                          [600])
+        self.assertEqual([(c['at'], c['rising']) for c in self.client.read_array(sweep['id'], level=0.6)['crossings']],
+                         [(1.058e9, False), (1.062e9, True)])
         printed = subprocess.check_output([sys.executable, '-m', 'ai4instruments.iop', '--endpoint', self.client.endpoint,
-                                           'array', sweep['id'], '--low', '1.0598e9', '--high', '1.0602e9', '--peak', 'min'],
-                                          env=dict(os.environ, IOP_TOKEN=self.config['token']), text=True)
-        self.assertEqual((json.loads(printed)['values'], json.loads(printed)['peak']['center']), (DIP[598:603], 1.06e9))
+                                           'array', sweep['id'], '--low', '1.0598e9', '--high', '1.0602e9', '--peak', 'min',
+                                           '--level', '0.201'], env=dict(os.environ, IOP_TOKEN=self.config['token']), text=True)
+        printed = json.loads(printed)
+        self.assertEqual((printed['values'], printed['peak']['center'], [c['rising'] for c in printed['crossings']]),
+                         (DIP[598:603], 1.06e9, [False, True]))
         with self.assertRaisesRegex(IOPError, "several arrays.*'items.trace', 'items.reference'"):
             self.client.read_array(pair['id'])
         self.assertEqual(self.client.read_array(pair['id'], 'items.reference', points=2)['envelope']['max'], [1.0, 1.0])
@@ -422,7 +452,7 @@ class ServiceViewCase(unittest.TestCase):
         # The schema field is inputSchema in MCP SDK 1.x and input_schema in 2.x.
         schema = getattr(tools['read_array'], 'input_schema', None) or tools['read_array'].inputSchema
         self.assertTrue({'operation_id', 'field', 'along', 'at', 'start', 'stop', 'low', 'high', 'points', 'peak',
-                         'prominence'} <= set(schema['properties']))
+                         'prominence', 'level'} <= set(schema['properties']))
         self.assertIn('read_array', tools['operation_result'].description)
 
     def test_scpi_arrays_carry_coordinates_read_from_the_instrument(self):

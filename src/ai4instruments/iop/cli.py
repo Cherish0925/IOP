@@ -157,6 +157,7 @@ def parser():
     p.add_argument('--low', type=float); p.add_argument('--high', type=float); p.add_argument('--points', type=int)
     p.add_argument('--peak', choices=['max', 'min'], help='Find the line at the highest value, or the lowest for a dip')
     p.add_argument('--prominence', type=float, help='With --peak, every line that stands out by this much')
+    p.add_argument('--level', type=float, help='Where the trace crosses this value, rising or falling')
     p = sub.add_parser('runs'); p.add_argument('--limit',type=int,default=20)
     for name in ['result','cancel','files','finish']:
         p = sub.add_parser(name); p.add_argument('run_id')
@@ -298,7 +299,7 @@ def main():
             output(client.read_array(args.operation_id, args.field, along=args.along,
                                      at=json.loads(args.at) if args.at else None, start=args.start, stop=args.stop,
                                      low=args.low, high=args.high, points=args.points, peak=args.peak,
-                                     prominence=args.prominence))
+                                     prominence=args.prominence, level=args.level))
         elif args.command == 'call':
             if args.request_id and not args.run_id:
                 raise ValueError('Use --run-id with --request-id to retry an experiment operation')

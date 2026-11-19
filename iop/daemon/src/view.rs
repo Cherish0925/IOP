@@ -119,6 +119,8 @@ struct Request {
     peak: Option<Peak>,
     /// With a peak: read every line that stands out by at least this much, rather than the one at the extreme.
     prominence: Option<f64>,
+    /// Read where the trace crosses this level, rising or falling.
+    level: Option<f64>,
     /// Listed coordinates for the selected trace; uniform axes can use positions.
     coordinates: Option<Vec<f64>>,
 }
@@ -127,7 +129,7 @@ struct Request {
 const CELLS: usize = 4_000_000;
 /// Positions a line is read over, at most; their values are kept while it is found.
 const TRACE: usize = 20_000_000;
-/// Lines one view reads, at most.
+/// Lines, or crossings of a level, one view reads at most.
 const LINES: usize = 1000;
 
 fn invalid(message: impl Into<String>) -> Box<dyn Error> {
@@ -248,17 +250,24 @@ fn parse(request: &Value) -> Result<Request, Box<dyn Error>> {
         Some("min") => Some(Peak::Min),
         _ => return Err(invalid("peak is max, or min for a dip")),
     };
-    if peak.is_some() {
+    let level = match &request["level"] {
+        Value::Null => None,
+        value => match value.as_f64() {
+            Some(l) if l.is_finite() => Some(l),
+            _ => return Err(invalid("level is a finite number")),
+        },
+    };
+    if peak.is_some() || level.is_some() {
         let one =
             along.len() == 1 && (0..shape.len()).all(|d| d == along[0].axis || fixed[d].is_some());
         if !one {
             return Err(invalid(
-                "A peak is read along one axis, with every other axis fixed",
+                "A peak or a level is read along one axis, with every other axis fixed",
             ));
         }
         if along[0].stop - along[0].start > TRACE {
             return Err(invalid(format!(
-                "A peak is read over at most {TRACE} positions; select fewer with start and stop"
+                "A peak or a level is read over at most {TRACE} positions; select fewer with start and stop"
             )));
         }
     }
@@ -286,11 +295,17 @@ fn parse(request: &Value) -> Result<Request, Box<dyn Error>> {
                     .ok_or_else(|| invalid("coordinates must be finite numbers"))
             })
             .collect::<Result<_, _>>()?;
-        if peak.is_none()
-            || values.len() != along[0].stop - along[0].start
-            || !(values.windows(2).all(|p| p[0] < p[1]) || values.windows(2).all(|p| p[0] > p[1]))
+        if (peak.is_none() && level.is_none()) || values.len() != along[0].stop - along[0].start {
+            return Err(invalid(
+                "coordinates gives one number for each selected position of a peak or a level",
+            ));
+        }
+        if peak.is_some()
+            && !(values.windows(2).all(|p| p[0] < p[1]) || values.windows(2).all(|p| p[0] > p[1]))
         {
-            return Err(invalid("A peak needs one strictly increasing or decreasing coordinate per selected position"));
+            return Err(invalid(
+                "A peak needs coordinates that strictly increase or decrease",
+            ));
         }
         Some(values)
     };
@@ -304,6 +319,7 @@ fn parse(request: &Value) -> Result<Request, Box<dyn Error>> {
         complex,
         peak,
         prominence,
+        level,
         coordinates,
     })
 }
@@ -436,7 +452,8 @@ fn view(r: &Request) -> Result<Value, Box<dyn Error>> {
         max_index: Vec::new(),
     };
     // Along one axis with the others fixed, positions are read in order: the trace a line is found in.
-    let mut trace = Vec::with_capacity(if r.peak.is_some() {
+    let traced = r.peak.is_some() || r.level.is_some();
+    let mut trace = Vec::with_capacity(if traced {
         r.along[0].stop - r.along[0].start
     } else {
         0
@@ -477,7 +494,7 @@ fn view(r: &Request) -> Result<Value, Box<dyn Error>> {
                         + ((index[f.axis] - f.start) as u128 * f.points as u128
                             / (f.stop - f.start) as u128) as usize
                 });
-                if r.peak.is_some() {
+                if traced {
                     trace.push(value);
                 }
                 let b = &mut buckets[cell];
@@ -551,7 +568,50 @@ fn view(r: &Request) -> Result<Value, Box<dyn Error>> {
             None => found["peak"] = line(&trace, r.along[0].start, peak, coordinates),
         }
     }
+    if let Some(level) = r.level {
+        found["crossings"] = crossings(&trace, r.along[0].start, level, r.coordinates.as_deref())?;
+    }
     Ok(found)
+}
+
+/// Where a trace that starts at position `first` crosses `level`, in order: between neighbouring finite
+/// values, one below the level and the other at or above it, on the straight line through them, rising when
+/// the later is the higher. Values that are not finite are passed over.
+fn crossings(
+    trace: &[f64],
+    first: usize,
+    level: f64,
+    coordinates: Option<&[f64]>,
+) -> Result<Value, Box<dyn Error>> {
+    let place = |index: usize| coordinates.map_or((first + index) as f64, |values| values[index]);
+    let mut found = Vec::new();
+    let mut last: Option<usize> = None;
+    for (j, &y) in trace.iter().enumerate() {
+        if !y.is_finite() {
+            continue;
+        }
+        if let Some(i) = last {
+            let x = trace[i];
+            if (x >= level) != (y >= level) {
+                if found.len() == LINES {
+                    return Err(invalid(format!(
+                        "The trace crosses this level more than {LINES} times; select fewer positions"
+                    )));
+                }
+                let mut crossing = json!({
+                    "index": first + i,
+                    "position": number(place(i) + (level - x) / (y - x) * (place(j) - place(i))),
+                    "rising": y > x,
+                });
+                if coordinates.is_some() {
+                    crossing["coordinates"] = json!(true);
+                }
+                found.push(crossing);
+            }
+        }
+        last = Some(j);
+    }
+    Ok(Value::Array(found))
 }
 
 /// The line at the extreme of a trace that starts at position `first`: the first highest value (lowest
@@ -1003,6 +1063,71 @@ mod tests {
             &name,
             &[400],
             json!({"peak": "max", "prominence": 0})
+        ))
+        .is_err());
+    }
+
+    #[test]
+    fn a_trace_crosses_a_level_between_samples() {
+        let crossings_of = |values: &[f64], extra: Value| {
+            let (_keep, name) = file(values);
+            view(&parse(&request(&name, &[values.len()], extra)).unwrap()).unwrap()["crossings"]
+                .clone()
+        };
+        let at = |found: &Value| -> Vec<(f64, bool)> {
+            let items = found.as_array().unwrap();
+            items
+                .iter()
+                .map(|c| {
+                    (
+                        c["position"].as_f64().unwrap(),
+                        c["rising"].as_bool().unwrap(),
+                    )
+                })
+                .collect()
+        };
+        // A sine of period 40, sampled half a position off its zeros, falls through zero at 19.5 and 59.5.
+        let sine: Vec<f64> = (0..100)
+            .map(|x| (std::f64::consts::TAU * (x as f64 + 0.5) / 40.0).sin())
+            .collect();
+        let found = at(&crossings_of(&sine, json!({"level": 0.0})));
+        let expected = [(19.5, false), (39.5, true), (59.5, false), (79.5, true)];
+        assert_eq!(found.len(), 4);
+        for ((position, rising), (center, up)) in found.iter().zip(expected) {
+            assert!(
+                (position - center).abs() < 1e-9 && *rising == up,
+                "{found:?}"
+            );
+        }
+        // Positions count from the start of the array; the index is the sample before the crossing.
+        let window = crossings_of(&sine, json!({"level": 0.0, "start": 30, "stop": 70}));
+        assert_eq!(
+            (window[0]["index"].clone(), window.as_array().unwrap().len()),
+            (json!(39), 2)
+        );
+        // A missing value is passed over, and a value at the level counts as reaching it.
+        assert_eq!(
+            at(&crossings_of(&[-1.0, f64::NAN, 1.0], json!({"level": 0.0}))),
+            [(1.0, true)]
+        );
+        assert_eq!(
+            at(&crossings_of(&[0.0, 1.0, 0.0], json!({"level": 1.0}))),
+            [(1.0, true), (1.0, false)]
+        );
+        // Listed coordinates need not increase: a loop swept up and back crosses at a coordinate each way.
+        let looped = crossings_of(
+            &[-1.0, 1.0, -1.0],
+            json!({"level": 0.0, "coordinates": [0.0, 2.0, 1.0]}),
+        );
+        assert_eq!(at(&looped), [(1.0, true), (1.5, false)]);
+        assert_eq!(looped[0]["coordinates"], json!(true));
+        let (_keep, name) = file(&sine);
+        assert!(parse(&request(&name, &[100], json!({"level": "zero"}))).is_err());
+        assert!(parse(&request(&name, &[50, 2], json!({"level": 0.0}))).is_err());
+        assert!(parse(&request(
+            &name,
+            &[3],
+            json!({"peak": "max", "coordinates": [0.0, 2.0, 1.0]})
         ))
         .is_err());
     }

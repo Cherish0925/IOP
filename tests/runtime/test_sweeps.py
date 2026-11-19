@@ -378,6 +378,10 @@ class SweepCase(unittest.TestCase):
         events = self.client.request(f'/v1/events?run_id={run.id}&limit=1000')['events']
         self.assertEqual([{key: e[key] for key in ('sweep', 'point', 'reading', 'skipped')} for e in events
                           if e['kind'] == 'sweep.stopped'], [{'sweep': 'ramp', 'skipped': 46, **stopped}])
+        # Between the last two points, the current reaches 1 mA at 0.5352 V; on the diode's curve, at 0.5357 V.
+        crossing = run.read_array('ramp.current', level=1e-3)['crossings']
+        self.assertEqual((len(crossing), crossing[0]['rising'], crossing[0]['index']), (1, True, 53))
+        self.assertAlmostEqual(crossing[0]['at'], 0.5352, delta=1e-4)
         # A reading that is not a number does not show that the limit holds: the sweep stops after its first point.
         run = self.submit([{'id': 'ramp', 'device': 'smu', 'operation': 'source', 'sweep': {'volts': [0, 0.1, 0.2]},
                             'until': {'path': ['curent'], 'above': 1e-3}}])

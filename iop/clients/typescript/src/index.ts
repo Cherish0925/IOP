@@ -57,6 +57,8 @@ export type ArrayView = {
   peak?: { center: number; width?: number; low?: number; high?: number; value: number; base: number; index: number } | null;
   /** With peak and prominence: every line that stands out by that much, in order of position, its width at half its prominence. */
   peaks?: { center: number; width?: number; low?: number; high?: number; value: number; base: number; prominence: number; index: number }[];
+  /** With level: each place the trace crosses it, between samples, in order; index is the sample before. */
+  crossings?: { at: number; rising: boolean; index: number }[];
 };
 /** The URL query of an array view; at, and a list with one value per axis along, are sent as JSON. */
 function viewQuery(options: ArrayViewOptions) {
@@ -66,7 +68,7 @@ function viewQuery(options: ArrayViewOptions) {
 }
 type PerAxis<T> = T | (T | null)[];
 export type ArrayViewOptions = { field?: string; along?: string | number | (string | number)[]; at?: Record<string, string | number>;
-  start?: PerAxis<number>; stop?: PerAxis<number>; low?: PerAxis<number>; high?: PerAxis<number>; points?: number | number[]; peak?: 'max' | 'min'; prominence?: number };
+  start?: PerAxis<number>; stop?: PerAxis<number>; low?: PerAxis<number>; high?: PerAxis<number>; points?: number | number[]; peak?: 'max' | 'min'; prominence?: number; level?: number };
 export type Submission = { name?: string; project?: string; experiment?: string; platform?: string; resources?: string[]; requirements?: Record<string, number>; parameters?: Record<string, unknown>; request_id?: string; requires?: string[]; upkeep?: boolean | Omit<Upkeep, 'conditions'> };
 export class IOPError extends Error {
   constructor(message: string, readonly status: number, readonly details: Record<string, unknown> = {}) { super(message); this.name = 'IOPError'; }

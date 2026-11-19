@@ -135,11 +135,12 @@ def _short(value):
 
 
 def plan(data, along=None, at=None, start=None, stop=None, low=None, high=None, points=POINTS, peak=None,
-         prominence=None):
+         prominence=None, level=None):
     """Resolve axis names, labels and coordinates into the request iop-execd and Python compute. ``along``
     names one axis, or a list of two for a map; start, stop, low and high then give one value per axis
     (None for none) and points a number for each axis or for both. ``peak`` is max or min, and with
-    ``prominence`` every line that stands out by that much is read."""
+    ``prominence`` every line that stands out by that much is read; ``level`` reads where the trace crosses
+    that value."""
     shape, axes = list(data['shape']), list(data.get('axes') or [])
     if len(axes) != len(shape) or any(not isinstance(a, dict) or not isinstance(a.get('name'), str) for a in axes):
         axes = []
@@ -192,9 +193,12 @@ def plan(data, along=None, at=None, start=None, stop=None, low=None, high=None, 
     if prominence is not None and (peak is None or isinstance(prominence, bool) or not isinstance(prominence, (int, float))
                                    or not math.isfinite(prominence) or prominence <= 0):
         raise ValueError('prominence is a positive number, read with a peak or a dip')
-    if peak is not None:
-        if peak not in ('max', 'min'):
-            raise ValueError('peak is max, or min for a dip')
+    if level is not None and (isinstance(level, bool) or not isinstance(level, (int, float)) or not math.isfinite(level)):
+        raise ValueError('level is a finite number')
+    if peak is not None and peak not in ('max', 'min'):
+        raise ValueError('peak is max, or min for a dip')
+    traced = peak is not None or level is not None
+    if traced:
         # An axis of one position is read at it.
         fixed.update((axis, 0) for axis, size in enumerate(shape)
                      if size == 1 and axis not in followed and axis not in fixed)
@@ -226,18 +230,21 @@ def plan(data, along=None, at=None, start=None, stop=None, low=None, high=None, 
         request['complex'] = complex_mode
     summarized = [named(i) for i in range(len(shape)) if i not in fixed and i not in followed
                   and not (i == component and complex_mode)]
-    if peak is not None:
+    if traced:
         if len(followed) > 1 or summarized:
-            raise ValueError('A peak is read along one axis; fix the others with at: '
-                             + ', '.join(map(str, summarized)))
-        request['peak'] = peak
+            raise ValueError(f'A {"peak" if peak is not None else "level"} is read along one axis; fix the others '
+                             'with at: ' + ', '.join(map(str, summarized)))
+        if peak is not None:
+            request['peak'] = peak
         if prominence is not None:
             request['prominence'] = prominence
+        if level is not None:
+            request['level'] = level
         listed = coordinates[0]
         if isinstance(listed, list):
             selected = listed[starts[0]:stops[0]]
-            if not (all(a < b for a, b in zip(selected, selected[1:]))
-                    or all(a > b for a, b in zip(selected, selected[1:]))):
+            if peak is not None and not (all(a < b for a, b in zip(selected, selected[1:]))
+                                         or all(a > b for a, b in zip(selected, selected[1:]))):
                 raise ValueError('A peak needs coordinates that strictly increase or decrease')
             request['coordinates'] = selected
     return request, {'axes': axes, 'coordinates': coordinates, 'at': shown, 'summarized': summarized, 'fixed': fixed}
@@ -344,6 +351,7 @@ def python(request, values=None):
             line = _lines(seq, start, request['peak'], request.get('coordinates'), request['prominence'])
         elif request.get('peak'):
             line = _line(seq, start, request['peak'], request.get('coordinates'))
+        crossed = _crossings(seq, start, request['level'], request.get('coordinates')) if 'level' in request else None
         clean = math.isfinite(sum(seq))
         parts = [seq[bounds[b] - start:bounds[b + 1] - start] for b in range(points)]
         if not clean:
@@ -363,7 +371,8 @@ def python(request, values=None):
                 'buckets': {'start': [bounds[:-1]], 'count': counted, 'finite': [len(p) for p in parts],
                             'min': [min(p) if p else None for p in parts], 'max': [max(p) if p else None for p in parts],
                             'mean': [math.fsum(p) / len(p) if p else None for p in parts]},
-                **({'peaks' if 'prominence' in request else 'peak': line} if request.get('peak') else {})}
+                **({'peaks' if 'prominence' in request else 'peak': line} if request.get('peak') else {}),
+                **({'crossings': crossed} if crossed is not None else {})}
 
     # Several elements per position, or two axes followed: walk the slabs read in storage order, as iop-execd does.
     count = finite = 0
@@ -466,6 +475,27 @@ def _lines(seq, first, peak, coordinates, least):
     return found
 
 
+def _crossings(seq, first, level, coordinates=None):
+    """Where a trace that starts at position ``first`` crosses ``level``, as iop-execd finds it, in order:
+    between neighbouring finite values, one below the level and the other at or above it, on the straight line
+    through them, rising when the later is the higher. Values that are not finite are passed over."""
+    place = (lambda index: first + index) if coordinates is None else coordinates.__getitem__
+    found, last = [], None
+    for j, y in enumerate(seq):
+        if not math.isfinite(y):
+            continue
+        if last is not None:
+            x = seq[last]
+            if (x >= level) != (y >= level):
+                if len(found) == LINES:
+                    raise ValueError(f'The trace crosses this level more than {LINES} times; select fewer positions')
+                found.append({'index': first + last,
+                              'position': _finite(place(last) + (level - x) / (y - x) * (place(j) - place(last))),
+                              'rising': y > x, **({'coordinates': True} if coordinates is not None else {})})
+        last = j
+    return found
+
+
 def _describe(seq, first, i, base, sign, coordinates):
     """The line at position ``i`` of a trace over a base: its position refined between its neighbours by the
     parabola through the three, its value there, and the positions, interpolated, where the trace on either
@@ -536,6 +566,12 @@ def _peak(found, coordinates):
     return line
 
 
+def _crossing(found, coordinates):
+    """A crossing found in positions, at the coordinate of its axis when it has them."""
+    at = found['position'] if coordinates is None or found.get('coordinates') else _between(coordinates, found['position'])
+    return {'at': at, 'rising': found['rising'], 'index': found['index']}
+
+
 def _flatten(values):
     if isinstance(values, list):
         for item in values:
@@ -545,23 +581,24 @@ def _flatten(values):
 
 
 def view(holder, source=None, along=None, at=None, start=None, stop=None, low=None, high=None, points=POINTS,
-         peak=None, prominence=None, field='', use_native=True):
+         peak=None, prominence=None, level=None, field='', use_native=True):
     """What one array says: a summary, and exact values when each position holds one element within
     ``points`` positions, otherwise the minimum, maximum and mean of ``points`` buckets of positions. Along
     two axes, the same over a map of buckets. With ``peak``, the line at the highest or lowest value, or with
-    ``prominence`` every line that stands out by that much.
+    ``prominence`` every line that stands out by that much; with ``level``, each place the trace crosses it.
 
     ``source`` is the file that holds the array, or ``[[path, size], ...]`` for the chunks of a stream or
     the files of a sweep's points; without it the inline values are read.
     """
     data = holder['data']
-    request, context = plan(data, along, at, start, stop, low, high, points, peak, prominence)
+    request, context = plan(data, along, at, start, stop, low, high, points, peak, prominence, level)
     if source is not None:
         request['segments'] = source if isinstance(source, list) else [[str(source), Path(source).stat().st_size]]
         computed = native(request) if use_native else None
         if (computed is None or peak is not None and ('peaks' if prominence is not None else 'peak') not in computed
-                or request.get('coordinates') and computed.get('peak') and not computed['peak'].get('coordinates')):
-            # An iop-execd that does not find lines leaves them to Python.
+                or request.get('coordinates') and computed.get('peak') and not computed['peak'].get('coordinates')
+                or level is not None and 'crossings' not in computed):
+            # An iop-execd that does not find lines or crossings leaves them to Python.
             computed = python(request)
     else:
         inline = holder.get('values')
@@ -620,6 +657,8 @@ def view(holder, source=None, along=None, at=None, start=None, stop=None, low=No
         result['peak'] = _peak(computed['peak'], context['coordinates'][0])
     if 'peaks' in computed:
         result['peaks'] = [_peak(line, context['coordinates'][0]) for line in computed['peaks']]
+    if 'crossings' in computed:
+        result['crossings'] = [_crossing(found, context['coordinates'][0]) for found in computed['crossings']]
     sizes = [len(starts) for starts in buckets['start']]
     shaped = (lambda values: values) if one else (lambda values: _nest(values, sizes))
     if exact:
@@ -674,7 +713,7 @@ def options(query):
     return {'field': query.get('field'), 'along': value('along', None), 'at': at, 'start': value('start', int),
             'stop': value('stop', int), 'low': value('low', float), 'high': value('high', float),
             'points': value('points', int) if 'points' in query else POINTS, 'peak': query.get('peak'),
-            'prominence': value('prominence', float)}
+            'prominence': value('prominence', float), 'level': value('level', float)}
 
 
 def _source(holder, folder=None, output=None):
@@ -820,7 +859,7 @@ def result_npy(engine, run_id, request_id=None, field=None):
 # A step binding or a saved operation's named result can take its value through a view of an array:
 # {"step": ..., "view": {...}, "path": [...]} reads path inside the view. These views are computed
 # once, when the operation that returned the array completes, and kept in its record as "derived".
-OPTIONS = ('field', 'along', 'at', 'start', 'stop', 'low', 'high', 'points', 'peak', 'prominence')
+OPTIONS = ('field', 'along', 'at', 'start', 'stop', 'low', 'high', 'points', 'peak', 'prominence', 'level')
 
 
 def check(value, what):
@@ -828,14 +867,15 @@ def check(value, what):
     if not isinstance(value, dict) or set(value) - set(OPTIONS):
         raise ValueError(f'{what}: view takes ' + ', '.join(OPTIONS))
     kinds = {'field': (str,), 'along': (str, int), 'at': (dict,), 'start': (int,), 'stop': (int,),
-             'low': (int, float), 'high': (int, float), 'points': (int,), 'peak': (str,), 'prominence': (int, float)}
+             'low': (int, float), 'high': (int, float), 'points': (int,), 'peak': (str,), 'prominence': (int, float),
+             'level': (int, float)}
     if value.get('peak', 'max') not in ('max', 'min'):
         raise ValueError(f'{what}: view peak is max, or min for a dip')
     if 'prominence' in value and 'peak' not in value:
         raise ValueError(f'{what}: view prominence reads the lines of a peak or a dip; give peak')
     for key, item in value.items():
-        # Along two axes, the options other than field, at, peak and prominence give one value per axis.
-        items = item if isinstance(item, list) and key not in ('field', 'at', 'peak', 'prominence') else [item]
+        # Along two axes, the options other than field, at, peak, prominence and level give one value per axis.
+        items = item if isinstance(item, list) and key not in ('field', 'at', 'peak', 'prominence', 'level') else [item]
         if any(isinstance(i, bool) or not (isinstance(i, kinds[key]) or i is None and key in ('start', 'stop', 'low', 'high'))
                for i in items) or not items:
             raise ValueError(f'{what}: view {key} has the wrong type')

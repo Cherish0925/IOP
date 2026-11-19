@@ -106,7 +106,7 @@ The reply holds `summary` (count, minimum and maximum with their index and coord
 
 `peak` finds the line at the highest value along one axis, the others fixed with `at`, or with `min` the dip at the lowest. `center` lies between samples, at the vertex of the parabola through the extreme and its two neighbours; `base` is the opposite extreme of the selection; `low` and `high` are where the trace, going out from the line, first comes halfway from its `value` to the base, interpolated between samples, and `width` is the distance between them: the full width at half maximum, of a dip measured from its base. Positions are in the unit of the axis, `value` and `base` in that of the array. When a trace holds several lines, select one with the view's `low` and `high`. / `peak` 沿一个轴（其余的轴用 `at` 固定）找出最高处的谱线，`min` 则找最低处的凹陷。`center` 位于采样点之间，是极值点与两侧相邻点所定抛物线的顶点；`base` 是所选范围内另一端的极值；`low`、`high` 是从谱线向两侧、数值第一次到达 `value` 与 `base` 中点的位置（在采样点间插值），`width` 是两者之差，即半高全宽，凹陷从其基线算起。位置以该轴的单位给出，`value`、`base` 以数组的单位给出。一条迹线有多条谱线时，用视图的 `low`、`high` 选出一条。
 
-Listed coordinates are used directly for the fit and half-height interpolation, including uneven spacing; they must strictly increase or decrease over the selected trace. An extreme at an endpoint stays at that sample. / 显式坐标直接参与拟合与半高位置插值，支持非均匀间距；所选迹线的坐标必须严格递增或递减。极值在端点时保留该采样点的位置。
+Listed coordinates are used directly for the fit and half-height interpolation, including uneven spacing; for a peak they must strictly increase or decrease over the selected trace. An extreme at an endpoint stays at that sample. / 显式坐标直接参与拟合与半高位置插值，支持非均匀间距；读取谱线时，所选迹线的坐标必须严格递增或递减。极值在端点时保留该采样点的位置。
 
 ```json
 {"peak": {"center": 1.06e9, "width": 3.996e6, "low": 1.058e9, "high": 1.062e9, "value": 0.2, "base": 0.999, "index": 600}}
@@ -116,6 +116,12 @@ With `prominence`, `peaks` lists every line that stands out by at least that muc
 
 ```json
 {"peaks": [{"center": 1.021297e9, "width": 2.098e6, "low": 1.020244e9, "high": 1.022341e9, "value": 0.225, "base": 1.001, "prominence": 0.776, "index": 213}, ...]}
+```
+
+`level` reads where the trace crosses a value: `crossings` lists each place, in order of position, between the two neighbouring samples on either side of the level, on the straight line through them, with `rising` true when the trace goes up through it and `index` the sample before. This gives the voltage at which a diode reaches a current, the frequencies where a filter is 3 dB down, the edges of a pulse at 10% and 90% of its height, or the coercive field of a magnetization loop. Listed coordinates need not increase, so a loop swept up and back crosses zero once on each branch; missing values are passed over, and at most 1000 crossings are read. / `level` 读取迹线穿过某个数值的位置：`crossings` 按位置列出每一处，取该数值两侧相邻两个采样点所连直线上的位置，`rising` 为真表示向上穿过，`index` 是穿越之前的采样点。由此可得二极管达到某一电流时的电压、滤波器下降 3 dB 处的频率、脉冲在 10% 和 90% 高度处的边沿、磁滞回线的矫顽场。显式坐标不必递增，往返扫描的回线在每一支上各穿过零一次；缺失值跳过，一次最多读出 1000 处。
+
+```json
+{"crossings": [{"at": 1.058e9, "rising": false, "index": 580}, {"at": 1.062e9, "rising": true, "index": 619}]}
 ```
 
 Saved operations and step bindings can take a value through a view, such as the frequency of a resonance; see [operations](operations.md). A data stream of a numeric format reads the same way, as samples by channels; see [continuous data](../../iop/continuity.md#continuous-data). `GET /v1/runs/{id}/array` reads an array an experiment's result holds, such as what a [sweep](operations.md#sweeps--扫描) gathered, and with `request_id` one in the results of a batch. / 已保存操作和步骤绑定也可以经视图取值，例如谐振频率，见[操作](operations.md)。数值格式的数据流同样可读，形状为“采样 × 通道”，见[连续数据](../../iop/continuity.zh-CN.md#连续数据)。`GET /v1/runs/{id}/array` 读取实验结果中的数组，例如[扫描](operations.md#sweeps--扫描)汇集的数组；加 `request_id` 则读取某个批次结果中的数组。
