@@ -101,6 +101,37 @@
       },
       "uniqueItems": true,
       "description": "Conditions that must hold for the experiment to be accepted: a platform's, or an instrument's named <device>.<id>."
+    },
+    "upkeep": {
+      "description": "Keep the required conditions while the experiment runs: before an operation starts, the Runtime maintains what is unknown, due, about to expire or lost and due for another attempt, inside the experiment, and the operation starts after that pass. Accepted while they do not hold yet.",
+      "oneOf": [
+        {
+          "const": true
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "ahead_s": {
+              "type": "number",
+              "minimum": 0,
+              "default": 0,
+              "description": "Renew this long before validity ends or the drift forecast reaches the tolerance."
+            },
+            "retry_s": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "default": 1800,
+              "description": "Wait before another attempt at a condition the last attempt did not bring to hold."
+            },
+            "correct": {
+              "type": "boolean",
+              "default": true,
+              "description": "false: observe only; an operation that relies on a condition found lost fails."
+            }
+          }
+        }
+      ]
     }
   },
   "$defs": {

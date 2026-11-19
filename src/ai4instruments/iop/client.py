@@ -313,12 +313,14 @@ class Client:
                               {'request_id': request_id or str(uuid.uuid4())})
         return Run(self, record['id'])
 
-    def submit(self, steps, *, name='Experiment', project=None, experiment=None, resources=(), request_id=None, parameters=None, platform=None, requirements=None, requires=()):
-        """Submit a graph of steps. ``requires`` names conditions that must hold for it to be accepted."""
+    def submit(self, steps, *, name='Experiment', project=None, experiment=None, resources=(), request_id=None, parameters=None, platform=None, requirements=None, requires=(), upkeep=None):
+        """Submit a graph of steps. ``requires`` names conditions that must hold for it to be accepted. With
+        ``upkeep`` (True, or ``{ahead_s, retry_s, correct}``) the Runtime keeps them while it runs: before an
+        operation starts, it maintains what is due or about to expire, inside this experiment."""
         return Run(self, self.request('/v1/runs', {'name':name, 'project':project, 'experiment':experiment,
                    'steps':steps, 'resources':list(resources), 'parameters':parameters or {}, 'platform': platform,
                    'requirements':requirements or {}, 'request_id':request_id or str(uuid.uuid4()),
-                   **({'requires': list(requires)} if requires else {})})['id'])
+                   **({'requires': list(requires)} if requires else {}), **({'upkeep': upkeep} if upkeep else {})})['id'])
 
     def start_experiment(self, *, name='Experiment', project=None, experiment=None, resources=(),
                          request_id=None, parameters=None, platform=None, requirements=None, requires=(), upkeep=None):

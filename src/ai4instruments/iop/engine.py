@@ -343,12 +343,16 @@ class Engine:
         amounts.update(item.get('requirements', {}))
         return amounts
 
+    def running(self, run_id):
+        """Whether an operation of this experiment is in progress."""
+        return any(self.operations[oid]['run_id'] == run_id for oid in self.futures)
+
     def _index_run(self, run):
         self.ready[run['id']] = OrderedDict()
         run['involved_resources'] = sorted(self._amounts(run, reserve=True).keys() |
             set().union(*(self._amounts(self.operations[o]).keys() for o in run['operations'])))
         ops = [self.operations[oid] for oid in run['operations']]
-        by_step = {o['step']: o for o in ops if o.get('step') is not None}
+        by_step = {o['step']: o for o in ops if o.get('step') is not None and not o.get('maintenance')}
         self.step_ids[run['id']] = {name: op['id'] for name, op in by_step.items()}
         minimum = self._amounts(run, reserve=True)
         for op in ops:
@@ -899,8 +903,9 @@ class Engine:
     def _assembled(self, run):
         """A step graph's result from its operations completed so far: each Basic Operation's result under its
         step, each use of a saved operation its named result, and each sweep what it gathered; the operations
-        of a sweep's points stay in their records."""
-        by_step = {self.operations[oid]['step']: self.operations[oid] for oid in run['operations']}
+        of a sweep's points and of maintenance inside the experiment stay in their records."""
+        ops = (self.operations[oid] for oid in run['operations'])
+        by_step = {op['step']: op for op in ops if not op.get('maintenance')}
         sweeps = run.get('sweeps', {})
         result = {step: op.get('result') for step, op in by_step.items()
                   if op['state'] == 'completed' and not op.get('swept_by')}
@@ -992,14 +997,21 @@ class Engine:
             required = self.conditions.required(spec, run.get('calls'), program)
             if 'upkeep' in spec:
                 from .conditions import experiment_upkeep
-                if kind == 'workflow' or not required:
-                    raise ValueError('upkeep keeps the conditions a continuous experiment or program requires; name them in requires')
+                if not required:
+                    raise ValueError('upkeep keeps the conditions an experiment requires; name them in requires')
                 run['upkeep'] = experiment_upkeep(spec['upkeep'])
                 amounts, _ = self.conditions.requirements(required)
-                missing = {k: n for k, n in amounts.items() if n > self._amounts(run, reserve=True).get(k, 0)}
-                if missing:
-                    raise RequestError('maintenance_resources', 'Reserve the devices and resource quantities used by '
-                                       'maintenance when starting an experiment that keeps its conditions.', resources=missing)
+                if kind != 'workflow':
+                    missing = {k: n for k, n in amounts.items() if n > self._amounts(run, reserve=True).get(k, 0)}
+                    if missing:
+                        raise RequestError('maintenance_resources', 'Reserve the devices and resource quantities used by '
+                                           'maintenance when starting an experiment that keeps its conditions.', resources=missing)
+                elif run['resources'] or run['requirements']:
+                    # A step graph that reserves what its steps use reserves what keeping its conditions uses too.
+                    run['resources'] = sorted(set(run['resources']) | {k for k in amounts if not k.startswith('pool:')})
+                    for key, count in amounts.items():
+                        if key.startswith('pool:'):
+                            run['requirements'][key] = max(run['requirements'].get(key, 0), count)
             if required:
                 # The experiment is accepted only while what it relies on holds; the record keeps what that was.
                 # One that keeps its conditions is accepted, and keeps them before its first operation.
@@ -1561,6 +1573,12 @@ class Engine:
             run_ids = run_ids[index:] + run_ids[:index]
         candidates = deque((rid, iter(self.ready[rid])) for rid in run_ids)
         maintaining = {job['run_id'] for job in self.conditions.jobs.values() if job['state'] == 'running'}
+        # An experiment that keeps its conditions starts no operation while a pass is due; the pass starts inside
+        # it once none of its operations is running, and its operations continue after the pass.
+        for rid in run_ids:
+            run = self.runs[rid]
+            if run.get('upkeep') and rid not in maintaining and self.conditions.keep(run, run['requires']):
+                maintaining.add(rid)
         blocked = set()
         dispatch, stops = [], {}
         pooled = len(self.futures) - len(self.waiting_steps)

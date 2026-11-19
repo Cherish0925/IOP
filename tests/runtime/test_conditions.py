@@ -26,7 +26,8 @@ class Part(Driver):
                         'where': {'effect': 'observe', 'parameters': {}},
                         **{'set_' + axis: {'parameters': {'position': {'type': 'number', 'minimum': -1, 'maximum': 1}}}
                            for axis in 'xy'}},
-            'detector': {'read': {'effect': 'observe', 'parameters': {}}},
+            'detector': {'read': {'effect': 'observe', 'parameters': {}},
+                         'integrate': {'effect': 'observe', 'parameters': {'seconds': {'type': 'number', 'minimum': 0}}}},
         }[self.config['part']]}
 
     def invoke(self, operation, arguments, cancelled):
@@ -41,6 +42,12 @@ class Part(Driver):
             WORLD[operation[-1]] = arguments['position']
         elif operation == 'where':
             return {'x': WORLD['x'], 'y': WORLD['y']}
+        elif operation == 'integrate':
+            # A longer reading, while the coupling fades by WORLD['fade'].
+            time.sleep(arguments['seconds'])
+            signal = WORLD['level'] * WORLD['alignment']
+            WORLD['alignment'] *= WORLD.get('fade', 1.0)
+            return {'signal': signal}
         elif self.config['part'] == 'source':
             return {'level': WORLD['level']}
         else:

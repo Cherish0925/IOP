@@ -11,8 +11,10 @@ conditions may depend on them.
 
 A platform that declares ``upkeep`` has its conditions kept by the Runtime: when its instruments
 are idle, a pass starts for what is unknown, due, about to expire, forecast to leave its tolerance,
-or lost and due for another attempt. Each pass is recorded like any other, with ``automatic`` and
-its reasons, and never runs a step that asks a person.
+or lost and due for another attempt. An experiment that declares it, a step graph, a continuous
+experiment or a program, has the conditions it requires kept inside it, between its operations.
+Each pass is recorded like any other, with ``automatic`` and its reasons, and never runs a step
+that asks a person.
 """
 import copy
 import math
@@ -227,7 +229,7 @@ def upkeep(value, names):
 
 
 def experiment_upkeep(value):
-    """The upkeep a continuous experiment or program declares for the conditions it requires."""
+    """The upkeep an experiment declares for the conditions it requires."""
     if value is True:
         value = {}
     if not isinstance(value, dict) or 'conditions' in value:
@@ -790,15 +792,16 @@ class Conditions:
                                                'request_id': job['id']})['id']
             else:
                 run = engine.runs.get(run_id)
-                if not run or not (run['kind'] == 'external' and run['state'] in {'queued', 'running'} or
-                                   run['kind'] == 'package' and run['state'] == 'running'):
-                    raise ValueError('Maintenance inside an experiment requires an active experiment program')
-                if engine.remaining.get(run_id, 0):
-                    raise RequestError('maintenance_busy', 'Wait for this experiment\'s current operations before maintenance.',
+                if not run or not (run['state'] == 'running' or run['kind'] == 'external' and run['state'] == 'queued'):
+                    raise ValueError('Maintenance inside an experiment requires an active experiment')
+                # A pass starts between the experiment's operations; those queued meanwhile wait for it.
+                if engine.running(run_id):
+                    raise RequestError('maintenance_busy', 'Wait for this experiment\'s operations in progress before maintenance.',
                                        run_id=run_id)
                 reserved = engine._amounts(run, reserve=True)
                 missing = {k: n for k, n in amounts.items() if n > reserved.get(k, 0)}
-                if missing:
+                # A step graph without a reservation claims each instrument when a step uses it, as its own steps do.
+                if missing and (reserved or run['kind'] != 'workflow'):
                     raise RequestError('maintenance_resources',
                         'Reserve the devices and resource quantities used by maintenance when starting this experiment.',
                         resources=missing, run_id=run_id)
@@ -1107,9 +1110,10 @@ class Conditions:
     def keep(self, run, names):
         """Inside an experiment that declares upkeep: start or join a pass when what it relies on needs one.
 
-        Returns True while a pass runs in the experiment; its other operations wait for that pass.
+        Returns True while its operations wait: a pass runs in the experiment, or one is due and starts once
+        none of its operations is running.
         """
-        if not run.get('upkeep') or not names or run['kind'] == 'package' and run['state'] == 'queued':
+        if not run.get('upkeep') or not names or run['kind'] != 'external' and run['state'] == 'queued':
             return False
         for job in self.jobs.values():
             if job['state'] == 'running' and job['run_id'] == run['id']:
@@ -1118,14 +1122,21 @@ class Conditions:
                     raise RequestError('maintenance_active', 'Wait for this maintenance before submitting operations '
                                        'that require additional conditions.', maintenance=job['id'], conditions=uncovered)
                 return True
-        if self.engine.remaining.get(run['id'], 0):
-            return False
         plan = self._plan(self.closure(names), run['upkeep'], run['id'])
         if not plan['reasons']:
             self._wait(run['id'], None)
             return False
+        if self.engine.running(run['id']):
+            return True
         try:
             self._start(run['id'], list(plan['reasons']), plan, run_id=run['id'])
+        except RequestError as error:
+            if error.code != 'maintenance_active':
+                self._wait(run['id'], str(error))
+                return False
+            # Another pass keeps these conditions; the experiment waits for it.
+            self._wait(run['id'], 'waiting for maintenance ' + error.details['maintenance'])
+            return True
         except (ValueError, KeyError) as error:
             self._wait(run['id'], str(error))
             return False

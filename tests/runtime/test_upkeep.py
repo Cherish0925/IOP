@@ -188,6 +188,31 @@ class UpkeepCase(unittest.TestCase):
                          (experiment.id, True, {'path.aligned': 'validity ends'}))
         experiment.finish()
 
+    def test_a_step_graph_keeps_what_it_relies_on_between_its_operations(self):
+        # Only the step graph starts passes here, not the periodic plan.
+        self.engine.config['upkeep_interval_s'] = 3600
+        self.client.configure_platform(chain(SOURCE, {**PATH, 'valid_for': 0.3}, keep=False))
+        # Not yet observed, and the coupling fades while the detector integrates: six readings of 0.15 s
+        # outlast the alignment's validity and its tolerance.
+        WORLD['fade'] = 0.6
+        self.addCleanup(WORLD.pop, 'fade')
+        steps = [{'id': 'scan', 'device': 'detector', 'operation': 'integrate', 'arguments': {'seconds': 0.15}, 'repeat': 6}]
+        # One reserves what its steps use, and with it what keeps the alignment; one claims each instrument in turn.
+        for resources in (['detector'], []):
+            info = self.client.submit(steps, platform='chain', resources=resources, requires=['path.aligned'],
+                                      upkeep=True).wait(timeout=30)
+            self.assertEqual(info['state'], 'completed')
+            operations = info['operation_records']
+            points = [op for op in operations if op['step'].startswith('scan.')]
+            upkept = [op for op in operations if op.get('maintenance')]
+            # Renewed between readings and realigned when found drifted.
+            self.assertEqual(len(points), 6)
+            self.assertGreaterEqual(len({op['conditions']['path.aligned']['accepted'] for op in points}), 2)
+            self.assertIn('coupler', {op['device'] for op in upkept})
+            self.assertEqual(info['in_doubt']['path.aligned']['outcome'], 'drifted')
+            self.assertEqual(list(info['result']), ['scan'])
+            self.assertEqual({'device:coupler', 'device:source'} <= set(info['resources']), bool(resources))
+
     def test_rejected_operations_do_not_start_instrument_maintenance(self):
         from ai4instruments.iop import batches
         self.engine.config['upkeep_interval_s'] = 3600
