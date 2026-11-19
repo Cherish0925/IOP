@@ -333,6 +333,7 @@ export async function refresh(force = false) {
         api("discovery?cached=true"),
         api("library"),
         api("conditions"),
+        api("upkeep"),
       );
     const values = await Promise.all(tasks);
     state.status = values[0];
@@ -346,6 +347,7 @@ export async function refresh(force = false) {
         values[5].updated || values[5].scanning ? values[5] : state.inventory;
       state.library = values[6];
       state.conditions = values[7];
+      state.upkeep = values[8];
       lastInventory = Date.now();
     }
     if (!state.ui) {
@@ -520,8 +522,9 @@ $("#new-run").onclick = () => newExperiment();
 $("#refresh-button").onclick = (e) =>
   busy(e.currentTarget, () => refresh(true));
 $("#modal-close").onclick = closeModal;
+// The close event arrives after close(); a detail opened again in between keeps its run.
 $("#modal").addEventListener("close", () => {
-  delete $("#modal").dataset.runDetail;
+  if (!$("#modal").open) delete $("#modal").dataset.runDetail;
 });
 $("#search-open").onclick = openPalette;
 $("#palette-input").oninput = palette;

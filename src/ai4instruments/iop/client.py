@@ -233,30 +233,64 @@ class Client:
         return self.request('/v1/library/' + quote(operation_id, safe='') + '/files/' + quote(name, safe='/') +
                             ('?' + urlencode({'revision': revision}) if revision else ''))
 
-    def conditions(self, platform=None):
-        """What must hold for experiments, with what is known now: holds, due, lost or unknown."""
-        return self.request('/v1/conditions' + ('?' + urlencode({'platform': platform}) if platform else ''))
+    def conditions(self, platform=None, device=None):
+        """What must hold for experiments, with what is known now: holds, due, lost or unknown.
+
+        ``platform`` gives a platform's conditions with those of its instruments; ``device`` one instrument's.
+        """
+        query = {k: v for k, v in (('platform', platform), ('device', device)) if v}
+        return self.request('/v1/conditions' + ('?' + urlencode(query) if query else ''))
 
     def condition(self, condition_id):
         """One condition with its definition, state, statistics and latest records."""
         return self.request('/v1/conditions/' + quote(condition_id, safe=''))
 
-    def maintain(self, platform=None, conditions=None, *, run_id=None, request_id=None, force=False, timeout=None):
+    def read_array(self, operation_id, field=None, *, along=None, at=None, start=None, stop=None, low=None,
+                   high=None, points=None, peak=None):
+        """What an array an operation returned says, without moving all its values.
+
+        Returns the count, extremes with their index (and coordinate), mean and standard deviation,
+        then exact values when each position holds one element and there are at most ``points``
+        positions, otherwise the minimum, maximum and mean of ``points`` buckets. ``along`` names the
+        axis followed, or a list of two for a map, with start, stop, low and high then given per axis;
+        ``at`` fixes others by index or label, and ``{"component": "arg"}`` reads complex values as their
+        argument, ``"power"`` as their squared modulus (abs by default). ``start``/``stop`` select positions and ``low``/``high`` coordinates.
+        ``peak`` ("max", or "min" for a dip) adds the line there: its center between samples, its width
+        where it is halfway to the opposite extreme, and its value. ``field`` names the array when a result
+        holds several.
+        """
+        return self.request('/v1/operations/' + quote(operation_id, safe='') + '/array' +
+                            view_query(field=field, along=along, at=at, start=start, stop=stop, low=low, high=high,
+                                       points=points, peak=peak))
+
+    def array_file(self, operation_id, field=None):
+        """The whole array an operation returned as the bytes of a NumPy .npy file, which numpy.load reads; a last
+        axis of re/im pairs becomes complex values."""
+        return self.request('/v1/operations/' + quote(operation_id, safe='') + '/array.npy' + view_query(field=field),
+                            binary=True)
+
+    def maintain(self, platform=None, conditions=None, *, device=None, run_id=None, request_id=None, force=False, timeout=None):
         """Verify the conditions that are due and correct those that drifted, in dependency order.
 
         Returns the report when the pass has ended; ``holds`` says whether every named condition holds.
+        A platform's pass includes the conditions of its instruments; ``device`` maintains one instrument's.
         Inside an experiment pass its ``run_id``; ``force`` verifies conditions whose state still holds.
         """
         request_id = request_id or uuid.uuid4().hex
         deadline = time.monotonic() + timeout if timeout is not None else None
         wait = min(25, max(0, self.timeout - 1))
         job = self.request('/v1/conditions/maintain?' + urlencode({'wait': wait}), {
-            'platform': platform, 'conditions': conditions, 'run_id': run_id, 'request_id': request_id, 'force': force})
+            'platform': platform, 'conditions': conditions, 'run_id': run_id, 'request_id': request_id, 'force': force,
+            **({'device': device} if device else {})})
         while not job['complete']:
             if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError('Maintenance is still running: ' + job['id'])
             job = self.request('/v1/maintenance/' + job['id'] + '?' + urlencode({'wait': wait}))
         return job
+
+    def upkeep(self, platform=None):
+        """Platforms whose conditions the Runtime keeps: settings, pending reasons, the next foreseen pass and the last one."""
+        return self.request('/v1/upkeep' + ('?' + urlencode({'platform': platform}) if platform else ''))
 
     def invalidate(self, conditions, reason):
         """Record that something disturbed the system; these conditions are verified again before use."""
@@ -277,32 +311,36 @@ class Client:
         return Run(self, record['id'])
 
     def submit(self, steps, *, name='Experiment', project=None, experiment=None, resources=(), request_id=None, parameters=None, platform=None, requirements=None, requires=()):
-        """Submit a graph of steps. ``requires`` names platform conditions that must hold for it to be accepted."""
+        """Submit a graph of steps. ``requires`` names conditions that must hold for it to be accepted."""
         return Run(self, self.request('/v1/runs', {'name':name, 'project':project, 'experiment':experiment,
                    'steps':steps, 'resources':list(resources), 'parameters':parameters or {}, 'platform': platform,
                    'requirements':requirements or {}, 'request_id':request_id or str(uuid.uuid4()),
                    **({'requires': list(requires)} if requires else {})})['id'])
 
     def start_experiment(self, *, name='Experiment', project=None, experiment=None, resources=(),
-                         request_id=None, parameters=None, platform=None, requirements=None, requires=()):
+                         request_id=None, parameters=None, platform=None, requirements=None, requires=(), upkeep=None):
         """Start one externally driven run; retain its ID and call finish after saving results.
 
-        ``requires`` names platform conditions the experiment relies on: its operations are accepted
-        while they hold, and ``run.maintain()`` restores them when one is due.
+        ``requires`` names the conditions the experiment relies on: its operations are accepted
+        while they hold, and ``run.maintain()`` restores them when one is due. With ``upkeep`` (True, or
+        ``{ahead_s, retry_s, correct}``) the Runtime keeps them: before an operation and between
+        operations it maintains what is due or about to expire, inside this experiment. Reserve the
+        devices that maintenance uses.
         """
         return Run(self, self.request('/v1/runs', {'kind':'external', 'name':name, 'project':project,
                    'experiment':experiment, 'resources':list(resources), 'parameters':parameters or {},
                    'platform':platform, 'requirements':requirements or {},
                    'request_id':request_id or str(uuid.uuid4()),
-                   **({'requires': list(requires)} if requires else {})})['id'])
+                   **({'requires': list(requires)} if requires else {}),
+                   **({'upkeep': upkeep} if upkeep else {})})['id'])
 
-    def submit_package(self, path, *, name=None, project=None, experiment=None, resources=(), parameters=None, request_id=None, platform=None, requirements=None, requires=()):
+    def submit_package(self, path, *, name=None, project=None, experiment=None, resources=(), parameters=None, request_id=None, platform=None, requirements=None, requires=(), upkeep=None):
         path = Path(path)
         data = archive(path)
         run = self.request('/v1/packages', {'archive':base64.b64encode(data).decode(), 'name':name or path.stem,
                            'project':project, 'experiment':experiment, 'resources':list(resources), 'platform':platform,
                            'parameters':parameters or {}, 'requirements':requirements or {}, 'request_id':request_id or str(uuid.uuid4()),
-                           **({'requires': list(requires)} if requires else {})})
+                           **({'requires': list(requires)} if requires else {}), **({'upkeep': upkeep} if upkeep else {})})
         return Run(self, run['id'])
 
     def run(self, run_id):
@@ -375,6 +413,26 @@ class Run:
     def resume(self, request_id=None):
         return self.client.request('/v1/runs/' + self.id + '/resume', {'request_id': request_id or str(uuid.uuid4())})
 
+    def read_array(self, field=None, *, request_id=None, along=None, at=None, start=None, stop=None, low=None,
+                   high=None, points=None, peak=None):
+        """What an array this experiment's result holds says, such as what a sweep gathered; with
+        ``request_id``, an array in the results of that batch. The options are those of Client.read_array."""
+        query = view_query(field=field, along=along, at=at, start=start, stop=stop, low=low, high=high, points=points,
+                           peak=peak)
+        if request_id is not None:
+            query += ('&' if query else '?') + urlencode({'request_id': request_id})
+        return self.client.request('/v1/runs/' + self.id + '/array' + query)
+
+    def array_file(self, field=None, *, request_id=None):
+        """A whole array this experiment's result holds, such as a map a sweep gathered from its points' files, as
+        the bytes of a NumPy .npy file; with ``request_id``, one in the results of that batch."""
+        query = view_query(field=field, request_id=request_id)
+        return self.client.request('/v1/runs/' + self.id + '/array.npy' + query, binary=True)
+
+    def streams(self):
+        """The data streams of this experiment with their descriptions, chunk counts and sizes."""
+        return self.client.request('/v1/runs/' + self.id + '/streams')
+
     def stream(self, name, definition=None):
         stream = DataStream(self, name)
         if definition is not None:
@@ -433,11 +491,13 @@ class Run:
             raise IOPError('Operation batch did not complete', details=result)
         return result['operations']
 
-    def call(self, operation, arguments=None, *, request_id=None, timeout=None, maintain=False):
-        """Use a saved Standard or Workflow Operation in this experiment and return its named result."""
+    def call(self, operation, arguments=None, *, sweep=None, request_id=None, timeout=None, maintain=False):
+        """Use a saved Standard or Workflow Operation in this experiment and return its named result. With
+        ``sweep``, such as {"angle": {"start": -10, "stop": 10, "points": 21}}, it is used at each point and
+        its named results return gathered into arrays over the sweep."""
         request_id = request_id or uuid.uuid4().hex
-        self.batch([{'id': 'call', 'operation': operation, 'arguments': arguments or {}}], request_id=request_id,
-                   timeout=timeout, maintain=maintain)
+        step = {'id': 'call', 'operation': operation, 'arguments': arguments or {}, **({'sweep': sweep} if sweep else {})}
+        self.batch([step], request_id=request_id, timeout=timeout, maintain=maintain)
         return self.client.request('/v1/runs/' + self.id + '/batches?' + urlencode({'request_id': request_id}))['results']['call']
 
     def begin_episode(self, episode_id, *, task, observation, policy=None, seed=None, info=None):
@@ -515,6 +575,13 @@ class Run:
 IOP = Client
 
 
+def view_query(**options):
+    """The URL query of an array view; at, and a list with one value per axis along, are sent as JSON."""
+    query = {key: json.dumps(value) if key == 'at' or isinstance(value, list) else value
+             for key, value in options.items() if value is not None}
+    return '?' + urlencode(query) if query else ''
+
+
 class DataStream:
     def __init__(self, run, name):
         from urllib.parse import quote
@@ -526,6 +593,16 @@ class DataStream:
 
     def chunks(self, after=-1, limit=100):
         return self.client.request(self.path + '/chunks?' + urlencode({'after': after, 'limit': limit}))
+
+    def read_array(self, *, along=None, at=None, start=None, stop=None, low=None, high=None, points=None, peak=None):
+        """What a numeric stream (format such as float32-le) says, its chunks read as one array of samples
+        by channels; the options are those of Client.read_array, and at={"channel": name} picks a channel."""
+        return self.client.request(self.path + '/array' + view_query(along=along, at=at, start=start, stop=stop,
+                                                                     low=low, high=high, points=points, peak=peak))
+
+    def array_file(self):
+        """The whole samples of a numeric stream, by channels, as the bytes of a NumPy .npy file."""
+        return self.client.request(self.path + '/array.npy', binary=True)
 
     def append(self, data, sequence):
         request = Request(self.client.endpoint + self.path + '/chunks?' + urlencode({'sequence': sequence}),

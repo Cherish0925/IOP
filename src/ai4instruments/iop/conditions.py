@@ -1,16 +1,29 @@
-"""Platform-defined operating conditions, observations and bounded correction procedures.
+"""Operating conditions of platforms and instruments: observations and bounded correction procedures.
 
 Dependencies and acceptable measurements are supplied by the experimenter. Maintenance uses
 ordinary operations and the existing scheduler; it does not infer physical causality. The
 dependency-graph approach is informed by Kelly et al., arXiv:1803.03226.
+
+An instrument's own conditions (warm-up, references, overloads, self-calibration) belong to its
+device record, or to the model description that supplies it, and are named ``<device>.<id>``. They
+use only that instrument's operations, so they travel with the model to every laboratory; platform
+conditions may depend on them.
+
+A platform that declares ``upkeep`` has its conditions kept by the Runtime: when its instruments
+are idle, a pass starts for what is unknown, due, about to expire, forecast to leave its tolerance,
+or lost and due for another attempt. Each pass is recorded like any other, with ``automatic`` and
+its reasons, and never runs a step that asks a person.
 """
 import copy
 import math
+import re
 import statistics
 import threading
+import uuid
 from collections import deque
 from datetime import datetime, timezone
 from . import batches, library
+from .drivers import parameters
 from .errors import RequestError
 from .platforms import name, strings
 from .store import dumps, now
@@ -21,6 +34,7 @@ OUTCOMES = ('holds', 'drifted', 'unusable')
 FIELDS = {'id', 'description', 'kind', 'after', 'verify', 'accept', 'usable', 'reference', 'correct', 'settle',
           'valid_for', 'note'}
 RECORDS = 20
+LOCAL = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,47}')
 
 
 def seconds(text):
@@ -119,14 +133,37 @@ def tuning(value, accept, what):
             'gain': value.get('gain', 0)}
 
 
+def setting(knob, position):
+    """The operation that puts one tuned setting at a position."""
+    return {'device': knob['device'], 'operation': knob['operation'],
+            'arguments': {**knob.get('arguments', {}), knob['argument']: position}}
+
+
+def operations_used(condition):
+    """Every operation a condition may call: its observation, its corrections and both ends of a tuned range."""
+    items = [condition['verify']]
+    for correction in condition['correct']:
+        if 'tune' in correction:
+            for knob in correction['tune']:
+                items += [setting(knob, knob['minimum']), setting(knob, knob['maximum']),
+                          {k: v for k, v in knob['read'].items() if k != 'value'}]
+        else:
+            items.append(correction)
+    return items
+
+
 def label(item):
     if 'tune' in item:
         return 'tune ' + ', '.join(f"{k['device']}.{k['argument']}" for k in item['tune'])
     return (item['device'] + '.' if 'device' in item else '') + item['operation']
 
 
-def check(definitions, taken=()):
-    """Validate the conditions of one platform; ``taken`` are the names used by other platforms."""
+def check(definitions, taken=(), external=()):
+    """Validate the conditions of one platform or instrument.
+
+    ``taken`` are names defined elsewhere in the laboratory; ``external`` are conditions of the
+    platform's instruments, which ``after`` may name.
+    """
     if not isinstance(definitions, list) or any(not isinstance(c, dict) for c in definitions):
         raise ValueError('Platform conditions must be a list of objects')
     names = strings([c.get('id') for c in definitions], 'Condition names')
@@ -136,14 +173,14 @@ def check(definitions, taken=()):
         if condition.keys() - FIELDS:
             raise ValueError(what + ': unknown fields ' + ', '.join(sorted(condition.keys() - FIELDS)))
         if condition['id'] in taken:
-            raise ValueError(what + ' is already defined on another platform')
+            raise ValueError(what + ' is already defined on another platform or instrument')
         if not isinstance(condition.get('description'), str) or not condition['description'].strip():
             raise ValueError(what + ': describe what must hold')
         if 'kind' in condition:
             name(condition['kind'], what + ' kind')
         after = strings(condition.get('after', []), what + ' after')
-        if set(after) - set(names) or condition['id'] in after:
-            raise ValueError(what + ': after names other conditions of this platform')
+        if set(after) - set(names) - set(external) or condition['id'] in after:
+            raise ValueError(what + ': after names other conditions of this platform or of its instruments')
         corrections = condition.get('correct', [])
         corrections = [corrections] if isinstance(corrections, dict) else corrections
         if not isinstance(corrections, list):
@@ -165,8 +202,98 @@ def check(definitions, taken=()):
                         **({'usable': criterion(condition['usable'], what + ' usable')} if 'usable' in condition else {}),
                         'correct': [tuning(item, accept, what + ' correct') if isinstance(item, dict) and 'tune' in item
                                     else step(item, what + ' correct') for item in corrections]})
-    order(checked, names)
+    # Instrument conditions never depend on platform conditions, so a cycle lies within this list.
+    order([{**c, 'after': [a for a in c['after'] if a in names]} for c in checked], names)
     return checked
+
+
+def upkeep(value, names):
+    """The upkeep a platform declares; ``names`` are the conditions of the platform and its instruments."""
+    if not isinstance(value, dict) or value.keys() - {'conditions', 'ahead_s', 'retry_s', 'correct'}:
+        raise ValueError('upkeep takes conditions, ahead_s, retry_s and correct')
+    for key, minimum in (('ahead_s', 0), ('retry_s', 1e-9)):
+        if key in value and (isinstance(value[key], bool) or not isinstance(value[key], (int, float))
+                             or not math.isfinite(value[key]) or value[key] < minimum):
+            raise ValueError(f'upkeep {key} is a duration in seconds')
+    if not isinstance(value.get('correct', True), bool):
+        raise ValueError('upkeep correct is true, or false to observe without correcting')
+    kept = strings(value.get('conditions', list(names)), 'upkeep conditions')
+    if set(kept) - set(names):
+        raise ValueError('upkeep conditions name conditions of this platform or its instruments: ' +
+                         ', '.join(sorted(set(kept) - set(names))))
+    return {'conditions': kept, 'ahead_s': float(value.get('ahead_s', 0)), 'retry_s': float(value.get('retry_s', 1800)),
+            'correct': value.get('correct', True)}
+
+
+def experiment_upkeep(value):
+    """The upkeep a continuous experiment or program declares for the conditions it requires."""
+    if value is True:
+        value = {}
+    if not isinstance(value, dict) or 'conditions' in value:
+        raise ValueError('An experiment keeps the conditions it requires: upkeep takes ahead_s, retry_s and correct')
+    settings = upkeep(value, [])
+    del settings['conditions']
+    return settings
+
+
+def instrument(device_id, definitions):
+    """The conditions of one instrument, named ``<device>.<id>`` in the laboratory.
+
+    They are observed and restored with the instrument's own operations; ``device`` may be omitted.
+    """
+    if not isinstance(definitions, list) or any(not isinstance(c, dict) for c in definitions):
+        raise ValueError('Instrument conditions must be a list of objects')
+    for local in strings([c.get('id') for c in definitions], 'Instrument condition names'):
+        if not LOCAL.fullmatch(local):
+            raise ValueError(f'Instrument condition {local}: use letters, digits, _ and -; the device name is added')
+
+    def own(item, what):
+        if not isinstance(item, dict):
+            return item
+        if 'tune' in item:
+            knobs = []
+            for knob in item['tune'] if isinstance(item['tune'], list) else [item['tune']]:
+                if isinstance(knob, dict):
+                    knob = {**knob, 'device': knob.get('device', device_id)}
+                    if isinstance(knob.get('read'), dict):
+                        knob['read'] = {**knob['read'], 'device': knob['read'].get('device', device_id)}
+                    if device_id != knob['device'] or isinstance(knob.get('read'), dict) and device_id != knob['read']['device']:
+                        raise ValueError(what + ': an instrument condition uses only that instrument')
+                knobs.append(knob)
+            return {**item, 'tune': knobs}
+        if item.get('device', device_id) != device_id:
+            raise ValueError(what + ': an instrument condition uses only that instrument')
+        return {**item, 'device': device_id}
+
+    prefix, named = device_id + '.', []
+    for condition in definitions:
+        what = 'Instrument condition ' + condition['id']
+        after, corrections = condition.get('after', []), condition.get('correct', [])
+        corrections = [corrections] if isinstance(corrections, dict) else corrections
+        named.append({**condition, 'id': prefix + condition['id'],
+                      'after': [prefix + a if isinstance(a, str) else a for a in after] if isinstance(after, list) else after,
+                      'verify': own(condition.get('verify'), what + ' verify'),
+                      'correct': [own(item, what + ' correct') for item in corrections] if isinstance(corrections, list)
+                      else corrections})
+    return check(named)
+
+
+def available(conditions, operations, builtin=()):
+    """Check that each operation the conditions call exists with valid arguments.
+
+    ``operations`` maps names to their descriptions; ``builtin`` names exist without one.
+    """
+    for condition in conditions:
+        for item in operations_used(condition):
+            if item['operation'] in builtin and item['operation'] not in operations:
+                continue
+            spec = operations.get(item['operation'])
+            if spec is None:
+                raise ValueError(f"Condition {condition['id']}: {item['device']} has no operation {item['operation']}")
+            try:
+                parameters(spec, item.get('arguments', {}))
+            except ValueError as error:
+                raise ValueError(f"Condition {condition['id']}: {item['device']}.{item['operation']}: {error}") from None
 
 
 def order(definitions, targets):
@@ -175,7 +302,8 @@ def order(definitions, targets):
     needed, pending = [], deque(targets)
     while pending:
         current = pending.popleft()
-        if current not in needed:
+        # A dependency that is not defined (an instrument not registered now) is left out; its dependents report it.
+        if current not in needed and current in by_name:
             needed.append(current)
             pending.extend(by_name[current]['after'])
     counts = {c: sum(1 for d in by_name[c]['after'] if d in needed) for c in needed}
@@ -282,15 +410,48 @@ class Conditions:
         self.jobs, self.threads = {}, []
         self.changed = threading.Condition()
         self.stopping = threading.Event()
+        # Per platform: when each condition was last attempted automatically, and what the last pass found.
+        self.attempts, self.waiting = {}, {}
+        self.wake = threading.Event()
         self.index()
 
     def index(self):
-        """Conditions by name, from the saved platforms."""
-        self.definitions, self.devices = {}, {}
-        for platform in self.engine.platforms.values():
-            for condition in platform['definition'].get('conditions', []):
-                self.definitions[condition['id']] = {**condition, 'platform': platform['id']}
-                self.devices[condition['id']] = self._devices(condition)
+        """Conditions by name: those of the registered instruments, then those of the saved platforms."""
+        self.definitions, self.devices, self.errors = {}, {}, {}
+        for device_id, record in sorted(self.engine.device_records.items()):
+            if record.get('conditions'):
+                try:
+                    for condition in instrument(device_id, record['conditions']):
+                        self.definitions[condition['id']] = {**condition, 'device': device_id}
+                except ValueError as error:
+                    self.errors[device_id] = str(error)
+        for platform_id in sorted(self.engine.platforms):
+            for condition in self.engine.platforms[platform_id]['definition'].get('conditions', []):
+                self.definitions[condition['id']] = {**condition, 'platform': platform_id}
+        for condition_id, condition in self.definitions.items():
+            self.devices[condition_id] = self._devices(condition)
+        if hasattr(self, 'wake'):
+            self.wake.set()
+
+    def scope(self, platform_id):
+        """The conditions of a platform and of its instruments."""
+        members = set(self.engine.platforms[platform_id]['definition']['devices'])
+        return [c for c, d in self.definitions.items() if d.get('platform') == platform_id or d.get('device') in members]
+
+    def _scope(self, conditions, platform, device):
+        """The platform or instrument whose maintenance covers these conditions."""
+        owners = [self.definitions[c] for c in conditions]
+        platforms = {d['platform'] for d in owners if 'platform' in d}
+        devices = {d['device'] for d in owners if 'device' in d}
+        if len(platforms) > 1:
+            raise ValueError('Maintain the conditions of one platform at a time')
+        chosen = platforms.pop() if platforms else platform
+        if chosen is not None and device is None and platform in (None, chosen) and chosen in self.engine.platforms \
+                and devices <= set(self.engine.platforms[chosen]['definition']['devices']):
+            return chosen, None
+        if not platforms and platform is None and len(devices) == 1 and device in (None, *devices):
+            return None, devices.pop()
+        raise ValueError('Maintain the conditions of one platform and its instruments, or of one instrument, at a time')
 
     def _devices(self, condition):
         devices = set()
@@ -314,7 +475,7 @@ class Conditions:
     def _measurement_basis(self, condition):
         result = {k: condition[k] for k in ('verify', 'accept', 'usable', 'after', 'reference') if k in condition}
         try:
-            steps, calls = library.expand([{'id': 'verify', **condition['verify']}], self.engine.library.get)
+            steps, calls, _ = library.expand([{'id': 'verify', **condition['verify']}], self.engine.library.get)
             result['operations'] = {c['operation']: c['revision'] for c in calls.values()}
             result['devices'] = {s['device']: self.engine.descriptions.get(s['device'], {}).get('revision') for s in steps}
         except ValueError:
@@ -328,17 +489,8 @@ class Conditions:
         """Resources used together during observation, correction and confirmation."""
         engine, amounts, revisions = self.engine, {}, {}
         for condition_id in self.closure(names):
-            condition = self.definitions[condition_id]
-            items = [condition['verify']]
-            for correction in condition['correct']:
-                if 'tune' in correction:
-                    for knob in correction['tune']:
-                        items.extend([self._set(knob, knob['minimum']),
-                                      {k: v for k, v in knob['read'].items() if k != 'value'}])
-                else:
-                    items.append(correction)
-            for item in items:
-                expanded, calls = library.expand([{'id': 'step', **item}], engine.library.get)
+            for item in operations_used(self.definitions[condition_id]):
+                expanded, calls, _ = library.expand([{'id': 'step', **item}], engine.library.get)
                 revisions.update({c['operation']: c['revision'] for c in calls.values()})
                 for flat in expanded:
                     op = engine._operation('prepare', flat)
@@ -349,8 +501,11 @@ class Conditions:
     def prepare(self, definition):
         """Check the conditions of a platform being saved against its devices and the saved operations."""
         engine = self.engine
-        taken = {c for c, d in self.definitions.items() if d['platform'] != definition['id']}
-        conditions = check(definition.get('conditions', []), taken)
+        taken = {c for c, d in self.definitions.items() if d.get('platform') != definition['id']}
+        external = {c for c, d in self.definitions.items() if d.get('device') in definition['devices']}
+        conditions = check(definition.get('conditions', []), taken, external)
+        if 'upkeep' in definition:
+            definition['upkeep'] = upkeep(definition['upkeep'], [c['id'] for c in conditions] + sorted(external))
         for condition in conditions:
             for item in [condition['verify']] + condition['correct']:
                 if 'tune' in item:
@@ -370,11 +525,29 @@ class Conditions:
                     engine._operation('prepare', flat)
         return conditions
 
+    def prepare_instrument(self, device_id, record, description):
+        """Check an instrument's own conditions against its operations; returns them with laboratory names."""
+        conditions = instrument(device_id, record['conditions']) if record.get('conditions') else []
+        names = {c['id'] for c in conditions}
+        for condition_id, definition in self.definitions.items():
+            if condition_id in names and definition.get('device') != device_id:
+                raise ValueError(f'Condition {condition_id} is already defined on a platform or another instrument')
+        removed = {c for c, d in self.definitions.items() if d.get('device') == device_id} - names
+        for condition_id, definition in self.definitions.items():
+            if 'platform' in definition and removed & set(definition['after']):
+                raise ValueError(f"Platform condition {condition_id} depends on {', '.join(sorted(removed & set(definition['after'])))}; "
+                                 f"revise platform {definition['platform']} first")
+        available(conditions, description['operations'])
+        return conditions
+
     # State: what is known without touching an instrument.
 
     def state(self, condition_id, at=None, visiting=()):
         condition, saved = self.definitions[condition_id], self.states.get(condition_id)
         at = at or seconds(now())
+        missing = [d for d in condition['after'] if d not in self.definitions]
+        if missing:
+            return {'state': 'unknown', 'reason': ', '.join(missing) + ' not defined'}
         if not saved or saved.get('basis') != self.basis(condition) or 'verified' not in saved:
             return {'state': 'unknown'}
         shown = {key: saved[key] for key in ('verified', 'value', 'accepted', 'reference') if saved.get(key) not in (None, {})}
@@ -394,21 +567,29 @@ class Conditions:
         for dependency in condition['after']:
             if dependency not in visiting and self.state(dependency, at, (*visiting, condition_id))['state'] != 'holds':
                 return {'state': 'due', 'reason': dependency + ' does not hold', **shown}
+        if saved.get('forecast'):
+            # When the straight line through the accepted values reaches the tolerance.
+            shown['forecast'] = saved['forecast']
         return {'state': 'holds', **shown}
 
-    def listing(self, platform=None):
+    def listing(self, platform=None, device=None):
+        """Conditions with their state, in dependency order: all, a platform's with its instruments', or an instrument's."""
         with self.engine.lock:
             if platform is not None and platform not in self.engine.platforms:
                 raise KeyError(platform)
+            if device is not None and device not in self.engine.devices:
+                raise KeyError(device)
+            selected = (self.scope(platform) if platform is not None else
+                        [c for c, d in self.definitions.items() if d.get('device') == device] if device is not None
+                        else list(self.definitions))
+            local = [{**self.definitions[c], 'after': [a for a in self.definitions[c]['after'] if a in selected]} for c in selected]
             rows = []
-            for platform_id in sorted({d['platform'] for d in self.definitions.values()}):
-                if platform in (None, platform_id):
-                    definitions = [d for d in self.definitions.values() if d['platform'] == platform_id]
-                    for condition_id in order(definitions, [d['id'] for d in definitions]):
-                        condition = self.definitions[condition_id]
-                        rows.append({'id': condition_id, 'platform': platform_id, 'description': condition['description'],
-                                     **({'kind': condition['kind']} if 'kind' in condition else {}),
-                                     'after': condition['after'], **self.state(condition_id)})
+            for condition_id in order(local, selected):
+                condition = self.definitions[condition_id]
+                owner = {'platform': condition['platform']} if 'platform' in condition else {'device': condition['device']}
+                rows.append({'id': condition_id, **owner, 'description': condition['description'],
+                             **({'kind': condition['kind']} if 'kind' in condition else {}),
+                             'after': condition['after'], **self.state(condition_id)})
             return rows
 
     def describe(self, condition_id):
@@ -480,6 +661,13 @@ class Conditions:
                         doubtful.append(other)
             saved['relying'] = [other for other in relying if other in engine.runs]
             saved.update(verified=time, outcome=result, value=value, error=error)
+            saved.pop('forecast', None)
+            if result == 'holds':
+                for attempts in self.attempts.values():
+                    attempts.pop(condition_id, None)
+                trend = summary(self.definitions[condition_id], engine.store.condition_records(condition_id) + [record]).get('trend', {})
+                if trend.get('expected_until'):
+                    saved['forecast'] = trend['expected_until']
             engine.store.record_condition(condition_id, saved, record, 'condition.' + result, run_id=run_id, value=value,
                                           **({'in_doubt': doubtful} if doubtful else {}))
             if result != 'holds':
@@ -494,6 +682,7 @@ class Conditions:
                       'run_id': run_id, **({'error': error} if error else {}), **({'tuned': tuned} if tuned else {})}
             if restored:
                 saved['corrected'] = time
+                saved.pop('forecast', None)
             self.engine.store.record_condition(condition_id, saved, record, 'condition.corrected', run_id=run_id, by=by,
                                                restored=restored)
 
@@ -514,6 +703,7 @@ class Conditions:
             for condition_id in affected:
                 saved = self._state(condition_id)
                 saved['invalidated'] = reason if condition_id in names else 'dependency disturbed: ' + reason
+                saved.pop('forecast', None)
                 time = now()
                 for run_id in saved.get('relying', []):
                     run = self.engine.runs.get(run_id)
@@ -534,11 +724,12 @@ class Conditions:
 
     # Maintenance: the loop.
 
-    def maintain(self, platform=None, conditions=None, run_id=None, request_id=None, force=False):
+    def maintain(self, platform=None, conditions=None, run_id=None, request_id=None, force=False, device=None,
+                 automatic=None):
         engine = self.engine
         with engine.lock:
             request = {'platform': platform, 'conditions': sorted(strings(conditions, 'Conditions')) if conditions else None,
-                       'run_id': run_id, 'force': bool(force)}
+                       'run_id': run_id, 'force': bool(force), **({'device': device} if device is not None else {})}
             if request_id is not None:
                 if not isinstance(request_id, str) or not request_id.strip():
                     raise ValueError('request_id is a nonempty string')
@@ -547,35 +738,52 @@ class Conditions:
                     if previous.get('request') != request:
                         raise ValueError('request_id already names a different maintenance request')
                     return self.job(previous['id'])
-            if not conditions and platform is None and run_id in engine.runs:
+            if not conditions and platform is None and device is None and run_id in engine.runs:
                 # Inside an experiment the default is what that experiment relies on.
                 conditions = engine.runs[run_id].get('requires')
+            run = engine.runs.get(run_id)
+            if run and platform is None and device is None:
+                platform = run.get('platform', {}).get('id')
             if conditions:
                 for condition_id in strings(conditions, 'Conditions'):
                     if condition_id not in self.definitions:
                         raise ValueError('Unknown condition: ' + condition_id)
-                platforms = {self.definitions[c]['platform'] for c in conditions}
-                if len(platforms) > 1 or platform not in (None, *platforms):
-                    raise ValueError('Maintain the conditions of one platform at a time')
-                platform, targets = platforms.pop(), list(conditions)
+                # An experiment without a platform may reserve several instruments. Its reservation
+                # below is the scope; standalone maintenance still names one platform or instrument.
+                if run is None or platform is not None or device is not None:
+                    platform, device = self._scope(conditions, platform, device)
+                targets = list(conditions)
+            elif device is not None:
+                if device not in engine.devices:
+                    raise ValueError('Name a platform, an instrument or their conditions')
+                targets = [c for c, d in self.definitions.items() if d.get('device') == device]
+                if not targets:
+                    raise ValueError('This instrument has no conditions')
             else:
                 if platform not in engine.platforms:
                     raise ValueError('Name a platform or its conditions')
-                targets = [c for c, d in self.definitions.items() if d['platform'] == platform]
+                targets = self.scope(platform)
                 if not targets:
                     raise ValueError('This platform has no conditions')
-            active = [job for job in self.jobs.values() if job['platform'] == platform and job['state'] == 'running']
+            closure = self.closure(targets)
+            active = [job for job in self.jobs.values() if job['state'] == 'running' and set(closure) & set(job['closure'])]
             if active:
-                raise RequestError('maintenance_active', 'This platform is being maintained; read that maintenance.',
+                raise RequestError('maintenance_active', 'These conditions are being maintained; read that maintenance.',
                                    maintenance=active[0]['id'])
             from .engine import identifier
-            job = {'id': identifier('maintenance'), 'request_id': request_id, 'platform': platform, 'conditions': targets,
+            job = {'id': identifier('maintenance'), 'request_id': request_id, 'platform': platform,
+                   **({'device': device} if device is not None else {}), 'conditions': targets, 'closure': closure,
                    'force': bool(force), 'state': 'running', 'started': now(), 'report': [], 'steps': 0,
-                   'run_id': run_id, 'own_run': run_id is None, 'request': request}
+                   'run_id': run_id, 'own_run': run_id is None, 'request': request,
+                   # An automatic pass records why it started; it renews what is about to expire and never asks a person.
+                   **({'automatic': True, 'reasons': automatic['reasons'], 'renew': automatic['renew'],
+                       'observe_only': not automatic['correct']} if automatic else {})}
             amounts, job['operation_revisions'] = self.requirements(targets)
             if run_id is None:
                 # Keep coupled devices together through the complete correction cycle.
-                job['run_id'] = engine.submit({'kind': 'external', 'name': 'Maintain ' + platform, 'platform': platform,
+                job['run_id'] = engine.submit({'kind': 'external', 'name': 'Maintain ' + (platform or device) +
+                                                       (' (upkeep)' if automatic else ''),
+                                               **({'platform': platform} if platform is not None else {}),
                                                'resources': sorted(k[7:] for k in amounts if k.startswith(('device:', 'shared:'))),
                                                'requirements': {k[5:]: n for k, n in amounts.items() if k.startswith('pool:')},
                                                'request_id': job['id']})['id']
@@ -619,7 +827,9 @@ class Conditions:
 
     @staticmethod
     def _public(job):
-        return {**{k: v for k, v in job.items() if k not in ('steps', 'own_run', 'force', 'request')}, 'complete': job['state'] != 'running'}
+        return {**{k: v for k, v in job.items() if k not in ('steps', 'own_run', 'force', 'request', 'closure', 'renew',
+                                                             'observe_only')},
+                'complete': job['state'] != 'running'}
 
     def _work(self, job):
         engine = self.engine
@@ -677,12 +887,12 @@ class Conditions:
         condition = self.definitions[condition_id]
         entry = {'condition': condition_id}
         for dependency in condition['after']:
-            if self._ensure(job, dependency, done, investigated) != 'holds':
+            if dependency not in self.definitions or self._ensure(job, dependency, done, investigated) != 'holds':
                 entry.update(result='blocked', by=dependency)
                 return self._report(job, done, entry)
         with self.engine.lock:
             held = self.state(condition_id)
-        if held['state'] == 'holds' and not job['force'] and not investigate:
+        if held['state'] == 'holds' and not job['force'] and condition_id not in job.get('renew', ()) and not investigate:
             entry.update(result='held', **{k: held[k] for k in ('value', 'verified') if k in held})
             return self._report(job, done, entry)
         investigated.add(condition_id)
@@ -699,8 +909,15 @@ class Conditions:
             entry['result'] = 'verified'
             return self._report(job, done, entry)
         entry['found'] = result
+        if job.get('observe_only') and condition['correct']:
+            entry.update(result='lost', value=value, not_corrected='upkeep observes only')
+            return self._report(job, done, entry)
+        left = []
         for item in condition['correct']:
             before, tuned = value, None
+            if job.get('automatic') and self._asks_person(item):
+                left.append(label(item))
+                continue
             self.invalidate([condition_id], 'correction started: ' + label(item))
             try:
                 if 'tune' in item:
@@ -717,7 +934,7 @@ class Conditions:
             if result == 'holds':
                 entry.update(result='corrected', by=label(item), value=value)
                 return self._report(job, done, entry)
-        entry.update(result='lost', value=value)
+        entry.update(result='lost', value=value, **({'left_for_a_person': left} if left else {}))
         return self._report(job, done, entry)
 
     def _report(self, job, done, entry):
@@ -741,10 +958,205 @@ class Conditions:
         self.verified(condition['id'], found, value, kept, job['run_id'])
         return found, value
 
-    @staticmethod
-    def _set(knob, position):
-        return {'device': knob['device'], 'operation': knob['operation'],
-                'arguments': {**knob.get('arguments', {}), knob['argument']: position}}
+    _set = staticmethod(setting)
+
+    def _asks_person(self, item):
+        """Whether a correction includes a step that a person performs."""
+        if 'tune' in item:
+            return False
+        try:
+            steps = library.expand([{'id': 'step', **item}], self.engine.library.get)[0]
+        except ValueError:
+            return False
+        return any(self.engine.device_records.get(s['device'], {}).get('driver') == 'manual' for s in steps)
+
+    # Upkeep: the Runtime keeps the conditions of platforms that declare it.
+
+    def start(self):
+        thread = threading.Thread(target=self._keep, name='iop-upkeep', daemon=True)
+        self.threads.append(thread)
+        thread.start()
+
+    def _keep(self):
+        while not self.stopping.is_set():
+            self.wake.wait(float(self.engine.config.get('upkeep_interval_s', 2)))
+            self.wake.clear()
+            if self.stopping.is_set() or self.engine.stopping:
+                return
+            for platform_id in list(self.engine.platforms):
+                try:
+                    self._upkeep(platform_id)
+                except Exception as error:
+                    with self.engine.lock:
+                        self._wait(platform_id, f'{type(error).__name__}: {error}')
+            # Experiments that keep their own conditions are kept between their operations.
+            with self.engine.lock:
+                for run in [r for r in self.engine.runs.values() if r.get('upkeep') and r['state'] in ('queued', 'running')]:
+                    try:
+                        self.keep(run, run.get('requires', []))
+                    except (ValueError, KeyError) as error:
+                        self._wait(run['id'], str(error))
+                for store in (self.waiting, self.attempts):
+                    for key in [k for k in store if k not in self.engine.platforms and k not in self.engine.runs]:
+                        del store[key]
+
+    def plan(self, platform_id, at=None):
+        """What an automatic pass would maintain now and why, and when the next one is foreseen."""
+        settings = self.engine.platforms[platform_id]['definition'].get('upkeep')
+        if settings is None:
+            return None
+        return self._plan(settings['conditions'], settings, platform_id, at)
+
+    def _plan(self, names, settings, key, at=None):
+        at = at or seconds(now())
+        reasons, renew, upcoming = {}, [], []
+        attempts = self.attempts.get(key, {})
+        for condition_id in names:
+            if condition_id not in self.definitions:
+                continue
+            state, reason = self.state(condition_id, at), None
+            if state['state'] in ('unknown', 'lost'):
+                reason = state['state']
+            elif state['state'] == 'due':
+                reason = 'due: ' + state.get('reason', '')
+            else:
+                # The forecast decides when to look again, never what to change: one observation ahead_s before
+                # the drift line reaches the tolerance and one when it does. Each moment triggers once, since an
+                # observation made after it moves accepted past it.
+                accepted = seconds(state['accepted'])
+                moments = []
+                if state.get('valid_until'):
+                    moments.append((seconds(state['valid_until']) - settings['ahead_s'], 'validity ends'))
+                if state.get('forecast'):
+                    crossing = seconds(state['forecast'])
+                    moments += [(crossing - settings['ahead_s'], 'forecast reaches the tolerance'),
+                                (crossing, 'forecast reaches the tolerance')]
+                for when, why in moments:
+                    if accepted < when <= at:
+                        reason = reason or why
+                    elif when > at:
+                        upcoming.append(when)
+            if reason is None:
+                continue
+            # An attempt that did not end with the condition held is repeated only after retry_s.
+            retry = attempts.get(condition_id, -math.inf) + settings['retry_s']
+            if at < retry:
+                upcoming.append(retry)
+                continue
+            reasons[condition_id] = reason
+            if state['state'] == 'holds':
+                renew.append(condition_id)
+        stamp = lambda t: datetime.fromtimestamp(t, timezone.utc).isoformat()
+        return {'reasons': reasons, 'renew': renew, 'correct': settings['correct'],
+                'next': stamp(min(upcoming)) if upcoming and not reasons else None}
+
+    def _busy(self, keys):
+        """An active experiment or a held resource that uses these devices or shared objects."""
+        engine = self.engine
+        for run in engine.runs.values():
+            used = set(run.get('involved_resources', [])) | {'device:' + d for d in run.get('devices', {})}
+            if run['state'] not in ('completed', 'failed', 'cancelled', 'interrupted') and used & keys:
+                return 'experiment ' + run['id']
+        held = keys & engine.resource_holds.keys()
+        if held:
+            return 'held resource ' + sorted(held)[0].split(':', 1)[1]
+        return None
+
+    def _wait(self, key, reason):
+        """Remember what upkeep of a platform or an experiment waits for; record each new reason once."""
+        if self.waiting.get(key) != reason:
+            self.waiting[key] = reason
+            if reason:
+                scope = {'platform': key} if key in self.engine.platforms else {}
+                with self.engine.store.transaction():
+                    self.engine.store.event('upkeep.waiting', None if scope else key, reason=reason, **scope)
+
+    def _upkeep(self, platform_id):
+        engine = self.engine
+        with engine.lock:
+            if platform_id not in engine.platforms or engine.stopping:
+                return
+            plan = self.plan(platform_id)
+            if not plan or not plan['reasons']:
+                self._wait(platform_id, None)
+                return
+            targets = list(plan['reasons'])
+            closure = set(self.closure(targets))
+            if any(job['state'] == 'running' and closure & set(job['closure']) for job in self.jobs.values()):
+                return
+            amounts, _ = self.requirements(targets)
+            reason = self._busy({k for k in amounts if k.startswith(('device:', 'shared:'))})
+            if reason:
+                self._wait(platform_id, 'waiting for ' + reason)
+                return
+            self._wait(platform_id, None)
+            self._start(platform_id, targets, plan, platform=platform_id)
+
+    def _start(self, key, targets, plan, **scope):
+        """Start an automatic pass and remember the attempt, so a failed one waits retry_s."""
+        job = self.maintain(conditions=targets, request_id=f'upkeep.{key}.{uuid.uuid4().hex[:12]}', automatic=plan, **scope)
+        time = seconds(job['started'])
+        for condition_id in targets:
+            self.attempts.setdefault(key, {})[condition_id] = time
+        with self.engine.store.transaction():
+            self.engine.store.event('upkeep.started', job['run_id'], maintenance=job['id'], conditions=targets,
+                                    **({'platform': scope['platform']} if 'platform' in scope else {}))
+        return job
+
+    def keep(self, run, names):
+        """Inside an experiment that declares upkeep: start or join a pass when what it relies on needs one.
+
+        Returns True while a pass runs in the experiment; its other operations wait for that pass.
+        """
+        if not run.get('upkeep') or not names or run['kind'] == 'package' and run['state'] == 'queued':
+            return False
+        for job in self.jobs.values():
+            if job['state'] == 'running' and job['run_id'] == run['id']:
+                uncovered = [c for c in self.closure(names) if c not in job['closure'] and self.state(c)['state'] != 'holds']
+                if uncovered:
+                    raise RequestError('maintenance_active', 'Wait for this maintenance before submitting operations '
+                                       'that require additional conditions.', maintenance=job['id'], conditions=uncovered)
+                return True
+        if self.engine.remaining.get(run['id'], 0):
+            return False
+        plan = self._plan(self.closure(names), run['upkeep'], run['id'])
+        if not plan['reasons']:
+            self._wait(run['id'], None)
+            return False
+        try:
+            self._start(run['id'], list(plan['reasons']), plan, run_id=run['id'])
+        except (ValueError, KeyError) as error:
+            self._wait(run['id'], str(error))
+            return False
+        self._wait(run['id'], None)
+        return True
+
+    def upkeep_status(self, platform=None):
+        """For each platform and active experiment that declares upkeep: its settings, the next foreseen pass,
+        what it waits for and the last pass."""
+        with self.engine.lock:
+            rows = []
+            for run in self.engine.runs.values():
+                if run.get('upkeep') and platform is None:
+                    plan = self._plan(self.closure(run.get('requires', [])), run['upkeep'], run['id'])
+                    last = max((j for j in self.jobs.values() if j.get('automatic') and j['run_id'] == run['id']),
+                               key=lambda j: j['started'], default=None)
+                    rows.append({'run': run['id'], 'upkeep': run['upkeep'], 'next': plan['next'], 'pending': plan['reasons'],
+                                 **({'waiting': self.waiting[run['id']]} if self.waiting.get(run['id']) else {}),
+                                 **({'last': {k: last[k] for k in ('id', 'state', 'started', 'ended', 'holds') if k in last}}
+                                    if last else {})})
+            for platform_id in sorted(self.engine.platforms):
+                settings = self.engine.platforms[platform_id]['definition'].get('upkeep')
+                if settings is None or platform not in (None, platform_id):
+                    continue
+                plan = self.plan(platform_id)
+                last = max((j for j in self.jobs.values() if j.get('automatic') and j['platform'] == platform_id),
+                           key=lambda j: j['started'], default=None)
+                rows.append({'platform': platform_id, 'upkeep': settings, 'next': plan['next'],
+                             'pending': plan['reasons'], **({'waiting': self.waiting[platform_id]} if self.waiting.get(platform_id) else {}),
+                             **({'last': {k: last[k] for k in ('id', 'state', 'started', 'ended', 'holds', 'run_id') if k in last}}
+                                if last else {})})
+            return rows
 
     def _tune(self, job, condition, item, value, initial_outcome):
         """Adjust the settings one at a time against the verification value, halving the step when no move helps.
@@ -846,5 +1258,6 @@ class Conditions:
 
     def stop(self):
         self.stopping.set()
+        self.wake.set()
         for thread in self.threads:
             thread.join(timeout=10)

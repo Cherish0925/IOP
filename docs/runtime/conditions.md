@@ -6,7 +6,7 @@
 
 A platform can state the operating conditions required by a particular measurement: what to observe, which values are acceptable, how to restore them, and when to observe again. The researcher or agent supplies this knowledge; the Runtime executes it using the existing Basic, Standard and Workflow Operations. / 平台可以写明一次测量需要的工作条件：观察什么、什么数值可接受、怎样恢复、何时重新观察。研究者或 Agent 提供这些知识，Runtime 用现有的基础、标准和工作流操作执行。
 
-The cycle is **observe → compare → correct when needed → observe again**. `maintain` starts a pass; it does not run an undisclosed background optimizer. / 循环是**观察 → 比较 → 必要时校正 → 再次观察**。调用 `maintain` 才开始一轮，不会在后台自行改变实验设定。
+The cycle is **observe → compare → correct when needed → observe again**. `maintain` starts a pass. Without `upkeep` the Runtime never starts one by itself; a platform that declares [`upkeep`](#upkeep--自主保持) has passes started by the Runtime while its instruments are idle, each recorded with its reasons. / 循环是**观察 → 比较 → 必要时校正 → 再次观察**。调用 `maintain` 开始一轮。未声明 `upkeep` 时，运行服务不会自行开始；声明了 [`upkeep`](#upkeep--自主保持) 的平台，由运行服务在设备空闲时开始，每一轮连同原因一起记录。
 
 - **Outcomes:** `holds` is within the stated tolerance; `drifted` is a usable reading outside it; `unusable` cannot support this decision. An unusable reading may arise from the measurement itself, a local fault or a dependency. / **结果：** `holds` 满足所设容差；`drifted` 是可用但超出容差的读数；`unusable` 无法支持这次判断，可能来自测量本身、本地故障或依赖项。
 - **Dependencies:** `after` declares which conditions must hold first. The Runtime follows this graph and can revisit dependencies when a reading is unusable. It does not discover causal relationships from wiring or labels. / **依赖：** `after` 明确哪些条件需要先成立；读数不可用时可回看依赖。运行服务不会从接线或分类名称推断因果关系。
@@ -52,7 +52,7 @@ Conditions are part of the platform description (`conditions`) and are saved wit
 
 | Field | Meaning / 含义 |
 | --- | --- |
-| `verify` | A short reference measurement: one device operation, or a saved operation without `device` / 一次简短的基准测量：一个设备操作，或不带 `device` 的已保存操作 |
+| `verify` | A short reference measurement: one device operation, or a saved operation without `device`, whose named results can come from [views of arrays](operations.md), such as the frequency of a resonance / 一次简短的基准测量：一个设备操作，或不带 `device` 的已保存操作，其具名结果可以取自[数组的视图](operations.md)，例如谐振频率 |
 | `accept` | The tolerance: `value` is the path into the result, with `minimum`, `maximum` or `equals` / 容差：`value` 是结果中的路径，配 `minimum`、`maximum` 或 `equals` |
 | `usable` | Whether the reading is usable for this decision; otherwise maintenance revisits declared dependencies / 读数是否适用于这次判断；否则保持过程会重新查看已声明的依赖 |
 | `reference` | Values of the accepted verification kept with the experiments that rely on it, such as a dark level used in the analysis / 通过核对时保留的数值，随依赖它的实验保存，例如分析时要扣除的暗计数 |
@@ -63,6 +63,27 @@ Conditions are part of the platform description (`conditions`) and are saved wit
 | `kind`, `note` | An extensible category and contextual explanation / 可扩展的分类与背景说明 |
 
 A correction acts on the system. A `reference` acts on the data: the condition "the dark level was measured within the last half hour" has no correction beyond measuring again, and its value travels with every experiment that requires it. / 校正作用于系统；`reference` 作用于数据：“半小时内测过暗计数”这个条件的校正就是再测一次，它的数值随每个依赖它的实验保存。
+
+## Conditions of an instrument / 仪器自身的条件
+
+Some conditions belong to one instrument wherever it is used: a laser diode at its temperature, a lock-in amplifier without overload or reference unlock, a source warmed up, a self-calibration that is current. They are written in the device record or in its [model description](../../iop/instrument-packages.md), observed and restored with that instrument's own operations, and named `<device>.<id>` in the laboratory. / 有些条件属于单台仪器，不论它用在哪里：激光二极管到达工作温度、锁相放大器没有过载或参考失锁、光源已预热、自校准仍然有效。它们写在设备记录或[型号说明](../../iop/instrument-packages.zh-CN.md)里，用这台仪器自己的操作观察和恢复，在实验室中命名为 `<device>.<id>`。
+
+```json
+{"id": "laser", "driver": "...", "config": {"...": "..."},
+ "conditions": [
+   {"id": "warm", "kind": "equilibrium", "description": "The diode is at its set temperature",
+    "verify": {"operation": "temperature"}, "accept": {"minimum": 24.5, "maximum": 25.5},
+    "correct": {"operation": "wait_warm", "arguments": {"minutes": 30}}},
+   {"id": "power_ok", "description": "The output power is at its working value", "after": ["warm"],
+    "verify": {"operation": "power"}, "accept": {"minimum": 0.9, "maximum": 1.1}}]}
+```
+
+- `device` may be omitted from their operations; another instrument is refused. `after` names conditions of the same instrument by their local names. / 操作中可以省略 `device`；用到其他仪器会被拒绝。`after` 用本地名称指向同一台仪器的条件。
+- Registration and configuration check them against the instrument's operations and parameter ranges. A configuration that removes a condition a platform depends on is refused until the platform is revised. / 登记和修改配置时，按仪器的操作和参数范围核对。删除平台所依赖的条件时，配置被拒绝，先修改平台。
+- A platform condition may depend on them: `"after": ["laser.power_ok"]`. A platform's listing, its next step in `lab_context` and `maintain(platform)` include the conditions of its instruments. An instrument outside every platform is maintained alone with `maintain(device=...)`. / 平台条件可以依赖它们。平台的列表、`lab_context` 中的下一步和 `maintain(platform)` 都包含其仪器的条件；不属于任何平台的仪器用 `maintain(device=...)` 单独保持。
+- A model description can carry them. Every instrument that registers with that description, or is identified as that model, gets those conditions unless its record defines the same name; a condition is left out when an operation it needs is not among the instrument's operations or `allowed_operations`. / 型号说明可以携带它们。按该说明登记或被识别为该型号的每台仪器都会得到这些条件，记录中同名的条件优先；所需操作不在仪器操作或 `allowed_operations` 中的条件不加入。
+
+The built-in SR830 description carries four: `reference_locked`, `input_in_range`, `filter_in_range` and `output_in_range`, each read from one LIA status bit. These bits stay set until they are read, so an observation reports whether an unlock or overload occurred since the previous one; data taken in between by experiments that relied on the condition are marked `in_doubt`. / 内置的 SR830 说明带有四个条件，各读一个 LIA 状态位。这些位读取前保持置位，所以一次观察说明的是自上次观察以来是否发生过失锁或过载；依赖该条件的实验在这期间采集的数据被标为 `in_doubt`。
 
 ## Tuning / 调节
 
@@ -129,7 +150,7 @@ A submission names what it relies on with `requires`; a saved Standard or Workfl
 
 - The experiment is accepted while every required condition holds. Otherwise it is refused with `conditions_not_held`, naming each condition and why; after `maintain` the same submission is accepted. / 所依赖的条件都成立时才受理；否则以 `conditions_not_held` 拒绝并逐条说明原因，`maintain` 之后同一提交即被受理。
 - The run records `conditions`: when each was accepted, its value and its `reference`. / 实验记录 `conditions`：每个条件何时通过、数值和 `reference`。
-- In a continuous experiment every batch and operation is accepted on the same terms, so `valid_for` sets how often the work stops to verify. `run.maintain()` does it inside the experiment, and `run.batch(steps, maintain=True)` or `run.call(name, arguments, maintain=True)` do it only when needed. / 连续实验中的每个批次和操作按同样的规则受理，因此 `valid_for` 决定了多久停下来核对一次。`run.maintain()` 在实验内部完成；`maintain=True` 只在需要时才做。
+- In a continuous experiment every batch and operation is accepted on the same terms, so `valid_for` sets how often the work stops to verify. `run.maintain()` does it inside the experiment, and `run.batch(steps, maintain=True)` or `run.call(name, arguments, maintain=True)` do it only when needed. An experiment that declares [`upkeep`](#inside-an-experiment--实验内部) has the Runtime do it. / 连续实验中的每个批次和操作按同样的规则受理，因此 `valid_for` 决定了多久停下来核对一次。`run.maintain()` 在实验内部完成；`maintain=True` 只在需要时才做。
 - When a later verification finds a condition lost, each run that relied on it since the last accepted verification gets `in_doubt[condition] = {since, found, outcome}`. Accepted observations describe their sampling instants; they do not prove uninterrupted validity between samples. / 之后的观察发现条件不成立时，自上次通过以来依赖它的每个实验得到 `in_doubt`。通过的读数只说明采样时刻符合要求，不能证明两次采样之间始终成立。
 
 Before each dependent step starts, the Runtime checks the recorded condition state again and records the observations used by that step. An expired or disturbed condition stops the step before its device call. This does not insert extra readings or corrections into a graph. For long work, use a program or continuous experiment that calls maintenance between completed batches. / 每个依赖条件的步骤启动前，Runtime 再看一次已有条件状态，并记录该步骤采用的观察依据。过期或受扰动的条件会阻止设备调用；步骤图中不会擅自插入读数或校正。长时间工作通过程序或连续实验，在已完成的批次之间调用保持。
@@ -149,7 +170,46 @@ Every verification and correction is recorded. `GET /v1/conditions/{id}` returns
 | `corrections` | For each correction, how often it was tried and how often it restored the condition / 每种校正尝试了几次、恢复了几次 |
 | `trend` | A straight line through the accepted values since the last correction or reported disturbance: `per_hour`, the number of `points`, the `residual`, and `expected_until`, when the line reaches the tolerance / 自上次校正或已报告扰动以来通过值的直线拟合：每小时变化、点数、残差，以及到达容差的时间 `expected_until` |
 
-Statistics use the latest 1,000 records. A linear extrapolation is descriptive and does not change expiry times or settings automatically. This is where experience accumulates: which conditions drift, how fast, and what restores them, measured on this system. / 统计使用最近 1,000 条记录；直线外推不会自动改变有效期或设备设定。经验在这里积累：哪些条件会漂、漂多快、什么能恢复，都是在这套系统上测出来的。
+Statistics use the latest 1,000 records. A linear extrapolation does not change expiry times or settings; with upkeep it only decides when to observe again. The state of a held condition shows it as `forecast`. This is where experience accumulates: which conditions drift, how fast, and what restores them, measured on this system. / 统计使用最近 1,000 条记录；直线外推不会改变有效期或设备设定，在自主保持中只决定何时再次观察；成立状态中以 `forecast` 给出。经验在这里积累：哪些条件会漂、漂多快、什么能恢复，都是在这套系统上测出来的。
+
+## Upkeep / 自主保持
+
+A platform can declare that the Runtime keeps its conditions. / 平台可以声明由运行服务来保持它的条件。
+
+```json
+"upkeep": {"ahead_s": 300, "retry_s": 1800, "correct": true}
+```
+
+The Runtime plans every `upkeep_interval_s` (2 s by default, in the service configuration). When a condition needs a pass and the instruments that pass would use are idle, it starts one for the conditions concerned. / 运行服务每隔 `upkeep_interval_s`（默认 2 秒，在服务配置中设置）安排一次：有条件需要处理、且这一轮要用的设备空闲时，就为这些条件开始一轮。
+
+| A pass starts for a condition that is / 何时开始 | Reason recorded / 记录的原因 |
+| --- | --- |
+| Never observed, or its basis changed / 从未观察或依据已变 | `unknown` |
+| Due: validity elapsed, a dependency corrected, a disturbance / 待核对：过期、依赖被校正、受扰动 | `due: <reason>` |
+| Still held, `ahead_s` before its validity ends / 仍成立，有效期结束前 `ahead_s` | `validity ends` |
+| Still held, `ahead_s` before the drift forecast reaches the tolerance, and again when it does / 仍成立，漂移预测到达容差前 `ahead_s`，以及到达时 | `forecast reaches the tolerance` |
+| Lost / 不成立 | `lost` |
+
+- **Idle.** No active experiment uses or reserves a device or shared resource the pass needs, and none of them is held. Otherwise upkeep waits; its status names the experiment or resource. A queued experiment goes first. / **空闲。** 没有进行中的实验使用或预留这一轮所需的设备和共享资源，也没有处于挂起状态的。否则等待，状态中写明在等哪个实验或资源；排队中的实验优先。
+- **One observation per moment.** A foreseen moment triggers once, because the observation moves the accepted time past it. The forecast decides when to look again, never what to change. / **每个时刻观察一次。** 观察之后通过时间越过该时刻，所以不会重复。预测只决定何时再看，不决定改变什么。
+- **Retry.** An attempt that does not end with the condition held is repeated only after `retry_s`. / **重试。** 未能使条件成立的尝试，`retry_s` 之后才再进行。
+- **No steps for a person.** An automatic pass skips corrections that ask a person; such a condition ends `lost` with `left_for_a_person`, for an explicit `maintain` or the operator. / **不安排人工步骤。** 自动的一轮跳过需要人来做的校正，该条件以 `lost` 结束并给出 `left_for_a_person`，留给显式的 `maintain` 或操作者。
+- **Observe only.** With `correct: false`, drifted conditions are recorded as lost with `not_corrected`, and nothing is changed. / **只观察。** `correct: false` 时，漂移的条件记为不成立并注明 `not_corrected`，不做任何改变。
+- **Disclosed.** Each automatic pass is an ordinary maintenance in its own experiment, named `Maintain <platform> (upkeep)`, with `automatic: true` and `reasons` in its record. `conditions` limits upkeep to some of the platform's conditions and its instruments'. Remove `upkeep` from the platform to stop. / **公开记录。** 每一轮都是普通的保持，在自己的实验中进行，名称为 `Maintain <platform> (upkeep)`，记录中有 `automatic: true` 和 `reasons`。`conditions` 可把自主保持限定在部分条件上；从平台中删除 `upkeep` 即停止。
+
+Platform upkeep does not interrupt an experiment in progress. The status is in `GET /v1/upkeep`, `lab_context.setup.upkeep` and on the platform card: the next foreseen observation, pending reasons, what it waits for and the last pass. / 平台的自主保持不打断进行中的实验。状态见 `GET /v1/upkeep`、`lab_context.setup.upkeep` 和平台卡片：下一次预计观察、待处理的原因、正在等待什么，以及上一轮。
+
+### Inside an experiment / 实验内部
+
+A continuous experiment or a program that names its conditions in `requires` can declare `upkeep` too: `start_experiment(requires=[...], upkeep=True)` or `{"ahead_s": ..., "retry_s": ..., "correct": ...}`. The Runtime then keeps those conditions, and the conditions they depend on, inside the experiment: / 用 `requires` 写明条件的连续实验或程序，也可以声明 `upkeep`。运行服务随后在实验内部保持这些条件及其依赖：
+
+Program upkeep starts after its resources are reserved and the program is running. Conditions from several instruments can be kept in one experiment, within its declared platform and resource reservation. If a new batch adds conditions not covered by a maintenance pass already in progress, it returns `maintenance_active` before acceptance; wait for the named pass and retry the same request ID. / 程序取得预留资源并进入运行状态后才开始维护。同一实验可在声明的平台与预留资源范围内保持多个仪器的条件。若新批次增加了当前维护尚未覆盖的条件，会在受理前返回 `maintenance_active`；等待所指的维护结束，再用同一请求 ID 重试。
+
+- **Before an operation.** When a batch or an operation is submitted and a required condition is unknown, due, lost (after `retry_s`) or about to expire, a pass starts inside the experiment and the new operations wait for it. Each operation still checks its conditions when it starts; one that could not be restored fails with `conditions_not_held`. / **操作之前。** 提交批次或操作时，若所需条件未观察、待核对、不成立（`retry_s` 之后）或即将过期，就在实验内部开始一轮，新操作等这一轮结束。每个操作启动时仍会核对条件；无法恢复时以 `conditions_not_held` 失败。
+- **Between operations.** While the experiment has no operation queued or running, the periodic plan renews what is about to expire, `ahead_s` early. / **操作之间。** 实验没有排队或运行中的操作时，周期性的安排会提前 `ahead_s` 更新即将过期的条件。
+- **At the start.** An experiment that keeps its conditions is accepted while they do not hold yet; they are brought up before its first operation. Starting it requires reserving the devices and resources that maintenance uses; otherwise it is refused with `maintenance_resources`, naming them. / **开始时。** 保持自身条件的实验在条件尚未成立时也会被受理，第一个操作之前先把条件建立起来。启动时需要预留保持过程会用到的设备和资源，否则以 `maintenance_resources` 拒绝并列出它们。
+
+The passes are recorded in the experiment with `automatic: true` and their reasons, and data taken before a condition was found lost are marked `in_doubt` as usual. A program no longer needs to handle `conditions_not_held` itself. / 这些轮次记录在实验中，带 `automatic: true` 和原因；条件被发现不成立之前采集的数据照常标为 `in_doubt`。程序无需再自己处理 `conditions_not_held`。
 
 ## Writing the conditions of a platform / 为一个平台写条件
 
@@ -167,12 +227,12 @@ Settling times, warm-up times and safe ranges come from the instrument manuals; 
 
 | | Read / 读取 | Maintain / 保持 | Disturbance / 扰动 |
 | --- | --- | --- | --- |
-| HTTP | `GET /v1/conditions?platform=`, `GET /v1/conditions/{id}` | `POST /v1/conditions/maintain?wait=`, `GET /v1/maintenance/{id}?wait=` | `POST /v1/conditions/invalidate` |
-| Python | `client.conditions()`, `client.condition(id)` | `client.maintain(platform)`, `run.maintain()` | `client.invalidate(names, reason)` |
+| HTTP | `GET /v1/conditions?platform=&device=`, `GET /v1/conditions/{id}`, `GET /v1/upkeep` | `POST /v1/conditions/maintain?wait=`, `GET /v1/maintenance/{id}?wait=` | `POST /v1/conditions/invalidate` |
+| Python | `client.conditions()`, `client.condition(id)` | `client.maintain(platform)`, `client.maintain(device=...)`, `run.maintain()` | `client.invalidate(names, reason)` |
 | TypeScript | `conditions()`, `condition(id)` | `maintain({platform})`, `run.maintain()` | `invalidate(names, reason)` |
 | MCP | `operating_conditions()` | `operating_conditions(maintain=true, ...)` | `operating_conditions(invalidate=..., conditions=[...])` |
-| CLI | `iop conditions [name]` | `iop conditions --platform P --maintain` | |
+| CLI | `iop conditions [name]` | `iop conditions --platform P --maintain`, `--device D --maintain` | |
 
 `maintain` accepts `platform` or `conditions`, `run_id` to run inside that experiment, `request_id` so a repeated request returns the same pass, and `force` to verify what still holds. Its report lists each condition with `held`, `verified`, `corrected` (and `by`), `lost` or `blocked`. / `maintain` 接受 `platform` 或 `conditions`，`run_id` 表示在该实验内部运行，`request_id` 使重复请求返回同一轮，`force` 连仍然成立的也核对。报告逐条给出 `held`、`verified`、`corrected`（及 `by`）、`lost` 或 `blocked`。
 
-Conditions currently belong to platform descriptions. A reusable instrument profile does not yet install platform conditions automatically. / 条件目前保存在平台说明中；安装可复用的仪器型号说明，还不会自动安装平台条件。
+Platform conditions belong to platform descriptions; an instrument's own conditions belong to its record and can come with its model description. / 平台条件保存在平台说明中；仪器自身的条件保存在设备记录中，并可随型号说明一起提供。

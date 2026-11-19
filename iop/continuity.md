@@ -60,6 +60,8 @@ print(stream.info()['next_sequence'])
 
 Chunks use binary HTTP bodies, ordered sequence numbers and idempotent retries. Descriptions retain the format, channels, units and acquisition conditions. Download chunks through the artifact interface. Transfers use bounded file reads outside the instrument scheduler lock. Wait for each append before sending the next chunk to bound producer memory.
 
+A stream whose format is a numeric type with its byte order (`float32-le`, `int16-be`, `uint8`) reads as one array of samples by channels, its chunks in order, with time as coordinate when `sample_rate_hz` is given: `stream.read_array(at={'channel': 'voltage'}, low=1.0, high=1.5)`, `read_array` with `run_id` and `stream` in MCP, or `GET /v1/runs/{id}/streams/{name}/array`. The options and the reply are those of [reading arrays](../docs/runtime/drivers.md#reading-arrays--读取数组); a chunk need not end on a whole sample.
+
 Hardware clocks, triggers, device buffers and acquisition stopping belong to the instrument driver. Use hardware-buffered acquisition for high sampling rates; Runtime chunks transport and retain its output.
 
 ## SDK processes

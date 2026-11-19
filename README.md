@@ -46,13 +46,21 @@ Operations keep the three roles defined by [AI4Instruments](https://github.com/C
 | **Standard Operations** | Saved methods built from Basic and Standard Operations, with parameters, conditions, a named result and a record of use. |
 | **Workflow Operations** | Saved organizations of methods across devices: a step graph in sequence and in parallel, or a program that decides from results. |
 
-A step with `device` is a Basic Operation; a step without it uses a saved operation by name. The Runtime expands it into its Basic Operations and records every use, so methods that worked accumulate in the laboratory and stay open to reading and revision. See [operations](docs/runtime/operations.md).
+A step with `device` is a Basic Operation; a step without it uses a saved operation by name. The Runtime expands it into its Basic Operations and records every use, so methods that worked accumulate in the laboratory and stay open to reading and revision. Any step can `sweep` parameters: it runs at each value in turn, and the numbers it returns become arrays over the sweep that later steps and saved operations read, for example to go to the angle of most power, or to sweep finely around it. See [operations](docs/runtime/operations.md).
 
 ## Operating conditions
 
 A platform describes the conditions required by its experiments: observations, tolerances, dependencies, correction methods and optional validity periods. `maintain` runs these methods using the same operations and scheduler as experiments. Corrections reserve the coupled devices together; independent platforms can keep working.
 
-Experiments name their conditions with `requires`. The Runtime checks their recorded state before each dependent operation, keeps the observations with the results, and marks relevant intervals when a later observation reveals drift. Bounded `tune` provides a local numerical search; saved operations and programs express other methods. Classification and dependencies remain configurable for each platform. See [operating conditions](docs/runtime/conditions.md).
+Experiments name their conditions with `requires`. The Runtime checks their recorded state before each dependent operation, keeps the observations with the results, and marks relevant intervals when a later observation reveals drift. Bounded `tune` provides a local numerical search; saved operations and programs express other methods. Classification and dependencies remain configurable for each platform.
+
+An instrument's own conditions, such as warm-up, overload or reference lock, belong to its record and can come with its model description, so every instrument of that model starts with them; platform conditions build on them.
+
+A platform that declares `upkeep` is kept by the Runtime: while its instruments are idle, it observes what is unknown, due, about to expire or forecast to drift out of tolerance, and corrects what drifted. Each automatic pass is recorded with its reasons and never runs a step that asks a person. A continuous experiment or program can declare `upkeep` for the conditions it requires: the Runtime then restores them inside the experiment before its operations and renews them between operations. See [operating conditions](docs/runtime/conditions.md).
+
+## Measured arrays
+
+Traces, spectra, images, buffers and numeric data streams are saved with their type, shape, unit and axes; axis coordinates can come from the instrument, such as a sweep's start and stop. `read_array` and the clients tell what an array says without moving it: extremes and where they lie, mean and spread, an envelope along an axis or a map along two, exact values in a chosen window, or the line at a peak or a dip with its center between samples and its width at half height; complex values read as modulus, argument or one component. Rust `iop-execd` computes these views outside the service process; the whole array also comes as a NumPy file. A saved operation can name a value read through a view, such as the frequency of a resonance; later steps bind it and operating conditions verify and tune on it. See [reading arrays](docs/runtime/drivers.md#reading-arrays--读取数组).
 
 ## Research and learning
 
@@ -65,7 +73,7 @@ An episode does not reset equipment. Use an explicit preparation procedure and m
 | Component | Source |
 | --- | --- |
 | Service, scheduler, drivers and Python client | [src/ai4instruments/iop](src/ai4instruments/iop/) |
-| Native process supervisor | [iop/daemon](iop/daemon/) |
+| Native process supervisor and array views | [iop/daemon](iop/daemon/) |
 | TypeScript client | [iop/clients/typescript](iop/clients/typescript/) |
 | Desktop and browser | [iop/interface](iop/interface/) |
 | Instrument and platform formats | [iop/schema](iop/schema/), [iop/instruments](iop/instruments/) |

@@ -164,7 +164,7 @@ class Store:
         if table not in {"runs", "operations", "artifacts"}:
             raise ValueError(table)
         with self.lock:
-            body = "json_remove(body, '$.result', '$.operations', '$.definition', '$.manifest', '$.platform.definition', '$.spec', '$.devices', '$.device_configurations')" if summary and table == 'runs' else 'body'
+            body = "json_remove(body, '$.result', '$.operations', '$.calls', '$.sweeps', '$.definition', '$.manifest', '$.platform.definition', '$.spec', '$.devices', '$.device_configurations')" if summary and table == 'runs' else 'body'
             row = self.db.execute(f"SELECT {body} FROM {table} WHERE id=?", (identifier,)).fetchone()
             if row is None:
                 raise KeyError(identifier)
@@ -209,7 +209,7 @@ class Store:
         with self.lock:
             where, args = (" WHERE run_id=?", [run_id]) if run_id else ("", [])
             args.append(min(max(int(limit), 1), 10000))
-            body = "json_remove(body, '$.result', '$.operations', '$.definition', '$.manifest', '$.platform.definition', '$.spec', '$.devices', '$.device_configurations')" if summary and table == 'runs' else 'body'
+            body = "json_remove(body, '$.result', '$.operations', '$.calls', '$.sweeps', '$.definition', '$.manifest', '$.platform.definition', '$.spec', '$.devices', '$.device_configurations')" if summary and table == 'runs' else 'body'
             rows = self.db.execute(f"SELECT {body} FROM {table}{where} ORDER BY rowid DESC LIMIT ?", args)
             return [json.loads(r[0]) for r in rows]
 

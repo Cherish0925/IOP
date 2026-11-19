@@ -60,6 +60,8 @@ print(stream.info()['next_sequence'])
 
 每块直接传输二进制；按序保存，重复上传同一序号与内容会返回已有记录。描述记录数据格式、通道、单位及采样条件；数据块通过现有文件接口下载。传输使用分段读写，不占用仪器调度锁。程序等待上一块保存后再提交下一块，保持内存用量可控。
 
+格式为带字节序的数值类型（`float32-le`、`int16-be`、`uint8`）时，各数据块按序连成一个“采样 × 通道”的数组，给出 `sample_rate_hz` 时以时间为坐标：`stream.read_array(at={'channel': 'voltage'}, low=1.0, high=1.5)`，MCP 中用 `read_array` 加 `run_id` 和 `stream`，或 `GET /v1/runs/{id}/streams/{name}/array`。选项和返回与[读取数组](../docs/runtime/drivers.md#reading-arrays--读取数组)相同；数据块不必在整个采样处结束。
+
 采样时钟、触发、设备缓冲与采集停止由相应仪器驱动管理。高采样率使用仪器的批量采集接口；Runtime 的数据块用于保存和传递这些结果。
 
 ## SDK 运行

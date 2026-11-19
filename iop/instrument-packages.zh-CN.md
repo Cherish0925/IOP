@@ -23,6 +23,8 @@ iop instrument-catalog --id srs-sr830 --details
 
 型号说明可包含 `scpi`、`modbus` 或 `http` 操作，由 `driver` 指定（默认 `scpi`）。SCPI 说明按 `*IDN?` 自动匹配。Modbus 与 HTTP 仪器没有标准身份查询，登记时直接写明说明编号：`{"id": "bath", "instrument_profile": "vendor-tc1", "config": {"host": "192.168.1.60", "device_id": 3}}`，即补充其操作、名称和资料；`config` 中已写的操作优先。Modbus 操作写明 `function` 及固定 `arguments`、`scale`、`offset`、`signed`、`unit`、`value_parameter`；HTTP 操作写明 `path`、`method`、`query`、`body`、`result_path`。SDK 驱动自行描述操作，通过发现规则登记。
 
+型号说明还可以携带仪器自身的[工作条件](../docs/runtime/conditions.md#conditions-of-an-instrument--仪器自身的条件)：预热、过载、参考锁定、自校准等，用该仪器自己的操作观察和恢复。按该说明登记或被识别为该型号的每台仪器都会得到这些条件，名称为 `<device>.<id>`；记录中同名的条件优先，需要仪器所没有的操作的条件不加入。
+
 自动匹配优先使用实验室保存的说明，其次是安装包，再次是内置说明。同一来源层级中，更具体的型号、序列号或固件条件优先。两个说明同样匹配时，保留候选供选择，通用 SCPI 操作仍可使用。读取目录不会向仪器发送命令。
 
 ## 制作一个包

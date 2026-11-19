@@ -1,11 +1,15 @@
 """Ordered binary data chunks; instrument commands use the normal scheduler."""
 import hashlib
+import json
 import os
+import re
 import uuid
+from .arrays import DTYPES
 from .errors import RequestError
 from .platforms import name as valid_name
 from .store import dumps, now
-import json
+
+NUMERIC = re.compile(r'(u?int(?:8|16|32|64)|float(?:32|64))(?:-(le|be))?')
 
 
 def describe(engine, run_id, name, definition=None):
@@ -29,6 +33,15 @@ def describe(engine, run_id, name, definition=None):
         count, size = engine.store.db.execute('SELECT chunks,bytes FROM streams WHERE run_id=? AND name=?',
                                             (run_id, name)).fetchone()
         return {**json.loads(row[0]), 'chunks': count, 'bytes': size, 'next_sequence': count}
+
+
+def listing(engine, run_id):
+    """The data streams of an experiment with their descriptions, chunk counts and sizes."""
+    engine.store.get('runs', run_id)
+    with engine.store.lock:
+        rows = engine.store.db.execute('SELECT body,chunks,bytes FROM streams WHERE run_id=? ORDER BY name',
+                                       (run_id,)).fetchall()
+    return [{**json.loads(body), 'chunks': count, 'bytes': size, 'next_sequence': count} for body, count, size in rows]
 
 
 def chunks(engine, run_id, name, after=-1, limit=100):
@@ -89,3 +102,55 @@ def append(engine, run_id, name, sequence, source, length):
     finally:
         if not committed:
             path.unlink(missing_ok=True)
+
+
+def array(definition, size):
+    """The array a stream holds when its format is a numeric type such as float32-le: samples by channels,
+    with time as coordinate when the sample rate is known."""
+    found = NUMERIC.fullmatch(str(definition.get('format', '')))
+    if not found or (DTYPES[found[1]] > 1 and not found[2]):
+        raise ValueError('Views read streams whose format is a numeric type with its byte order, such as float32-le')
+    channels = [c for c in definition.get('channels', []) if isinstance(c, dict)] or [{}]
+    width, item = len(channels), DTYPES[found[1]]
+    samples = size // (item * width)
+    if not samples:
+        raise ValueError('The stream holds no complete sample yet')
+    rate = definition.get('sample_rate_hz')
+    first = ({'name': 'time', 'unit': 's', 'start': 0.0, 'step': 1 / rate}
+             if isinstance(rate, (int, float)) and not isinstance(rate, bool) and rate > 0 else {'name': 'sample'})
+    units = [c.get('unit') for c in channels]
+    data = {'dtype': found[1], 'byte_order': 'big' if found[2] == 'be' else 'little',
+            'shape': [samples] if width == 1 else [samples, width], 'count': samples * width,
+            'bytes': samples * width * item}
+    data['axes'] = [first] if width == 1 else [first, {
+        'name': 'channel', 'labels': [str(c.get('name', i)) for i, c in enumerate(channels)],
+        **({'units': units} if any(isinstance(u, str) for u in units) else {})}]
+    if isinstance(units[0], str) and all(u == units[0] for u in units):
+        data['unit'] = units[0]
+    return data
+
+
+def _array(engine, run_id, name):
+    """A numeric stream's array and the chunk files that hold it, in order."""
+    definition = describe(engine, run_id, name)['definition']
+    with engine.store.lock:
+        rows = engine.store.db.execute('SELECT body FROM stream_chunks WHERE run_id=? AND stream=? ORDER BY sequence',
+                                       (run_id, name)).fetchall()
+    folder = engine.home / 'runs' / run_id
+    segments = [[str(folder / chunk['name']), chunk['size']] for chunk in (json.loads(row[0]) for row in rows)]
+    return {'data': array(definition, sum(size for _, size in segments))}, segments
+
+
+def array_view(engine, run_id, name, field=None, **options):
+    """What a numeric stream says: its chunks, in order, read as one array."""
+    from .views import view
+    if field is not None:
+        raise ValueError('A stream holds one array; leave out field')
+    holder, segments = _array(engine, run_id, name)
+    return {'run_id': run_id, 'stream': name, **view(holder, segments, field='', **options)}
+
+
+def array_npy(engine, run_id, name):
+    """A numeric stream's whole samples, by channels, as a .npy file."""
+    from .views import npy
+    return npy(*_array(engine, run_id, name))

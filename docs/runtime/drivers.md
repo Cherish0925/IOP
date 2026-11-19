@@ -71,6 +71,13 @@ Traces, spectra and other numerical arrays are read with `result.type: "array"`.
 
 The result carries `data`: `dtype`, `byte_order`, `shape`, `count`, `bytes`, `sha256`, and `unit` and `axes` when described. The payload is saved unchanged as `<operation>.bin` (or `result.file`) in the operation's output directory. Arrays up to `inline_limit` elements (default 1024) are also returned as nested lists in `values`. The operation record lists its files in `files` as soon as it ends, so a running experiment can download them. Drivers for cameras, digitizers or other SDKs can produce the same description with `ai4instruments.iop.arrays.result(payload, arrays.check_result(spec), context, name)`. / 结果中的 `data` 描述元素类型、字节序、形状、数量、字节数、校验值以及单位和坐标轴。原始数据原样保存在操作输出目录，小数组同时以 `values` 返回；操作结束时文件即列入操作记录，实验进行中即可下载。相机、采集卡等 SDK 驱动可用同一函数生成相同描述。
 
+An axis can carry coordinates and `unit`: `start` with either `step` or `stop` when they are evenly spaced, or `coordinates`, a list with one number for each position, such as the frequencies of a logarithmic sweep. For SCPI, `start`, `step` and `stop` can also be `{"query": command}`, read after the array, because sweep settings change between acquisitions; the result then holds the numbers the instrument reported. A last axis labelled `re`, `im` holds complex values. / 坐标轴可带坐标和 `unit`：等间隔时写 `start` 加 `step` 或 `stop`，否则写 `coordinates`，每个位置一个数，例如对数扫频的各个频率。SCPI 中 `start`、`step`、`stop` 也可写成 `{"query": 命令}`，在读完数组后向仪器查询，结果中记录仪器报告的数值。最后一维标为 `re`、`im` 时表示复数。
+
+```json
+"axes": [{"name": "frequency", "unit": "Hz", "start": {"query": "SENS1:FREQ:STAR?"}, "stop": {"query": "SENS1:FREQ:STOP?"}},
+         {"name": "component", "labels": ["re", "im"]}]
+```
+
 A write with `data` sends one block after its command. `data.parameter` names an array parameter; `dtype` and `byte_order` encode its values. / 带 `data` 的写操作在命令后发送一个二进制块，用于任意波形表等大数组。
 
 ```json
@@ -83,6 +90,33 @@ A write with `data` sends one block after its command. `data.parameter` names an
 ```
 
 `max_block_bytes` (default 256 MiB) limits a received block. `block_terminated: false` is for instruments that send no terminator after a block. Indefinite-length blocks (`#0`) are refused; select a definite-length format. A block read ends with an error after `timeout` seconds without new bytes, so long transfers continue while data arrives. / `max_block_bytes` 限制单个接收块大小；块后不发终止符的仪器设 `block_terminated: false`；不支持 `#0` 不定长块。读取块时，`timeout` 指连续无新数据的时长。
+
+### Reading arrays / 读取数组
+
+`GET /v1/operations/{id}/array`, `read_array` in MCP, `Client.read_array` and `readArray` in TypeScript tell what an array says without moving all of its values. One axis is followed (`along`, default the first); `at` fixes the others by index or label, and an axis not fixed is summarized. Complex values read as `abs` unless `at` chooses `re`, `im`, `arg` (radians) or `power`, the squared modulus: the width of a resonance dip in power, read with `peak`, gives its loaded Q as center over width. `start`/`stop` select positions, `low`/`high` coordinates. Two axes, such as `"along": ["row", "column"]` with `"points": [16, 16]`, read an image or a sweep over two parameters as a map; `start`, `stop`, `low` and `high` then give one value per axis, `null` for none, and in a URL these lists are JSON. / 不搬运全部数值即可读出数组的内容：沿一个轴读取，`at` 按序号或标签固定其他轴，未固定的轴被汇总；复数默认取模，也可取 `re`、`im`、`arg`（弧度）或 `power`（模的平方：谐振凹陷在功率上的 `peak` 宽度给出有载 Q，即中心除以宽度）；`start`/`stop` 按位置、`low`/`high` 按坐标选取范围。沿两个轴读取（如 `"along": ["row", "column"]`、`"points": [16, 16]`）即把图像或双参数扫描读成二维图；此时 `start`、`stop`、`low`、`high` 每个轴给一个值，不限定写 `null`，在 URL 中以 JSON 列表传递。
+
+The reply holds `summary` (count, minimum and maximum with their index and coordinate, mean, standard deviation, and how many values are not finite), then `values` when each of at most `points` positions holds one element, otherwise `envelope`: the minimum, maximum and mean of `points` consecutive buckets. Zooming into the bucket that matters gives its exact values. Along two axes, `along` lists both, coordinates come as pairs and `values` and the `envelope` statistics are rows of the first axis by columns of the second. `along` gives the coordinates of the selection, `low` to `high`, with `step` when evenly spaced; along listed coordinates, exact values come with `along.coordinates`, and `low`/`high` select where those coordinates increase or decrease. / 返回 `summary`（数量、极值及其位置和坐标、均值、标准差、非有限值个数）；位置不超过 `points` 且每个位置一个元素时返回精确的 `values`，否则返回 `points` 段的最小、最大和平均值 `envelope`。在关心的一段上缩小范围，即得到精确值。沿两个轴读取时，`along` 列出两个轴，坐标成对给出，`values` 和 `envelope` 的各项按第一个轴分行、第二个轴分列。`along` 给出所选范围的坐标 `low` 到 `high`，等间隔时带 `step`；坐标逐个列出时，精确值附带 `along.coordinates`，坐标单调时可用 `low`/`high` 选取。
+
+```json
+{"along": {"axis": "frequency", "start": 0, "stop": 1001, "low": 1.0e9, "high": 1.1e9, "step": 1.0e5, "unit": "Hz"},
+ "at": {"component": "abs"},
+ "summary": {"count": 1001, "min": 0.2, "min_index": [600], "min_at": 1.06e9, "max": 0.999, "mean": 0.951, "std": 0.133},
+ "envelope": {"position": [0, 16, ...], "coordinate": [1.0e9, 1.0016e9, ...], "min": [...], "max": [...], "mean": [...]}}
+```
+
+`peak` finds the line at the highest value along one axis, the others fixed with `at`, or with `min` the dip at the lowest. `center` lies between samples, at the vertex of the parabola through the extreme and its two neighbours; `base` is the opposite extreme of the selection; `low` and `high` are where the trace, going out from the line, first comes halfway from its `value` to the base, interpolated between samples, and `width` is the distance between them: the full width at half maximum, of a dip measured from its base. Positions are in the unit of the axis, `value` and `base` in that of the array. When a trace holds several lines, select one with the view's `low` and `high`. / `peak` 沿一个轴（其余的轴用 `at` 固定）找出最高处的谱线，`min` 则找最低处的凹陷。`center` 位于采样点之间，是极值点与两侧相邻点所定抛物线的顶点；`base` 是所选范围内另一端的极值；`low`、`high` 是从谱线向两侧、数值第一次到达 `value` 与 `base` 中点的位置（在采样点间插值），`width` 是两者之差，即半高全宽，凹陷从其基线算起。位置以该轴的单位给出，`value`、`base` 以数组的单位给出。一条迹线有多条谱线时，用视图的 `low`、`high` 选出一条。
+
+Listed coordinates are used directly for the fit and half-height interpolation, including uneven spacing; they must strictly increase or decrease over the selected trace. An extreme at an endpoint stays at that sample. / 显式坐标直接参与拟合与半高位置插值，支持非均匀间距；所选迹线的坐标必须严格递增或递减。极值在端点时保留该采样点的位置。
+
+```json
+{"peak": {"center": 1.06e9, "width": 3.996e6, "low": 1.058e9, "high": 1.062e9, "value": 0.2, "base": 0.999, "index": 600}}
+```
+
+Saved operations and step bindings can take a value through a view, such as the frequency of a resonance; see [operations](operations.md). A data stream of a numeric format reads the same way, as samples by channels; see [continuous data](../../iop/continuity.md#continuous-data). `GET /v1/runs/{id}/array` reads an array an experiment's result holds, such as what a [sweep](operations.md#sweeps--扫描) gathered, and with `request_id` one in the results of a batch. / 已保存操作和步骤绑定也可以经视图取值，例如谐振频率，见[操作](operations.md)。数值格式的数据流同样可读，形状为“采样 × 通道”，见[连续数据](../../iop/continuity.zh-CN.md#连续数据)。`GET /v1/runs/{id}/array` 读取实验结果中的数组，例如[扫描](operations.md#sweeps--扫描)汇集的数组；加 `request_id` 则读取某个批次结果中的数组。
+
+The whole array comes as a NumPy `.npy` file, which `numpy.load` reads: `GET /v1/operations/{id}/array.npy`, `/v1/runs/{id}/array.npy` and `/v1/runs/{id}/streams/{name}/array.npy`, `array_file` in Python and `arrayFile` in TypeScript. A last axis of re/im pairs becomes complex values, a stream gives its whole samples by channels, and a map a sweep gathered from its points' files is read from them in order. / 整个数组以 NumPy `.npy` 文件取得，`numpy.load` 可直接读取：上述三个路径加 `.npy`，Python 的 `array_file`，TypeScript 的 `arrayFile`。最后一维为 re/im 时成为复数；数据流给出完整的“采样 × 通道”；扫描由各点文件汇集的二维图按顺序从这些文件读出。
+
+`iop-execd --array-view` computes views in its own process and reads only the slabs that hold the selected positions; the service stays responsive while it reads large files. The browser draws an array of two axes, other than re/im components, as a map in a perceptually uniform colour scale, keeping the proportions of two lengths in the same unit. Without it, Python computes the same view when it reads at most 4,000,000 elements. / 视图由 `iop-execd` 在独立进程中计算，只读取所选位置所在的数据段，读取大文件时不占用运行服务；浏览器把两个轴的数组（re/im 分量轴除外）画成色阶均匀的二维图，单位相同的两个长度保持比例；没有它时，Python 在读取不超过 400 万个元素时给出相同结果。
 
 ### Other text command protocols / 其他文本指令协议
 
@@ -230,7 +264,7 @@ Each PV becomes `get.<name>` (observe) and, with write access, `set.<name>`; `sn
 | `arguments` | Other keyword arguments of the driver class / 驱动类的其他关键字参数 |
 | `parameters`, `exclude` | Patterns over dotted parameter paths such as `ch1.voltage`; default all / 按参数路径筛选，默认全部 |
 
-Each gettable parameter becomes `get.<path>` with `effect: "observe"`; each settable parameter becomes `set.<path>` with one `value` argument. Types, `minimum`, `maximum`, `enum` and `unit` come from the parameter's QCoDeS validator, so the Runtime rejects out-of-range values before calling the driver. Parameters without a validator accept any JSON value. Array parameters return the shared array description; setpoints of a `ParameterWithSetpoints` become axes and are saved as their own arrays. Complex values are returned as `re` and `im`. `snapshot` returns the driver's cached snapshot without querying the instrument. The identity read by VISA drivers at connection appears in the description. / 可读参数生成 `get.<路径>`（观测），可设参数生成 `set.<路径>`；类型、范围、枚举和单位取自 QCoDeS 校验器，超出范围的值在调用驱动前即被拒绝。数组参数使用统一的数组说明，setpoints 作为坐标轴另存。`snapshot` 读取缓存的状态快照。
+Each gettable parameter becomes `get.<path>` with `effect: "observe"`; each settable parameter becomes `set.<path>` with one `value` argument. Types, `minimum`, `maximum`, `enum` and `unit` come from the parameter's QCoDeS validator, so the Runtime rejects out-of-range values before calling the driver. Parameters without a validator accept any JSON value. Array parameters return the shared array description; setpoints of a `ParameterWithSetpoints` become axes and are saved as their own arrays; setpoints also give their axis coordinates, `start` and `step` when evenly spaced and otherwise `coordinates` when there are at most 10,000, so views report them. Complex values are returned as `re` and `im`. `snapshot` returns the driver's cached snapshot without querying the instrument. The identity read by VISA drivers at connection appears in the description. / 可读参数生成 `get.<路径>`（观测），可设参数生成 `set.<路径>`；类型、范围、枚举和单位取自 QCoDeS 校验器，超出范围的值在调用驱动前即被拒绝。数组参数使用统一的数组说明，setpoints 作为坐标轴另存；setpoints 同时给出坐标轴的坐标：等间隔时为 `start` 和 `step`，否则在不超过 10,000 个时逐个列为 `coordinates`，视图因此带坐标。`snapshot` 读取缓存的状态快照。
 
 `execution.mode: "process"` runs the driver in its own process, so a stalled VISA session affects only that instrument. Driver methods and `Function` objects are not exposed as operations; write a Python driver or an experiment program for them. A `set` result reports the requested value; read the parameter for the instrument's value. / 建议以独立进程运行。驱动的方法和 `Function` 不生成操作；`set` 返回的是请求值，实际值以读回为准。
 

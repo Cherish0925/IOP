@@ -134,17 +134,35 @@ def laboratory(engine, refresh=False, detail='summary'):
         if len(names) > SAVED_OPERATIONS:
             result['operations'][layer + '_omitted'] = len(names) - SAVED_OPERATIONS
     # Platform conditions that do not hold now; those that hold cost the agent nothing.
-    lacking = {}
-    for row in engine.conditions.listing():
-        if row['state'] != 'holds':
-            lacking.setdefault(row['platform'], {}).setdefault(row['state'], []).append(row['id'])
+    lacking = {row['id']: row for row in engine.conditions.listing() if row['state'] != 'holds'}
     if lacking:
-        result['setup']['conditions'] = {state: sorted(c for p in lacking.values() for c in p.get(state, []))[:CONDITIONS]
-                                         for state in ('lost', 'due', 'unknown') if any(state in p for p in lacking.values())}
-        for platform_id, states in sorted(lacking.items()):
-            result['next_steps'].append({'action': 'maintain_conditions', 'platform': platform_id,
-                                         'conditions': sorted(c for names in states.values() for c in names)[:CONDITIONS],
-                                         'submit': '/v1/conditions/maintain'})
+        result['setup']['conditions'] = {state: sorted(c for c, row in lacking.items() if row['state'] == state)[:CONDITIONS]
+                                         for state in ('lost', 'due', 'unknown') if any(row['state'] == state for row in lacking.values())}
+        # One pass per platform covers its instruments; an instrument outside every platform is maintained alone.
+        covered, alone = set(), {}
+        with engine.lock:
+            scopes = {platform_id: engine.conditions.scope(platform_id) for platform_id in sorted(engine.platforms)}
+        for platform_id, names in scopes.items():
+            names = sorted(set(names) & lacking.keys())
+            if names:
+                covered.update(names)
+                upkept = engine.platforms[platform_id]['definition'].get('upkeep') is not None
+                result['next_steps'].append({'action': 'maintain_conditions', 'platform': platform_id,
+                                             'conditions': names[:CONDITIONS], 'submit': '/v1/conditions/maintain',
+                                             **({'upkeep': 'the Runtime maintains these when the platform is idle'} if upkept else {})})
+        for condition_id, row in sorted(lacking.items()):
+            if condition_id not in covered and 'device' in row:
+                alone.setdefault(row['device'], []).append(condition_id)
+        for device_id, names in sorted(alone.items()):
+            result['next_steps'].append({'action': 'maintain_conditions', 'device': device_id,
+                                         'conditions': names[:CONDITIONS], 'submit': '/v1/conditions/maintain'})
+    # Platforms whose conditions the Runtime keeps: the next foreseen pass, what it waits for, the last one.
+    upkept = engine.conditions.upkeep_status()
+    if upkept:
+        result['setup']['upkeep'] = {row.get('platform') or row['run']: {**{k: row[k] for k in ('next', 'waiting') if row.get(k)},
+                                                       **({'pending': sorted(row['pending'])} if row['pending'] else {}),
+                                                       **({'last': row['last']} if 'last' in row else {})}
+                                     for row in upkept}
     unavailable = {o['id']: o['unavailable'] for o in saved if o.get('unavailable')}
     if unavailable:
         result['setup']['unavailable_operations'] = unavailable

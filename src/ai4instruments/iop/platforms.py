@@ -4,6 +4,7 @@ from collections import deque
 import json
 import math
 import re
+from . import views
 
 
 def name(value, what='ID'):
@@ -20,16 +21,31 @@ def strings(values, what):
     return values
 
 
+def sources(binding):
+    """What a binding reads: its source, or the sources of the ends of the range a point of a sweep reads."""
+    if isinstance(binding, dict) and isinstance(binding.get('range'), dict):
+        return [found for end in binding['range'].values() if isinstance(end, dict) for found in sources(end)]
+    return [binding]
+
+
 def dependencies(step):
+    """The steps a step follows: those it names after, and those its bindings and the ranges it sweeps read."""
     result = list(strings(step.get('after', []), 'Step dependencies'))
     bindings = step.get('bindings', {})
     if not isinstance(bindings, dict):
         raise ValueError('Bindings must be an object')
-    for field, binding in bindings.items():
+    sweep = step.get('sweep') if isinstance(step.get('sweep'), dict) else {}
+    read = [(field, found) for field, binding in bindings.items() for found in sources(binding)]
+    read += [(f'sweep {field}', found) for field, spec in sweep.items() if isinstance(spec, dict)
+             for found in sources({'range': spec})]
+    for field, binding in read:
         if not isinstance(field, str) or not isinstance(binding, dict) or not isinstance(binding.get('step'), str):
-            raise ValueError('Each binding needs a parameter name and a source step')
+            raise ValueError('Each binding needs a parameter name and a source step, as does each end of a range '
+                             'read from an earlier result')
         if not isinstance(binding.get('path', []), list) or any(type(k) not in (str, int) for k in binding.get('path', [])):
             raise ValueError('Binding paths contain object keys or array indices')
+        if 'view' in binding:
+            views.check(binding['view'], f'Binding {field}')
         if binding['step'] not in result:
             result.append(binding['step'])
     return result
@@ -67,7 +83,7 @@ def description(value, devices):
         raise ValueError('Platform description must be an object')
     value = json.loads(json.dumps(value, allow_nan=False))
     allowed = {'schema_version', 'id', 'name', 'description', 'devices', 'resources', 'connections', 'procedures',
-               'conditions'}
+               'conditions', 'upkeep'}
     if value.keys() - allowed:
         raise ValueError('Unknown platform fields: ' + ', '.join(sorted(value.keys() - allowed)))
     name(value.get('id'), 'Platform ID')

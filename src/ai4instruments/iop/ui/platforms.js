@@ -16,6 +16,7 @@ import {
   download,
   readJSON,
   uniqueID,
+  date,
 } from "./core.js";
 export function topology(definition) {
   const nodes = definition.devices || [];
@@ -60,11 +61,33 @@ const conditionStates = {
   lost: ["不成立", "Lost"],
   unknown: ["未核对", "Not verified"],
 };
+function upkeepText(platform) {
+  const keeping = state.upkeep.find((u) => u.platform === platform);
+  if (!keeping)
+    return t(
+      "按依赖顺序核对到期的条件，并校正漂移的条件。",
+      "Verify what is due and correct what drifted, dependencies first.",
+    );
+  if (keeping.waiting)
+    return t("自动保持：", "Upkeep: ") + esc(keeping.waiting);
+  return keeping.next
+    ? t("自动保持：下次核对 ", "Upkeep: next observation ") + date(keeping.next)
+    : t(
+        "自动保持：设备空闲时由运行服务核对和校正",
+        "Upkeep: the Runtime maintains these while the instruments are idle",
+      );
+}
 function conditionRows(platform) {
-  const rows = state.conditions.filter((c) => c.platform === platform);
+  // A platform's own conditions and those its instruments carry, in dependency order.
+  const members = new Set(
+    state.platforms.find((p) => p.id === platform)?.definition.devices || [],
+  );
+  const rows = state.conditions.filter(
+    (c) => c.platform === platform || members.has(c.device),
+  );
   if (!rows.length) return "";
   const held = rows.filter((c) => c.state === "holds").length;
-  return `<details class="raw" style="margin:15px 20px" ${held < rows.length ? "open" : ""}><summary>${icon("check")}${t("工作条件", "Operating conditions")} ${held}/${rows.length}</summary><div class="table-wrap"><table><tbody>${rows.map((c) => `<tr data-condition="${esc(c.id)}"><td>${esc(c.id)}<small>${esc(c.description)}</small></td><td>${c.state === "holds" ? "" : '<span class="error-text">'}${t(...conditionStates[c.state])}${c.state === "holds" ? "" : "</span>"}${c.reason ? `<small>${esc(c.reason)}</small>` : ""}</td><td>${c.value === undefined ? "" : esc(String(c.value))}</td></tr>`).join("")}</tbody></table></div><div class="platform-bottom"><span class="muted">${t("按依赖顺序核对到期的条件，并校正漂移的条件。", "Verify what is due and correct what drifted, dependencies first.")}</span><button class="button small" data-maintain="${esc(platform)}">${icon("play")}${t("保持", "Maintain")}</button></div></details>`;
+  return `<details class="raw" style="margin:15px 20px" ${held < rows.length ? "open" : ""}><summary>${icon("check")}${t("工作条件", "Operating conditions")} ${held}/${rows.length}</summary><div class="table-wrap"><table><tbody>${rows.map((c) => `<tr data-condition="${esc(c.id)}"><td>${esc(c.id)}<small>${esc(c.description)}</small></td><td>${c.state === "holds" ? "" : '<span class="error-text">'}${t(...conditionStates[c.state])}${c.state === "holds" ? "" : "</span>"}${c.reason ? `<small>${esc(c.reason)}</small>` : ""}</td><td>${c.value === undefined ? "" : esc(String(c.value))}</td></tr>`).join("")}</tbody></table></div><div class="platform-bottom"><span class="muted">${upkeepText(platform)}</span><button class="button small" data-maintain="${esc(platform)}">${icon("play")}${t("保持", "Maintain")}</button></div></details>`;
 }
 export function platformCard(record, compact = false) {
   const d = record.definition;

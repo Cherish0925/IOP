@@ -1,4 +1,10 @@
-export type Step = { id: string; device?: string; operation: string; arguments?: Record<string, unknown>; after?: string[]; resources?: string[]; requirements?: Record<string, number>; bindings?: Record<string, { step: string; path?: (string | number)[] }> };
+export type Step = { id: string; device?: string; operation: string; arguments?: Record<string, unknown>; after?: string[]; resources?: string[]; requirements?: Record<string, number>; bindings?: Record<string, Source>; sweep?: Sweep };
+/** A value an earlier step returned: path selects inside its result or, with view, inside a view of an array it returned. */
+export type Source = { step: string; path?: (string | number)[]; view?: ArrayViewOptions };
+/** An end of a range: a number, or one read from an earlier step when the sweep runs. */
+export type End = number | Source;
+/** Parameters a step runs over, one point after another: a list of values, or evenly spaced numbers from start to stop or around a center. */
+export type Sweep = Record<string, (number | string)[] | { start: End; stop: End; points: number } | { center: End; span: End; points: number }>;
 export type Endpoint = { device: string; port: string };
 export type Procedure = { steps: Step[]; resources?: string[] };
 export type ConditionStep = { device?: string; operation: string; arguments?: Record<string, unknown> };
@@ -12,14 +18,18 @@ export type Condition = {
   after?: string[]; verify: ConditionStep; accept: Tolerance; usable?: Tolerance; reference?: Record<string, (string | number)[]>;
   correct?: ConditionStep | Tuning | (ConditionStep | Tuning)[]; settle?: number; valid_for?: number; note?: string;
 };
-export type ConditionState = { id: string; platform: string; description: string; kind?: string; after: string[]; state: 'holds' | 'due' | 'lost' | 'unknown'; reason?: string; value?: unknown; verified?: string; valid_until?: string; [key: string]: unknown };
-export type Maintenance = { id: string; platform: string; state: string; complete: boolean; holds?: boolean; run_id: string; report: { condition: string; result: 'held' | 'verified' | 'corrected' | 'lost' | 'blocked'; value?: unknown; by?: string; found?: string }[]; error?: string };
+export type ConditionState = { id: string; platform?: string; device?: string; description: string; kind?: string; after: string[]; state: 'holds' | 'due' | 'lost' | 'unknown'; reason?: string; value?: unknown; verified?: string; valid_until?: string; [key: string]: unknown };
+/** Declared on a platform: the Runtime maintains these conditions when the platform is idle. */
+export type Upkeep = { conditions?: string[]; ahead_s?: number; retry_s?: number; correct?: boolean };
+export type UpkeepStatus = { platform?: string; run?: string; upkeep: Partial<Upkeep>; next: string | null; pending: Record<string, string>; waiting?: string; last?: { id: string; state: string; started: string; ended?: string; holds?: boolean; run_id: string } };
+export type Maintenance = { id: string; platform: string | null; device?: string; state: string; complete: boolean; holds?: boolean; run_id: string; report: { condition: string; result: 'held' | 'verified' | 'corrected' | 'lost' | 'blocked'; value?: unknown; by?: string; found?: string }[]; error?: string };
 export type PlatformDefinition = {
   schema_version: 1; id: string; name?: string; description?: string; devices: string[];
   resources?: { id: string; devices: string[]; description?: string; operations?: Record<string, string[]> }[];
   connections?: { from: Endpoint; to: Endpoint; kind: string; description?: string }[];
   procedures?: Record<string, Procedure>;
   conditions?: Condition[];
+  upkeep?: Upkeep;
 };
 export type Platform = { id: string; revision: number; updated: string; definition: PlatformDefinition; active_runs?: string[]; missing_devices?: string[] };
 export type RunRecord = { id: string; state: string; result?: unknown; error?: string; platform?: Platform; [key: string]: unknown };
@@ -29,7 +39,31 @@ export type ArtifactRecord = { id: string; run_id: string; name: string; size: n
 export type Event = { sequence: number; kind: string; run_id?: string; [key: string]: unknown };
 export type ManualTask = { operation_id: string; run_id: string | null; device: string; operation: string; instruction: string; arguments: Record<string, unknown>; readings: Record<string, Record<string, unknown>>; created: string };
 export type RunUpdates = { run: RunRecord; changes: Event[]; operations: OperationRecord[]; cursor: number; has_more: boolean };
-export type Submission = { name?: string; project?: string; experiment?: string; platform?: string; resources?: string[]; requirements?: Record<string, number>; parameters?: Record<string, unknown>; request_id?: string; requires?: string[] };
+/** An axis a view follows: the positions selected and, when known, their coordinates. */
+export type ArrayAxis = { axis: string | number; start: number; stop: number; low?: number; high?: number; step?: number; coordinates?: number[]; unit?: string };
+/** What an array says: see Client.readArray. Along two axes, along is a pair and values and envelope are maps. */
+export type ArrayView = {
+  field: string; dtype: string; shape: number[]; unit?: string;
+  along: ArrayAxis | ArrayAxis[];
+  at?: Record<string, string | number>; summarized?: (string | number)[];
+  summary: { count: number; nonfinite?: number; min: number | null; max: number | null; mean: number | null; std: number | null;
+    min_index?: number[]; max_index?: number[]; min_at?: number | (number | null)[]; max_at?: number | (number | null)[] };
+  values?: (number | null)[] | (number | null)[][];
+  envelope?: { position: number[] | number[][]; coordinate?: number[] | (number[] | null)[]; min: (number | null)[] | (number | null)[][];
+    max: (number | null)[] | (number | null)[][]; mean: (number | null)[] | (number | null)[][] };
+  /** With peak: the line's center between samples, its width where it is halfway to the base, the coordinates there, its value and base. */
+  peak?: { center: number; width?: number; low?: number; high?: number; value: number; base: number; index: number } | null;
+};
+/** The URL query of an array view; at, and a list with one value per axis along, are sent as JSON. */
+function viewQuery(options: ArrayViewOptions) {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(options)) if (value !== undefined) query.set(key, key === 'at' || Array.isArray(value) ? JSON.stringify(value) : String(value));
+  return query.size ? '?' + query : '';
+}
+type PerAxis<T> = T | (T | null)[];
+export type ArrayViewOptions = { field?: string; along?: string | number | (string | number)[]; at?: Record<string, string | number>;
+  start?: PerAxis<number>; stop?: PerAxis<number>; low?: PerAxis<number>; high?: PerAxis<number>; points?: number | number[]; peak?: 'max' | 'min' };
+export type Submission = { name?: string; project?: string; experiment?: string; platform?: string; resources?: string[]; requirements?: Record<string, number>; parameters?: Record<string, unknown>; request_id?: string; requires?: string[]; upkeep?: boolean | Omit<Upkeep, 'conditions'> };
 export class IOPError extends Error {
   constructor(message: string, readonly status: number, readonly details: Record<string, unknown> = {}) { super(message); this.name = 'IOPError'; }
   get code() { return this.details.code as string | undefined; }
@@ -103,16 +137,41 @@ export class IOP {
   programFile(id: string, name: string) {
     return this.request<{ text: string | null }>(`/v1/library/${encodeURIComponent(id)}/files/${name.split('/').map(encodeURIComponent).join('/')}`);
   }
-  conditions(platform?: string) { return this.request<ConditionState[]>('/v1/conditions' + (platform ? '?' + new URLSearchParams({ platform }) : '')); }
+  /** Summary, envelope or exact window of an array an operation returned, without moving all its values. */
+  readArray(operationId: string, options: ArrayViewOptions = {}) {
+    return this.request<ArrayView & {operation_id: string}>(`/v1/operations/${encodeURIComponent(operationId)}/array` + viewQuery(options));
+  }
+  /** A file the service makes on request, such as an array as .npy. */
+  async file(path: string, signal?: AbortSignal): Promise<Response> {
+    const response = await fetch(this.endpoint + path, { headers: { Authorization: 'Bearer ' + this.token }, signal: signal ?? AbortSignal.timeout(this.timeout) });
+    if (!response.ok) {
+      const text = await response.text();
+      let message = response.statusText;
+      try { message = JSON.parse(text).error ?? message; } catch { /* not JSON */ }
+      throw new IOPError(message, response.status);
+    }
+    return response;
+  }
+  /** The whole array an operation returned as a NumPy .npy file; a last axis of re/im pairs becomes complex values. */
+  arrayFile(operationId: string, field?: string, signal?: AbortSignal) {
+    return this.file(`/v1/operations/${encodeURIComponent(operationId)}/array.npy` + viewQuery({ field }), signal);
+  }
+  /** Conditions with their state; `platform` adds its instruments' own conditions, `device` gives one instrument's. */
+  conditions(platform?: string, device?: string) {
+    const query = new URLSearchParams(Object.entries({ platform, device }).filter((entry): entry is [string, string] => Boolean(entry[1])));
+    return this.request<ConditionState[]>('/v1/conditions' + (query.size ? '?' + query : ''));
+  }
   condition(id: string) { return this.request<Condition & ConditionState & { statistics: Record<string, unknown>; records: Record<string, unknown>[] }>('/v1/conditions/' + encodeURIComponent(id)); }
   /** Verify the conditions that are due and correct those that drifted, in dependency order; resolves when the pass has ended. */
-  async maintain(options: { platform?: string; conditions?: string[]; runId?: string; requestId?: string; force?: boolean; signal?: AbortSignal } = {}): Promise<Maintenance> {
+  async maintain(options: { platform?: string; device?: string; conditions?: string[]; runId?: string; requestId?: string; force?: boolean; signal?: AbortSignal } = {}): Promise<Maintenance> {
     let job = await this.request<Maintenance>('/v1/conditions/maintain?wait=25', {
-      platform: options.platform, conditions: options.conditions, run_id: options.runId,
+      platform: options.platform, device: options.device, conditions: options.conditions, run_id: options.runId,
       request_id: options.requestId ?? crypto.randomUUID(), force: options.force ?? false }, options.signal);
     while (!job.complete) job = await this.request<Maintenance>(`/v1/maintenance/${encodeURIComponent(job.id)}?wait=25`, undefined, options.signal);
     return job;
   }
+  /** Platforms whose conditions the Runtime keeps: settings, pending reasons, the next foreseen pass and the last one. */
+  upkeep(platform?: string) { return this.request<UpkeepStatus[]>('/v1/upkeep' + (platform ? '?' + new URLSearchParams({ platform }) : '')); }
   invalidate(conditions: string[], reason: string) { return this.request<ConditionState[]>('/v1/conditions/invalidate', { conditions, reason }); }
   platforms() { return this.request<Platform[]>('/v1/platforms'); }
   platform(id: string) { return this.request<Platform>('/v1/platforms/' + encodeURIComponent(id)); }
@@ -156,6 +215,20 @@ export class Run {
   checkpoints() { return this.client.request<Record<string, {name: string; revision: number; updated: string; state: unknown}>>(`/v1/runs/${encodeURIComponent(this.id)}/checkpoints`); }
   checkpoint(state: unknown, name = 'main') { return this.client.request(`/v1/runs/${encodeURIComponent(this.id)}/checkpoints`, { name, state }); }
   resume(requestId = crypto.randomUUID()) { return this.client.request<RunRecord>(`/v1/runs/${encodeURIComponent(this.id)}/resume`, { request_id: requestId }); }
+  /** A whole array this experiment's result holds, such as a sweep's map, as a NumPy .npy file; with requestId, one in that batch's results. */
+  arrayFile(options: { field?: string; requestId?: string } = {}, signal?: AbortSignal) {
+    const query = new URLSearchParams();
+    if (options.field !== undefined) query.set('field', options.field);
+    if (options.requestId !== undefined) query.set('request_id', options.requestId);
+    return this.client.file(`/v1/runs/${encodeURIComponent(this.id)}/array.npy` + (query.size ? '?' + query : ''), signal);
+  }
+  /** What an array this experiment's result holds says, such as what a sweep gathered; with requestId, one in that batch's results. */
+  readArray(options: ArrayViewOptions & { requestId?: string } = {}) {
+    const { requestId, ...view } = options;
+    const query = viewQuery(view);
+    return this.client.request<ArrayView & {run_id: string; request_id?: string}>(`/v1/runs/${encodeURIComponent(this.id)}/array` + query + (requestId === undefined ? '' : (query ? '&' : '?') + new URLSearchParams({ request_id: requestId })));
+  }
+  streams() { return this.client.request<{name: string; definition: Record<string, unknown>; chunks: number; bytes: number; next_sequence: number}[]>(`/v1/runs/${encodeURIComponent(this.id)}/streams`); }
   async stream(name: string, definition?: Record<string, unknown>) {
     const stream = new DataStream(this, name);
     if (definition) await this.client.request(stream.path, { definition });
@@ -208,9 +281,10 @@ export class Run {
   maintain(conditions?: string[], options: { force?: boolean; signal?: AbortSignal } = {}) {
     return this.client.maintain({ conditions, runId: this.id, ...options });
   }
-  async call(operation: string, args: Record<string, unknown> = {}, options: { requestId?: string; signal?: AbortSignal } = {}) {
+  /** Use a saved operation and return its named result; with sweep, at each point, its named results gathered into arrays. */
+  async call(operation: string, args: Record<string, unknown> = {}, options: { requestId?: string; signal?: AbortSignal; sweep?: Sweep } = {}) {
     const requestId = options.requestId ?? crypto.randomUUID();
-    await this.batch([{ id: 'call', operation, arguments: args }], { requestId, signal: options.signal });
+    await this.batch([{ id: 'call', operation, arguments: args, ...(options.sweep ? { sweep: options.sweep } : {}) }], { requestId, signal: options.signal });
     const batch = await this.client.request<{ results: Record<string, Record<string, unknown>> }>(
       `/v1/runs/${encodeURIComponent(this.id)}/batches?` + new URLSearchParams({ request_id: requestId }), undefined, options.signal);
     return batch.results.call;
@@ -266,6 +340,10 @@ export class DataStream {
   constructor(readonly run: Run, name: string) { this.path = `/v1/runs/${encodeURIComponent(run.id)}/streams/${encodeURIComponent(name)}`; }
   info() { return this.run.client.request<{name: string; definition: Record<string, unknown>; chunks: number; bytes: number; next_sequence: number}>(this.path); }
   chunks(after = -1, limit = 100) { return this.run.client.request<{chunks: Record<string, unknown>[]; cursor: number}>(this.path + '/chunks?' + new URLSearchParams({ after: String(after), limit: String(limit) })); }
+  /** What a numeric stream (format such as float32-le) says, its chunks read as one array of samples by channels. */
+  readArray(options: Omit<ArrayViewOptions, 'field'> = {}) { return this.run.client.request<ArrayView & {run_id: string; stream: string}>(this.path + '/array' + viewQuery(options)); }
+  /** The whole samples of a numeric stream, by channels, as a NumPy .npy file. */
+  arrayFile(signal?: AbortSignal) { return this.run.client.file(this.path + '/array.npy', signal); }
   async append(data: Blob, sequence: number, signal?: AbortSignal) {
     const response = await fetch(this.run.client.endpoint + this.path + '/chunks?sequence=' + sequence, {
       method: 'POST', headers: { Authorization: 'Bearer ' + this.run.client.token, 'Content-Type': 'application/octet-stream' },

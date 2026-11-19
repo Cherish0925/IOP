@@ -83,6 +83,7 @@ def configure(engine, device_id, definition, expected_revision):
             from .monitors import check
             monitors = check(definition, description)
             with engine.lock:
+                engine.conditions.prepare_instrument(device_id, definition, description)
                 config = copy.deepcopy(engine.config)
                 config['devices'] = [definition if d['id'] == device_id else d for d in config['devices']]
                 config.get('released_devices', {}).pop(device_id, None)
@@ -95,6 +96,7 @@ def configure(engine, device_id, definition, expected_revision):
                 engine.descriptions[device_id] = dict(description, revision=version['revision'])
                 engine.allocation.limits['device:' + device_id] = description.get('concurrency', 1)
                 engine.monitors.configure(device_id, monitors)
+                engine.conditions.index()
                 engine.offline.pop(device_id, None)
                 engine.released.discard(device_id)
             return version
