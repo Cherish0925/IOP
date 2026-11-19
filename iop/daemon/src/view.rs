@@ -800,6 +800,36 @@ fn shaped(trace: &[f64], first: usize, coordinates: Option<&[f64]>, shape: Fit) 
         "residual": number((cost / n as f64).sqrt()),
         "count": n,
     });
+    if n > 4 {
+        // Standard errors from what the line leaves and the curvature of the fit at its end, the values taken
+        // as independent: the diagonal of the inverse of the normal equations, scaled by the residual variance.
+        let mut a = [[0.0; 4]; 4];
+        for &t in &t {
+            let d = model(&p, t).1;
+            for j in 0..4 {
+                for k in 0..4 {
+                    a[j][k] += d[j] * d[k];
+                }
+            }
+        }
+        let variance = cost / (n - 4) as f64;
+        let inverse: Option<Vec<f64>> = (0..4)
+            .map(|j| {
+                let mut unit = [0.0; 4];
+                unit[j] = 1.0;
+                solve(a, unit).map(|x| variance * x[j])
+            })
+            .collect();
+        found["errors"] = match inverse {
+            Some(v) => json!({
+                "center": number(v[2].sqrt() * half),
+                "width": number(2.0 * v[3].sqrt() * half),
+                "height": number(v[1].sqrt()),
+                "base": number(v[0].sqrt()),
+            }),
+            None => Value::Null,
+        };
+    }
     if coordinates.is_some() {
         found["coordinates"] = json!(true);
     }
@@ -879,6 +909,19 @@ fn line_through(trace: &[f64], first: usize, coordinates: Option<&[f64]>) -> Val
         "residual": number((squares / n).sqrt()),
         "count": points.len(),
     });
+    if points.len() > 2 {
+        // Standard errors from what the line leaves, the values taken as independent: the slope's, and that of
+        // where it reaches zero from the slope and the mean, which are uncorrelated.
+        let variance = squares / (n - 2.0);
+        found["errors"] = json!({
+            "slope": number((variance / sxx).sqrt()),
+            "zero": if slope != 0.0 {
+                number((variance / (slope * slope) * (1.0 / n + my * my / (slope * slope * sxx))).sqrt())
+            } else {
+                Value::Null
+            },
+        });
+    }
     if coordinates.is_some() {
         found["coordinates"] = json!(true);
     }
@@ -1466,6 +1509,7 @@ mod tests {
             })
             .collect();
         let found = fit_of(&line, json!({"fit": "line"}));
+        assert!(found["errors"]["slope"].as_f64().unwrap() < 1e-12);
         for (key, expected) in [
             ("slope", 2.0),
             ("intercept", 1.0),
@@ -1583,6 +1627,16 @@ mod tests {
         assert!((at("width") - 6.0).abs() < 0.1, "{found}");
         assert!((at("height") + 0.8).abs() < 0.02 && (at("base") - 1.0).abs() < 0.005);
         assert!(at("residual") < 0.007 && found["count"] == json!(120));
+        // The true center and width lie within three standard errors of those found.
+        let error = |key: &str| found["errors"][key].as_f64().unwrap();
+        assert!(
+            (at("center") - 41.3).abs() < 3.0 * error("center") && error("center") < 0.05,
+            "{found}"
+        );
+        assert!(
+            (at("width") - 6.0).abs() < 3.0 * error("width") && error("width") < 0.1,
+            "{found}"
+        );
         // A Gaussian beam profile 10 wide at 64.5, read in listed coordinates that are half a unit apart.
         let profile: Vec<f64> = (0..200)
             .map(|x| 0.1 + 2.0 * (-LN_2 * ((x as f64 * 0.5 - 64.5) / 5.0).powi(2)).exp())

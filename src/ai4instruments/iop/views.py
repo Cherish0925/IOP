@@ -549,9 +549,28 @@ def _shaped(seq, first, coordinates, shape):
         p, cost, damping = trial, nxt, damping / 10.0
         if improved <= 1e-12 * cost:
             break
-    return {'center': _finite(middle + p[2] * half), 'width': _finite(2.0 * abs(p[3]) * half), 'height': _finite(p[1]),
-            'base': _finite(p[0]), 'residual': _finite(math.sqrt(cost / n)), 'count': n,
-            **({'coordinates': True} if coordinates is not None else {})}
+    found = {'center': _finite(middle + p[2] * half), 'width': _finite(2.0 * abs(p[3]) * half), 'height': _finite(p[1]),
+             'base': _finite(p[0]), 'residual': _finite(math.sqrt(cost / n)), 'count': n}
+    if n > 4:
+        # Standard errors from what the line leaves and the curvature of the fit at its end, the values taken as
+        # independent: the diagonal of the inverse of the normal equations, scaled by the residual variance.
+        a = [[0.0] * 4 for _ in range(4)]
+        for at in t:
+            d = model(p, at)[1]
+            for j in range(4):
+                for i in range(4):
+                    a[j][i] += d[j] * d[i]
+        variance = cost / (n - 4)
+        columns = [_solve(a, [1.0 if i == j else 0.0 for i in range(4)]) for j in range(4)]
+        if all(column is not None for column in columns):
+            v = [variance * columns[j][j] for j in range(4)]
+            found['errors'] = {'center': _finite(math.sqrt(v[2]) * half) if v[2] >= 0 else None,
+                               'width': _finite(2.0 * math.sqrt(v[3]) * half) if v[3] >= 0 else None,
+                               'height': _finite(math.sqrt(v[1])) if v[1] >= 0 else None,
+                               'base': _finite(math.sqrt(v[0])) if v[0] >= 0 else None}
+        else:
+            found['errors'] = None
+    return {**found, **({'coordinates': True} if coordinates is not None else {})}
 
 
 def _solve(m, b):
@@ -684,9 +703,17 @@ def _fit(seq, first, coordinates=None):
     for x, y in points:
         left = (y - my) - slope * (x - mx)
         squares += left * left
-    return {'slope': _finite(slope), 'intercept': _finite(my - slope * mx),
-            'zero': _finite(mx - my / slope) if slope != 0.0 else None, 'residual': _finite(math.sqrt(squares / n)),
-            'count': n, **({'coordinates': True} if coordinates is not None else {})}
+    found = {'slope': _finite(slope), 'intercept': _finite(my - slope * mx),
+             'zero': _finite(mx - my / slope) if slope != 0.0 else None, 'residual': _finite(math.sqrt(squares / n)),
+             'count': n}
+    if n > 2:
+        # Standard errors from what the line leaves, the values taken as independent: the slope's, and that of
+        # where it reaches zero from the slope and the mean, which are uncorrelated.
+        variance = squares / (n - 2.0)
+        found['errors'] = {'slope': _finite(math.sqrt(variance / sxx)),
+                           'zero': _finite(math.sqrt(variance / (slope * slope) * (1.0 / n + my * my / (slope * slope * sxx))))
+                           if slope != 0.0 else None}
+    return {**found, **({'coordinates': True} if coordinates is not None else {})}
 
 
 def _describe(seq, first, i, base, sign, coordinates):
@@ -768,21 +795,27 @@ def _crossing(found, coordinates):
 def _fitted(found, coordinates):
     """A fit made in positions, given in the coordinates of its axis when it has them: a straight line's slope per
     unit of the axis, its value at coordinate zero, the coordinate where it reaches zero and what it leaves; or the
-    center, width, height and base of a line of Lorentzian or Gaussian shape and what it leaves."""
+    center, width, height and base of a line of Lorentzian or Gaussian shape and what it leaves; with the standard
+    errors of the slope and where it reaches zero, or of the center, width, height and base."""
     if found is None:
         return None
-    if 'center' in found:
-        line = {key: found[key] for key in ('center', 'width', 'height', 'base', 'residual', 'count')}
-        if isinstance(coordinates, tuple) and not found.get('coordinates') and found['center'] is not None:
-            start, step = coordinates
-            line.update(center=start + found['center'] * step,
-                        width=None if found['width'] is None else found['width'] * abs(step))
-        return line
-    line = {key: found[key] for key in ('slope', 'intercept', 'zero', 'residual', 'count')}
-    if isinstance(coordinates, tuple) and not found.get('coordinates') and found['slope'] is not None:
+    shaped = 'center' in found
+    line = {key: found[key] for key in (('center', 'width', 'height', 'base') if shaped else ('slope', 'intercept', 'zero'))
+            + ('residual', 'count', 'errors') if key in found}
+    errors = found.get('errors')
+    if isinstance(coordinates, tuple) and not found.get('coordinates') and found['center' if shaped else 'slope'] is not None:
         start, step = coordinates
-        line.update(slope=found['slope'] / step, intercept=found['intercept'] - found['slope'] * start / step,
-                    zero=None if found['zero'] is None else start + found['zero'] * step)
+        across = (lambda value: None if value is None else value * abs(step))
+        if shaped:
+            line.update(center=start + found['center'] * step, width=across(found['width']))
+            if errors:
+                line['errors'] = {**errors, 'center': across(errors['center']), 'width': across(errors['width'])}
+        else:
+            line.update(slope=found['slope'] / step, intercept=found['intercept'] - found['slope'] * start / step,
+                        zero=None if found['zero'] is None else start + found['zero'] * step)
+            if errors:
+                line['errors'] = {'slope': None if errors['slope'] is None else errors['slope'] / abs(step),
+                                  'zero': across(errors['zero'])}
     return line
 
 

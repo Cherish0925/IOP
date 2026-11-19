@@ -330,6 +330,7 @@ class ViewCase(unittest.TestCase):
         fit = self.view(light, {'dtype': 'float64', 'axes': [current], 'unit': 'W'}, low=0.03, fit='line')['fit']
         for key, expected in (('slope', 0.401), ('intercept', -0.01), ('zero', 0.01 / 0.401), ('residual', 0)):
             self.assertAlmostEqual(fit[key], expected, delta=1e-12)
+        self.assertLess(max(fit['errors'].values()), 1e-12)
         self.assertEqual(fit['count'], 31)
         with self.assertRaisesRegex(ValueError, 'fit is line'):
             self.view(light, {'dtype': 'float64'}, fit='curve')
@@ -351,6 +352,10 @@ class ViewCase(unittest.TestCase):
         self.assertAlmostEqual(fit['center'] / fit['width'], 2120, delta=0.005 * 2120)
         self.assertGreater(abs(line['center'] / line['width'] - 2120), 0.01 * 2120)
         self.assertEqual((round(fit['height'], 1), round(fit['base'], 2), fit['count']), (-0.8, 1.0, 201))
+        # The true center and width lie within three standard errors, which come with the fit.
+        self.assertLess(abs(fit['center'] - 1.06e9), 3 * fit['errors']['center'])
+        self.assertLess(abs(fit['width'] - 0.5e6), 3 * fit['errors']['width'])
+        self.assertLess(fit['errors']['width'], 0.01 * 0.5e6)
         # A Gaussian beam profile 10 um wide at half height, sampled every 0.5 um.
         x = {'name': 'x', 'unit': 'um', 'start': 0, 'step': 0.5}
         profile = [0.1 + 2 * math.exp(-math.log(2) * ((0.5 * i - 64.5) / 5) ** 2) for i in range(200)]

@@ -60,8 +60,9 @@ export type ArrayView = {
   /** With level: each place the trace crosses it, between samples, in order; index is the sample before. */
   crossings?: { at: number; rising: boolean; index: number }[];
   /** With fit "line": the straight line through the selection, its value at coordinate zero, where it reaches zero, and the root mean square it leaves; with "lorentzian" or "gaussian", a line of that shape, its full width at half height. */
-  fit?: { slope: number; intercept: number; zero: number | null; residual: number; count: number }
-    | { center: number; width: number; height: number; base: number; residual: number; count: number } | null;
+  fit?: { slope: number; intercept: number; zero: number | null; residual: number; count: number; errors?: { slope: number | null; zero: number | null } }
+    | { center: number; width: number; height: number; base: number; residual: number; count: number;
+        errors?: { center: number | null; width: number | null; height: number | null; base: number | null } | null } | null;
   /** With one other axis left free: its coordinates or labels, and at each of its positions the peak, crossings and fit of the trace there. */
   rows?: { axis: string | number; unit?: string; coordinates?: number[]; labels?: string[]; peak?: (ArrayView['peak'])[];
     crossings?: NonNullable<ArrayView['crossings']>[]; fit?: (ArrayView['fit'])[] };
