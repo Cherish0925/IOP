@@ -206,6 +206,17 @@ class Store:
                                   (run_id, int(after), min(max(int(limit), 1), 1000))).fetchall()
         return {'operations':[json.loads(body) for _, body in rows], 'cursor':rows[-1][0] if rows else int(after)}
 
+    def operations(self, run_id):
+        """Every operation of an experiment, in the order it was submitted."""
+        with self.lock:
+            return [json.loads(row[0]) for row in
+                    self.db.execute('SELECT body FROM operations WHERE run_id=? ORDER BY rowid', (run_id,))]
+
+    def forget_files(self, run_id, folder):
+        """Drop the records of an experiment's files under a folder of its own, inside a transaction."""
+        prefix = folder.rstrip('/') + '/'
+        self.db.execute('DELETE FROM artifacts WHERE run_id=? AND substr(name,1,?)=?', (run_id, len(prefix), prefix))
+
     def list(self, table, run_id=None, limit=100, summary=False):
         if table not in {"runs", "operations", "artifacts"}:
             raise ValueError(table)

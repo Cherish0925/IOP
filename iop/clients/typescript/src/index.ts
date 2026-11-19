@@ -36,7 +36,7 @@ export type PlatformDefinition = {
 export type Platform = { id: string; revision: number; updated: string; definition: PlatformDefinition; active_runs?: string[]; missing_devices?: string[] };
 /** Data that may have been taken while a condition did not hold: since its last accepted verification, until it was found lost or disturbed. */
 export type Doubt = { since: string | null; found: string; outcome: string; reason?: string };
-export type RunRecord = { id: string; state: string; result?: unknown; error?: string; platform?: Platform; operation_states?: Record<string, number>; in_doubt?: Record<string, Doubt>; estimated_end?: string; [key: string]: unknown };
+export type RunRecord = { id: string; state: string; result?: unknown; error?: string; platform?: Platform; operation_states?: Record<string, number>; in_doubt?: Record<string, Doubt>; estimated_end?: string; can_resume?: boolean; attempt?: number; [key: string]: unknown };
 export type OperationRecord = RunRecord & { run_id: string; device: string; operation: string; device_revision?: number; maintenance?: boolean; retakes?: string; retaken_by?: string; attempts?: { state: string; error?: string; started: string; ended: string }[]; retry_at?: string; conditions?: Record<string, { accepted: string; value?: unknown; reference?: Record<string, unknown> }> };
 export type BatchRecord = { request_id: string; run_id: string; complete: boolean; operations: OperationRecord[] };
 export type ArtifactRecord = { id: string; run_id: string; name: string; size: number; media_type: string; created: string; operation_ids?: string[] };

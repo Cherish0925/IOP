@@ -121,14 +121,7 @@ class Engine:
                 self.offline[device.get('id', 'unknown')] = str(error)
         for run in self.store.recover():
             self.runs[run["id"]] = run
-            cursor = 0
-            while True:
-                page = self.store.operation_page(run['id'], cursor, 1000)
-                if not page['operations']:
-                    break
-                for op in page['operations']:
-                    self.operations[op['id']] = op
-                cursor = page['cursor']
+            self.operations.update((op['id'], op) for op in self.store.operations(run['id']))
             self._index_run(run)
         self.resource_holds = self.store.resource_holds()
         self.thread = threading.Thread(target=self._loop, name="iop-scheduler", daemon=True)
@@ -1543,9 +1536,9 @@ class Engine:
 
     def _ends(self, run):
         """When a running step graph would end at its pace so far: the time it has run, scaled by what is left over
-        what is done, each operation counting as long as those of its kind took in it. None until each kind left
-        has ended once."""
-        took, left = {}, []
+        what it has done since it started or continued, each operation counting as long as those of its kind took
+        in it. None until each kind left has ended once."""
+        took, left, done, start = {}, [], 0, stamp(run['started'])
         for oid in run['operations']:
             op = self.operations[oid]
             if op.get('maintenance'):
@@ -1553,14 +1546,15 @@ class Engine:
             kind = (op['device'], op['operation'])
             if op['state'] == 'completed' and op.get('started') and op.get('ended'):
                 took.setdefault(kind, []).append(stamp(op['ended']) - stamp(op['started']))
+                if stamp(op['started']) >= start:
+                    done += took[kind][-1]
             elif op['state'] in ('queued', 'running'):
                 left.append(kind)
-        done = sum(map(sum, took.values()))
         if not left or not done or any(kind not in took for kind in left):
             return None
         rest = sum(sum(took[kind]) / len(took[kind]) for kind in left)
         clock = time.time()
-        return datetime.fromtimestamp(clock + (clock - stamp(run['started'])) * rest / done, timezone.utc).isoformat()
+        return datetime.fromtimestamp(clock + (clock - start) * rest / done, timezone.utc).isoformat()
 
     def run_info(self, run_id, details=True):
         result = self.store.get('runs', run_id, summary=not details)
@@ -1573,7 +1567,7 @@ class Engine:
         result['progress'] = {name: {k: v for k, v in record.items() if k != 'state'}
                               for name, record in self.store.checkpoints(run_id).items()}
         result['can_resume'] = (result['state'] in TERMINAL - {'completed'} and
-            (result['kind'] == 'external' or result['kind'] == 'package' and
+            (result['kind'] in ('external', 'workflow') or result['kind'] == 'package' and
              result.get('package', {}).get('resume') is True and bool(result['progress'])))
         if details:
             result['operation_records'] = list(reversed(self.store.list('operations', run_id, 10000)))
@@ -1723,14 +1717,13 @@ class Engine:
                     run.update(state='cancelling', end_state='failed', error=str(error))
         maintaining = {job['run_id'] for job in self.conditions.jobs.values() if job['state'] == 'running'}
         # Points in doubt are taken again once no pass runs in their experiment, before its other operations.
-        for rid in [rid for rid, doubted in self.doubted.items() if doubted and rid not in maintaining]:
-            doubted = list(self.doubted.pop(rid))
-            if self.runs.get(rid, {}).get('state') == 'running':
-                try:
-                    self._retake(self.runs[rid], doubted)
-                except ValueError as error:
-                    # The points stay in doubt, as without retake, such as when their instrument went offline.
-                    self.errors.append({'time': now(), 'error': f'Retaking points of {rid}: {error}'})
+        for rid in [rid for rid, doubted in self.doubted.items()
+                    if doubted and rid not in maintaining and self.runs.get(rid, {}).get('state') == 'running']:
+            try:
+                self._retake(self.runs[rid], list(self.doubted.pop(rid)))
+            except ValueError as error:
+                # The points stay in doubt, as without retake, such as when their instrument went offline.
+                self.errors.append({'time': now(), 'error': f'Retaking points of {rid}: {error}'})
         # Round-robin between experiments; a large ready set cannot monopolize starts.
         run_ids = [rid for rid, ready in self.ready.items() if ready and self.runs[rid]['state'] == 'running']
         if self.last_scheduled_run in run_ids:

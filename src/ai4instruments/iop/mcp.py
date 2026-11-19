@@ -433,7 +433,7 @@ def create_server(client, *, http=False, selection=None):
 
     @tool()
     def continue_program(run_id: str, request_id: str | None = None) -> dict:
-        """Read saved program progress, or pass request_id to continue a stopped program that declares resume:true. The program reads its progress and reuses completed operation IDs."""
+        """Read saved program progress, or pass request_id to continue a stopped experiment: a program that declares resume:true reads its progress and reuses completed operation IDs; a step graph keeps the operations that completed and runs the others again, retaking first points left in doubt."""
         run = client.run(run_id)
         if request_id is None:
             return {'run': run.info(details=False), 'checkpoints': run.checkpoints()}

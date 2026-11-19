@@ -105,15 +105,19 @@ class Noisy(Driver):
 
 
 class Flaky(Driver):
-    """A meter whose every other reading gets no reply."""
+    """A meter whose readings get no reply when failing says so of their number; by default every other one."""
     calls = 0
+
+    @staticmethod
+    def failing(call):
+        return call % 2
 
     def describe(self):
         return {'operations': {'read': {'parameters': {'x': {'type': 'number', 'default': 0}}, 'effect': 'observe'}}}
 
     def invoke(self, operation, arguments, context):
         Flaky.calls += 1
-        if Flaky.calls % 2:
+        if Flaky.failing(Flaky.calls):
             context.file('partial.txt').write_text('cut off')
             raise TimeoutError('no reply within 5 s')
         return {'value': arguments['x']}
@@ -543,6 +547,33 @@ class SweepCase(unittest.TestCase):
                          .wait(10, details=False)['state'], 'failed')
         with self.assertRaisesRegex(IOPError, 'retry is'):
             self.submit([{'id': 'scan', 'device': 'flaky', 'operation': 'read', 'retry': {'times': 0}}])
+
+    def test_a_step_graph_continues_where_it_stopped(self):
+        self.client.register({'id': 'flaky', 'driver': Flaky.__module__ + ':Flaky'})
+        Flaky.calls = 0
+        steps = [{'id': 'scan', 'device': 'flaky', 'operation': 'read', 'sweep': {'x': [1, 2, 3, 4]}},
+                 {'id': 'last', 'device': 'flaky', 'operation': 'read', 'arguments': {'x': 5}, 'after': ['scan']}]
+        # The meter stops answering at the third point, and the experiment fails there.
+        with patch.object(Flaky, 'failing', lambda call: call >= 3):
+            run = self.submit(steps)
+            self.assertEqual(run.wait(10, details=False)['state'], 'failed')
+        info = run.info(details=False)
+        self.assertTrue(info['can_resume'])
+        self.assertEqual(info['operation_states'], {'completed': 2, 'cancelled': 2, 'failed': 1})
+        self.assertIn('partial.txt', [f['name'].rsplit('/', 1)[-1] for f in run.files()])
+        # Answering again, it continues: the two points read are kept, the rest are read, and the sweep gathers all.
+        with patch.object(Flaky, 'failing', lambda call: False):
+            self.assertEqual(run.resume('continue-1')['attempt'], 2)
+            self.assertEqual(run.result(10)['scan']['value']['values'], [1, 2, 3, 4])
+        self.assertEqual(Flaky.calls, 6)
+        operations = run.info()['operation_records']
+        self.assertEqual([[a['state'] for a in op.get('attempts', [])] for op in operations], [[], [], ['failed'], [], []])
+        self.assertEqual(operations[2]['attempts'][0]['error'], 'TimeoutError: no reply within 5 s')
+        self.assertNotIn('partial.txt', [f['name'].rsplit('/', 1)[-1] for f in run.files()])
+        self.assertFalse(run.info(details=False)['can_resume'])
+        self.assertEqual(run.resume('continue-1')['attempt'], 2)
+        with self.assertRaisesRegex(IOPError, 'Continue an interrupted, failed or cancelled experiment'):
+            run.resume('continue-2')
 
     def test_a_device_record_limits_what_its_setup_tolerates(self):
         from .test_conditions import Part

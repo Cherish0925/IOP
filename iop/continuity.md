@@ -44,6 +44,10 @@ Continue with `iop resume RUN_ID --request-id continue-1`, `run.resume()`, or **
 
 Continuation restores explicitly saved program progress. Stable operation IDs reuse completed results. An action that never returned an outcome is not reissued automatically. Read device state through an operation explicitly described with `effect: "observe"`, then record that observation through `/v1/resources/resolve`. The generic `query` operation is not automatically classified as observation. Work that had not started remains queued across restart.
 
+## Continuing a step graph
+
+A step graph that failed, was cancelled or was interrupted continues under the same run ID with `run.resume(request_id)`, `iop resume RUN_ID` or **Continue where it stopped** in the interface. Operations that completed, or were skipped as their sweep stopped, keep their results and do not run again; the others are queued again, each keeping how it ended under `attempts`, and what their calls wrote is discarded. Points of a sweep with `retake: true` that a lost condition left in doubt are taken again first, and the result gathers every point when the graph completes. As for programs, the instruments and the platform must be as the graph left them and an outcome left unknown is resolved first; the conditions it requires must hold, unless it keeps them with `upkeep`, which restores them before its next operation. A sweep of four points whose meter stopped answering at the third: once it answers, the continuation reads the third and fourth points and the step after the sweep, and the sweep gathers all four, the first two read once.
+
 ## Continuous data
 
 Experiment programs, acquisition adapters and computation software can send batches:

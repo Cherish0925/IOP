@@ -264,11 +264,15 @@ export async function inspectRun(id) {
       $("#run-detail-summary").innerHTML =
         `<div class="run-summary"><div><small>${t("状态", "State")}</small>${badge(run.state)}</div><div><small>${t("开始时间", "Started")}</small>${date(run.started || run.created)}</div><div><small>${t("用时", "Elapsed")}</small>${duration(run.started ? (new Date(run.ended || Date.now()) - new Date(run.started)) / 1000 : null)}</div>${run.estimated_end ? `<div><small>${t("预计结束", "Ends about")}</small>${date(run.estimated_end)}</div>` : ""}<div><small>${t("操作数", "Operations")}</small>${run.operation_count ?? page.operations.length}${operationStates(run.operation_states)}</div>${active ? `<button class="button small" id="run-cancel">${icon("stop")}${t("停止实验", "Stop experiment")}</button>` : ""}</div>${
           run.can_resume
-            ? `<div class="actions"><button class="button small" id="run-resume">${icon("play")}${t("从保存的进度继续", "Continue from saved progress")}</button><small>${t("程序进度", "Saved progress")} · ${Object.keys(
-                run.progress || {},
-              )
-                .map(esc)
-                .join(", ")}</small></div>`
+            ? `<div class="actions"><button class="button small" id="run-resume">${icon("play")}${
+                run.kind === "workflow"
+                  ? `${t("从停止处继续", "Continue where it stopped")}</button><small>${t(`保留 ${run.operation_states?.completed ?? 0} 个已完成的操作`, `Keeps ${run.operation_states?.completed ?? 0} completed operations`)}`
+                  : `${t("从保存的进度继续", "Continue from saved progress")}</button><small>${t("程序进度", "Saved progress")} · ${Object.keys(
+                      run.progress || {},
+                    )
+                      .map(esc)
+                      .join(", ")}`
+              }</small></div>`
             : ""
         }${run.error ? `<p class="run-error">${esc(typeof run.error === "object" ? JSON.stringify(run.error) : run.error)}</p>` : ""}`;
       $("#run-resume")?.addEventListener("click", (e) =>

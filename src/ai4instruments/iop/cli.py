@@ -118,7 +118,7 @@ def parser():
     p = sub.add_parser('release', help='Release an idle instrument connection'); p.add_argument('device')
     p = sub.add_parser('device-config', help='Read saved versions or update an idle instrument')
     p.add_argument('device'); p.add_argument('--file'); p.add_argument('--revision', type=int)
-    p = sub.add_parser('resume', help='Continue a program from its saved progress')
+    p = sub.add_parser('resume', help='Continue a program from its saved progress, or a step graph from where it stopped')
     p.add_argument('run_id'); p.add_argument('--request-id'); p.add_argument('--wait', action='store_true')
     p = sub.add_parser('checkpoints', help='Read saved program progress'); p.add_argument('run_id')
     p = sub.add_parser('identify', help='Read and save instrument identity'); p.add_argument('device'); p.add_argument('--wait', action='store_true')

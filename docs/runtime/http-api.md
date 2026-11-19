@@ -209,7 +209,7 @@ The list of required fields uses `protocol`, `communication_parameters`, `contro
 | POST | `/v1/devices/{id}/configuration` | `definition`, `expected_revision` | New configuration revision, applied while the instrument is idle |
 | GET | `/v1/runs/{id}/checkpoints` | — | Named program progress, state and revisions |
 | POST | `/v1/runs/{id}/checkpoints` | `name` (default `main`), `state` | Saved progress after this program's instrument operations finish |
-| POST | `/v1/runs/{id}/resume` | `request_id` | Requeue the same run with a new attempt; requires package `resume:true` and saved progress |
+| POST | `/v1/runs/{id}/resume` | `request_id` | Requeue the same run with a new attempt: a program declaring `resume:true` from its saved progress; a step graph keeps its completed operations and runs the others again. See [continuing a step graph](../../iop/continuity.md#continuing-a-step-graph) |
 | GET | `/v1/runs/{id}/array` | `field`, optional `request_id`, view options | An array the experiment's result holds, or with `request_id` one in that batch's results, such as what a sweep gathered |
 | GET | `/v1/runs/{id}/array.npy` | `field`, optional `request_id` | That whole array as a NumPy `.npy` file |
 | GET | `/v1/runs/{id}/streams` | — | The experiment's streams with description, bytes and chunk count |
