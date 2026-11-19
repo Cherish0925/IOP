@@ -300,19 +300,53 @@ function map(view) {
       : ""
   }</small>`;
 }
-// Where a coordinate of the axis followed lies across a chart of n values or buckets, through its position;
-// null when the axis lists its coordinates.
-function chartX(view, n, width) {
+// The listed coordinates of the n values or buckets of a chart, when the axis lists them.
+function listedCoordinates(view, n) {
+  const listed =
+    view.along.step === undefined &&
+    (view.values ? view.along.coordinates : view.envelope?.coordinate);
+  return listed && listed.length === n && listed.every(Number.isFinite)
+    ? listed
+    : null;
+}
+// Where the i-th of n values or buckets lies across a chart: at its coordinate where the axis lists them unevenly,
+// as an adaptive sweep does, otherwise at its position, which also draws an evenly logarithmic sweep on a
+// logarithmic scale.
+function across(view, n, width) {
+  const even = (i) => (n === 1 ? width / 2 : (i * width) / (n - 1)),
+    listed = listedCoordinates(view, n);
+  if (!listed || n < 3) return even;
+  const ratio = listed[1] / listed[0];
+  if (
+    listed.every((c) => c * listed[0] > 0) &&
+    listed.every((c, i) => !i || Math.abs(c / listed[i - 1] / ratio - 1) < 1e-5)
+  )
+    return even;
+  const first = listed[0],
+    last = listed[n - 1];
+  return (i) => ((listed[i] - first) / (last - first)) * width;
+}
+// Where a coordinate of the axis followed lies across a chart of n values or buckets placed by x.
+function chartX(view, n, width, x) {
   const along = view.along,
-    position = along.step
+    listed = listedCoordinates(view, n);
+  if (listed)
+    // Between two listed coordinates, on the straight line between their places.
+    return (c) => {
+      const rising = listed[n - 1] >= listed[0],
+        k = listed.findIndex((v) => (rising ? v >= c : v <= c));
+      if (k <= 0) return x(k < 0 ? n - 1 : 0);
+      return (
+        x(k - 1) +
+        ((c - listed[k - 1]) / (listed[k] - listed[k - 1])) * (x(k) - x(k - 1))
+      );
+    };
+  const position = along.step
       ? (c) =>
           along.start +
           (c - (along.step > 0 ? along.low : along.high)) / along.step
-      : along.low === undefined
-        ? (c) => c
-        : null,
+      : (c) => c,
     starts = view.envelope?.position;
-  if (!position) return null;
   return (c) => {
     const p = position(c);
     let i = p - along.start;
@@ -340,7 +374,7 @@ function chart(view) {
     : view.envelope;
   const n = series.mean.length,
     span = s.max - s.min || 1;
-  const x = (i) => (n === 1 ? width / 2 : (i * width) / (n - 1));
+  const x = across(view, n, width);
   const y = (v) => 4 + (1 - (v - s.min) / span) * (height - 8);
   const runs = [];
   series.mean.forEach((v, i) => {
@@ -376,7 +410,7 @@ function chart(view) {
   );
   // A line read at a peak or a dip: its center, and its width at half height, where the axis places them.
   const line = view.peak,
-    lineX = line && chartX(view, n, width),
+    lineX = line && chartX(view, n, width, x),
     half = line && y((line.value + line.base) / 2),
     marks = lineX
       ? `<line class="line-mark" x1="${lineX(line.center)}" x2="${lineX(line.center)}" y1="0" y2="${height}"/>${line.width !== undefined ? `<line class="line-mark" x1="${lineX(line.low)}" x2="${lineX(line.high)}" y1="${half}" y2="${half}"/>` : ""}`

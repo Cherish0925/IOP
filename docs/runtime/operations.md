@@ -127,6 +127,15 @@ An end of a range can come from an earlier step. `start`, `stop`, `center` and `
 
 Each point records the range it read and the value it took, and what the fine sweep gathered has its axis from the ends that were read. In a saved operation an end can name one of its steps, or be `"${name}"` for a parameter the caller binds, so a coarse-to-fine search is saved as one method. / 每个点记录所读的范围和取得的值，细扫汇集的数组以读到的两端为坐标轴。已保存的操作中，端点可以指向本操作的某一步，也可以写作 `"${name}"`，由调用方绑定该参数；先粗扫、再细扫因此可以保存为一个方法。
 
+A range with `adapt` places its points from what the earlier ones read. `adapt` is the path to the number each point reads, in what its operation returns or in the named result of its use, such as `["power"]`. The first two points are the ends; each next one is the middle of the interval whose ends differ most, in spacing and in reading, so points come closer together where the reading changes most and stay apart where it is flat. Intervals narrower than 1/1024 of the even spacing are not divided further, so an edge does not take every point, and integer ends give integers. An adaptive range varies one parameter, has 2 to 1000 points, and may itself be centered on an earlier result. What it gathers is in order of value, the values being the coordinates of its axis; while it runs, it holds the points finished so far. / 带 `adapt` 的范围根据前面各点的读数安排后面的点。`adapt` 是各点读数的路径，取自操作的返回值或已保存操作的具名结果，例如 `["power"]`。前两个点取两端；之后每个点取两端相差最大的区间（间距和读数一并计）的中点，于是读数变化大的地方点密，平坦处点疏。窄于均匀间距 1/1024 的区间不再细分，台阶不会吸走所有点；整数两端给出整数。自适应范围只改变一个参数，2 到 1000 个点，本身也可以以之前的结果为中心。汇集的结果按取值排序，取值即坐标轴的坐标；运行期间给出已完成的点。
+
+```json
+{"id": "line", "device": "analyzer", "operation": "probe",
+ "sweep": {"hz": {"start": 1.0e9, "stop": 1.1e9, "points": 40, "adapt": ["power"]}}}
+```
+
+On a line 3 MHz wide in this 100 MHz span, half of the 40 points fall within its width; through `peak` they give its center within 1.5 kHz and its width within 1%, where 40 evenly spaced points place 3 on the line and give a width 16% too large. / 在 100 MHz 范围内一条 3 MHz 宽的谱线上，40 个点中有一半落在线宽以内；经 `peak` 读出的中心误差在 1.5 kHz 以内、线宽误差在 1% 以内；均匀的 40 个点只有 3 个落在线上，线宽大 16%。
+
 ## Record of use / 使用记录
 
 Every use is recorded when its last step ends: `uses` counts `calls`, `completed` and `failed`, and `last` names the experiment, state, time and revision. Each Basic Operation run for a use carries `calls`, the chain of uses it belongs to, so the evidence of a method is the set of experiments in which it ran. A failed or cancelled step ends the use as failed or cancelled; operations already executed are not undone. / 每次使用在其最后一步结束时记录：次数、完成数、失败数，以及最近一次的实验、状态、时间和版本。为某次使用执行的每个基础操作都带有所属的调用链，方法的证据就是它运行过的那些实验。

@@ -234,7 +234,7 @@
     "sweep": {
       "type": "object",
       "minProperties": 1,
-      "description": "Run this step at each value of these parameters, one point after another, the first changing slowest; what it returns is gathered into arrays over the sweep, at most 10000 points. A list gives the values (numbers, or strings as labels); start, stop and points, or center, span and points, give evenly spaced numbers. An end of a range may be read from an earlier step, as a binding is, such as where a coarse sweep found most power; each point then takes its value when it runs",
+      "description": "Run this step at each value of these parameters, one point after another, the first changing slowest; what it returns is gathered into arrays over the sweep, at most 10000 points. A list gives the values (numbers, or strings as labels); start, stop and points, or center, span and points, give evenly spaced numbers. An end of a range may be read from an earlier step, as a binding is, such as where a coarse sweep found most power; each point then takes its value when it runs. With adapt, each point is placed from what the earlier ones read, closer together where the reading changes most",
       "additionalProperties": {
         "oneOf": [
           {
@@ -265,6 +265,17 @@
               "points": {
                 "type": "integer",
                 "minimum": 1
+              },
+              "adapt": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": [
+                    "string",
+                    "integer"
+                  ]
+                },
+                "description": "Place each point from what the earlier ones read: the path to the number each point reads, such as [\"power\"]; points come closer where it changes most (one swept parameter, 2 to 1000 points, gathered in order of value)"
               }
             }
           },
@@ -286,6 +297,17 @@
               "points": {
                 "type": "integer",
                 "minimum": 1
+              },
+              "adapt": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": [
+                    "string",
+                    "integer"
+                  ]
+                },
+                "description": "Place each point from what the earlier ones read: the path to the number each point reads, such as [\"power\"]; points come closer where it changes most (one swept parameter, 2 to 1000 points, gathered in order of value)"
               }
             }
           }

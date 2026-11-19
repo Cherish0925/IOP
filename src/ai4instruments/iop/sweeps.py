@@ -3,11 +3,12 @@
 A step with ``sweep`` runs once for each combination of the values it gives, one point after another,
 the first name changing slowest. A range gives evenly spaced values from start to stop, or around a
 center over a span; its ends may be read from earlier results, as bindings are, and each point then
-reads its value when it runs. What the points return is gathered: numbers in the same place become an
-array over the sweep, with one axis for each swept name; arrays of one shape in the same place combine
-into one array with the sweep's axes in front, from the values the records hold or from the files the
-points saved, read in order; other values are kept when they are the same at every point that has one.
-Everything else stays in the record of each point.
+reads its value when it runs. An adaptive range places each point from what the earlier ones read:
+where the reading changes most, points come closer together. What the points return is gathered:
+numbers in the same place become an array over the sweep, with one axis for each swept name; arrays of
+one shape in the same place combine into one array with the sweep's axes in front, from the values the
+records hold or from the files the points saved, read in order; other values are kept when they are the
+same at every point that has one. Everything else stays in the record of each point.
 """
 import copy
 import itertools
@@ -15,7 +16,10 @@ import math
 from . import arrays
 
 MAX_POINTS = 10_000
+ADAPTIVE_POINTS = 1000
 ENDS = ({'start', 'stop'}, {'center', 'span'})
+# An adaptive range does not divide intervals narrower than this part of its even spacing.
+FINEST = 1024
 _LEFT = object()
 
 
@@ -25,7 +29,7 @@ def _number(value):
 
 def _ends(spec):
     """The first and last value of a range given by start and stop, or by center and span."""
-    for key in spec.keys() - {'points'}:
+    for key in spec.keys() - {'points', 'adapt'}:
         if not _number(spec[key]):
             raise ValueError(f'{key} is {spec[key]!r}; the ends of a range are finite numbers')
     if 'start' in spec:
@@ -55,7 +59,7 @@ def _count(name, spec):
     """Validate the size before allocating values, including ranges read from earlier results."""
     if isinstance(spec, list):
         points = len(spec)
-    elif (isinstance(spec, dict) and spec.keys() - {'points'} in ENDS
+    elif (isinstance(spec, dict) and spec.keys() - {'points', 'adapt'} in ENDS
           and type(spec.get('points')) is int and spec['points'] > 0):
         points = spec['points']
     else:
@@ -63,6 +67,12 @@ def _count(name, spec):
                          'or center, span and points')
     if points > MAX_POINTS:
         raise ValueError(f'A sweep has at most {MAX_POINTS} points; {name} has {points}')
+    if 'adapt' in spec:
+        path = spec['adapt']
+        if not isinstance(path, list) or not path or any(type(part) not in (str, int) for part in path):
+            raise ValueError(f'sweep {name}: adapt is the path to the number each point reads, such as ["power"]')
+        if not 2 <= points <= ADAPTIVE_POINTS:
+            raise ValueError(f'sweep {name}: an adaptive range has 2 to {ADAPTIVE_POINTS} points')
     return points
 
 
@@ -76,7 +86,12 @@ def taken(name, spec):
         if spec and all(isinstance(value, str) for value in spec):
             return list(spec), {'name': name, 'labels': list(spec)}
         raise ValueError(f'sweep {name}: list the numbers, or the strings, it takes in turn')
-    if any(isinstance(spec[key], dict) for key in spec.keys() - {'points'}):
+    if 'adapt' in spec or any(isinstance(spec[key], dict) for key in spec.keys() - {'points'}):
+        if 'adapt' in spec and not any(isinstance(spec[key], dict) for key in spec.keys() - {'points', 'adapt'}):
+            try:
+                _divisible(spec)
+            except ValueError as error:
+                raise ValueError(f'sweep {name}: {error}') from None
         return [{'range': spec, 'index': index} for index in range(points)], {'name': name, 'range': spec}
     try:
         start, stop = _ends(spec)
@@ -97,11 +112,59 @@ def axis(name, spec):
     return _axis(name, start, stop, spec['points'])
 
 
+def _divisible(spec):
+    """The ends of an adaptive range, which must leave room for all of its points."""
+    start, stop = _ends(spec)
+    if start == stop:
+        raise ValueError('the ends of an adaptive range differ')
+    if type(start) is int and type(stop) is int and spec['points'] > abs(stop - start) + 1:
+        raise ValueError(f'{spec["points"]} integer points do not fit between {start} and {stop}')
+    return start, stop
+
+
+def adapted(spec, readings, known=()):
+    """The values of an adaptive range once its points have given these readings, one value more than them:
+    its two ends, then each time the middle of the interval between neighbouring values whose ends differ
+    most, in spacing over the range and in reading over the readings' spread so far. Intervals narrower than
+    1/FINEST of the even spacing are not divided, so an edge does not take every point, and integer ends give
+    integers. A reading that is not a finite number counts only by its spacing. ``known`` are values already
+    found for the first of these readings."""
+    start, stop = _divisible(spec)
+    integer = type(start) is int and type(stop) is int
+    span = abs(stop - start)
+    finest = 1 if integer else span / ((spec['points'] - 1) * FINEST)
+    values = list(known[:len(readings) + 1]) or [start]
+    if len(values) == 1 and readings:
+        values.append(stop)
+    while len(values) < len(readings) + 1:
+        count = len(values)
+        order = sorted(range(count), key=values.__getitem__)
+        finite = [y for y in readings[:count] if _number(y)]
+        height = max(finite) - min(finite) if len(finite) > 1 else 0
+        largest, chosen = -1.0, None
+        for a, b in zip(order, order[1:]):
+            spacing = values[b] - values[a]
+            if spacing <= finest:
+                continue
+            loss = (spacing / span) ** 2
+            if height and _number(readings[a]) and _number(readings[b]):
+                loss += ((readings[b] - readings[a]) / height) ** 2
+            if loss > largest:
+                largest, chosen = loss, (values[a], spacing)
+        if chosen is None:
+            raise ValueError('every interval of this adaptive range is already as narrow as it is divided')
+        low, spacing = chosen
+        values.append(low + spacing // 2 if integer else low + spacing / 2)
+    return values
+
+
 def grid(sweep):
     """The arguments each point adds, in order, and the shape and axes of the sweep."""
     if not isinstance(sweep, dict) or not sweep:
         raise ValueError('sweep maps parameters to the values they take')
     shape = [_count(name, spec) for name, spec in sweep.items()]
+    if len(sweep) > 1 and any(isinstance(spec, dict) and 'adapt' in spec for spec in sweep.values()):
+        raise ValueError('An adaptive sweep varies one parameter; sweep the others in a step around it')
     if math.prod(shape) > MAX_POINTS:
         raise ValueError(f'A sweep has at most {MAX_POINTS} points; this one has {math.prod(shape)}')
     found = [taken(name, spec) for name, spec in sweep.items()]

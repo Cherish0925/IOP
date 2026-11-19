@@ -614,6 +614,45 @@ sys.stdout.buffer.write(b.getvalue())`,
     /step-1\.angle_actual · 19 · deg[\s\S]*angle_deg/,
   );
   await page.click("#modal-close");
+  // An adaptive sweep is drawn at its coordinates: each angle read at itself gives a straight line.
+  const adaptive = await api("runs", {
+    name: "Adaptive turn",
+    steps: [
+      {
+        id: "turn",
+        device: "sim-axis",
+        operation: "move_to",
+        arguments: { duration: 0 },
+        sweep: {
+          angle_deg: {
+            start: -45,
+            stop: 45,
+            points: 7,
+            adapt: ["angle_actual"],
+          },
+        },
+      },
+    ],
+  });
+  await page.evaluate(
+    (id) => document.dispatchEvent(new CustomEvent("iop:run", { detail: id })),
+    adaptive.id,
+  );
+  await page.waitForSelector("#run-detail-summary .badge.completed");
+  await page.click('[data-detail-tab="results"]');
+  await page.waitForSelector("#detail-results .array-plot svg polyline");
+  const drawn = (
+    await page
+      .locator("#detail-results .array-plot svg polyline")
+      .first()
+      .getAttribute("points")
+  )
+    .split(" ")
+    .map((point) => point.split(",").map(Number));
+  assert.equal(drawn.length, 7);
+  for (const [x, y] of drawn)
+    assert.ok(Math.abs(y - (146 - (x / 600) * 142)) < 0.01, `${x},${y}`);
+  await page.click("#modal-close");
   // A numeric data stream is drawn per channel from its view.
   const streamed = await api("runs", {
     kind: "external",

@@ -3,8 +3,8 @@ export type Step = { id: string; device?: string; operation: string; arguments?:
 export type Source = { step: string; path?: (string | number)[]; view?: ArrayViewOptions };
 /** An end of a range: a number, or one read from an earlier step when the sweep runs. */
 export type End = number | Source;
-/** Parameters a step runs over, one point after another: a list of values, or evenly spaced numbers from start to stop or around a center. */
-export type Sweep = Record<string, (number | string)[] | { start: End; stop: End; points: number } | { center: End; span: End; points: number }>;
+/** Parameters a step runs over, one point after another: a list of values, or numbers from start to stop or around a center, evenly spaced or, with adapt (the path to the number each point reads), placed closer together where that reading changes most. */
+export type Sweep = Record<string, (number | string)[] | ({ start: End; stop: End } | { center: End; span: End }) & { points: number; adapt?: (string | number)[] }>;
 export type Endpoint = { device: string; port: string };
 export type Procedure = { steps: Step[]; resources?: string[] };
 export type ConditionStep = { device?: string; operation: string; arguments?: Record<string, unknown> };

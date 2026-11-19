@@ -46,7 +46,7 @@ Operations keep the three roles defined by [AI4Instruments](https://github.com/C
 | **Standard Operations** | Saved methods built from Basic and Standard Operations, with parameters, conditions, a named result and a record of use. |
 | **Workflow Operations** | Saved organizations of methods across devices: a step graph in sequence and in parallel, or a program that decides from results. |
 
-A step with `device` is a Basic Operation; a step without it uses a saved operation by name. The Runtime expands it into its Basic Operations and records every use, so methods that worked accumulate in the laboratory and stay open to reading and revision. Any step can `sweep` parameters: it runs at each value in turn, and the numbers it returns become arrays over the sweep that later steps and saved operations read, for example to go to the angle of most power, or to sweep finely around it. See [operations](docs/runtime/operations.md).
+A step with `device` is a Basic Operation; a step without it uses a saved operation by name. The Runtime expands it into its Basic Operations and records every use, so methods that worked accumulate in the laboratory and stay open to reading and revision. Any step can `sweep` parameters: it runs at each value in turn, and the numbers it returns become arrays over the sweep that later steps and saved operations read, for example to go to the angle of most power, or to sweep finely around it; an adaptive sweep places each point from the readings before it, closer together where they change most. See [operations](docs/runtime/operations.md).
 
 ## Operating conditions
 

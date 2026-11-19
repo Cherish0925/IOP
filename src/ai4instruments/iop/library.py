@@ -13,7 +13,7 @@ import copy
 import json
 import re
 from collections import deque
-from . import sweeps as sweeping, views
+from . import arrays, sweeps as sweeping, views
 from .drivers import parameters
 from .platforms import dependencies, name, sources
 
@@ -199,8 +199,10 @@ def expand(steps, lookup, describe=None):
             previous, copies = list(step.get('after', [])), []
             for index, values in enumerate(points):
                 point = copy.deepcopy(base)
-                # A value in a range read from earlier results is bound: the point reads it when it runs.
-                reads = {key: item for key, item in values.items() if isinstance(item, dict)}
+                # A value in a range read from earlier results is bound: the point reads it when it runs. In an
+                # adaptive range it also reads what the earlier points of this sweep read.
+                reads = {key: {**item, 'within': sweep_id} if 'adapt' in item['range'] else item
+                         for key, item in values.items() if isinstance(item, dict)}
                 point.update(id=f'{sweep_id}.{index}', after=previous, arguments={
                     **base.get('arguments', {}), **{key: item for key, item in values.items() if key not in reads}})
                 if reads:
@@ -318,8 +320,12 @@ def expand(steps, lookup, describe=None):
         """Follow a binding into saved operations until it names a Basic Operation or a sweep; a range reads its
         ends so."""
         if 'range' in binding:
-            return {**binding, 'range': {key: source(end) if isinstance(end, dict) else end
-                                         for key, end in binding['range'].items()}}
+            found = {**binding, 'range': {key: source(end) if isinstance(end, dict) else end
+                                          for key, end in binding['range'].items()}}
+            if isinstance(binding.get('within'), str):
+                # The sweep a point of an adaptive range belongs to, read without waiting for its last point.
+                found['within'] = {'step': held(binding['within']), 'sweep': binding['within']}
+            return found
         if 'sweep' in binding:
             return binding
         step_id, path, view = binding['step'], list(binding.get('path', [])), binding.get('view')
@@ -378,8 +384,11 @@ def by_id(binding):
 def locate(source, ids):
     """A source with the steps it reads named by their operation IDs."""
     if 'range' in source:
-        return {**source, 'range': {key: locate(end, ids) if isinstance(end, dict) else end
-                                    for key, end in source['range'].items()}}
+        found = {**source, 'range': {key: locate(end, ids) if isinstance(end, dict) else end
+                                     for key, end in source['range'].items()}}
+        if 'within' in source:
+            found['within'] = locate(source['within'], ids)
+        return found
     return {**source, 'step': ids[source['step']]}
 
 
@@ -445,7 +454,8 @@ def value(operation, source):
 def read(source, record, output=None, located=False, known=None):
     """What a binding or named result takes; ``record`` returns the operation record of a step it names, and
     ``output`` is the experiment's output folder, where the points of a sweep saved their files. A point of a
-    range takes its value from the ends read once its points run; ``known`` keeps them for the other points."""
+    range takes its value from the ends read once its points run, and in an adaptive range also from what the
+    earlier points read; ``known`` keeps these for the other points."""
     if 'range' in source:
         key = json.dumps(source['range'], sort_keys=True) if known is not None else None
         found = known.get(key) if key else None
@@ -453,7 +463,18 @@ def read(source, record, output=None, located=False, known=None):
             found = ends(source['range'], record, output)
             if key:
                 known[key] = found
-        return sweeping.value(found, source['index'])
+        if 'adapt' not in found:
+            return sweeping.value(found, source['index'])
+        within = source['within']
+        points = record(within['step'])['gathers'][within['sweep']]['points']
+        taken = known.setdefault(key + json.dumps(within), {'readings': [], 'values': []}) if key else \
+            {'readings': [], 'values': []}
+        readings = taken['readings']
+        # The earlier points have finished; their readings do not change, so each is read once.
+        readings.extend(_reading(point, found['adapt'], record, output)
+                        for point in points[len(readings):source['index']])
+        taken['values'] = sweeping.adapted(found, readings[:source['index']], taken['values'])
+        return taken['values'][source['index']]
     operation = record(source['step'])
     if operation is None:
         raise KeyError(source['step'])
@@ -488,7 +509,8 @@ def ends(spec, record, output=None):
 
 def gathered(sweep, record, output=None):
     """What a sweep returns: the results of its points gathered into arrays over its axes. The axis of a range
-    read from earlier results has its coordinates once those results exist."""
+    read from earlier results has its coordinates once those results exist. The points of an adaptive range
+    that have finished are gathered in the order of their values, which are the coordinates of its axis."""
     found = []
     for point in sweep['points']:
         if 'named' in point:
@@ -497,16 +519,48 @@ def gathered(sweep, record, output=None):
             operation = record(point['step'])
             found.append(_located(operation.get('result'), operation)
                          if operation and operation.get('state') == 'completed' else None)
-    axes = []
+    shape, axes = sweep['shape'], []
     for axis in sweep['axes']:
         shown = {key: item for key, item in axis.items() if key != 'range'}
         if 'range' in axis:
             try:
-                shown = {**sweeping.axis(axis['name'], ends(axis['range'], record, output)), **shown}
+                spec = ends(axis['range'], record, output)
+                if 'adapt' in spec:
+                    done = 0
+                    while done < len(sweep['points']) and _finished(sweep['points'][done], record):
+                        done += 1
+                    readings = [_reading(point, spec['adapt'], record, output) for point in sweep['points'][:done]]
+                    values = sweeping.adapted(spec, readings[:done - 1])[:done] if done else []
+                    order = sorted(range(done), key=values.__getitem__)
+                    found, shape = [found[index] for index in order], [done]
+                    shown.update(arrays.coordinates([values[index] for index in order]))
+                else:
+                    shown = {**sweeping.axis(axis['name'], spec), **shown}
             except (KeyError, IndexError, TypeError, ValueError):
                 pass  # Not read yet: the axis has no coordinates.
         axes.append(shown)
-    return sweeping.gather(found, sweep['shape'], axes)
+    return sweeping.gather(found, shape, axes)
+
+
+def _finished(point, record):
+    """Whether a point of a sweep has finished: its operation, or those its named results read."""
+    steps = [item['step'] for item in point['named'].values()] if 'named' in point else [point['step']]
+    return all((record(step) or {}).get('state') == 'completed' for step in steps)
+
+
+def _reading(point, path, record, output=None):
+    """The number a point of an adaptive range read: at path in what its operation returned, or in the named
+    results of its use; None when it read none."""
+    try:
+        if 'named' in point:
+            found, path = read(point['named'][path[0]], record, output), path[1:]
+        else:
+            found = record(point['step'])['result']
+        for part in path:
+            found = found[part]
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+    return found if isinstance(found, (int, float)) and not isinstance(found, bool) else None
 
 
 def _named(sources, record, output=None, located=False):

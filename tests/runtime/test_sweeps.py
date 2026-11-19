@@ -48,8 +48,35 @@ class Spectrometer(Driver):
         return {'line': line, 'spectrum': arrays.result(counts.tobytes(), spec, context, 'spectrum')}
 
 
+class Resonance(Driver):
+    """A line 3 MHz wide at 1.0613 GHz, seen one frequency at a time."""
+    def describe(self):
+        return {'operations': {'probe': {'parameters': {'hz': {'type': 'number', 'unit': 'Hz'}}, 'effect': 'observe'}}}
+
+    def invoke(self, operation, arguments, context):
+        return {'power': 1 / (1 + ((arguments['hz'] - 1.0613e9) / 1.5e6) ** 2), 'unit': 'W'}
+
+
 class GatherCase(unittest.TestCase):
     """What a sweep returns, from what its points returned."""
+
+    def test_an_adaptive_range_places_each_point_from_the_readings_before_it(self):
+        spec = {'start': 0, 'stop': 8, 'points': 5, 'adapt': ['power']}
+        self.assertEqual(sweeps.taken('x', spec), ([{'range': spec, 'index': i} for i in range(5)], {'name': 'x', 'range': spec}))
+        # The ends first, then the middle of the interval whose ends differ most; integer ends give integers.
+        self.assertEqual(sweeps.adapted(spec, []), [0])
+        self.assertEqual(sweeps.adapted(spec, [0.0, 0.0]), [0, 8, 4])
+        self.assertEqual(sweeps.adapted(spec, [0.0, 0.0, 1.0, 1.0]), [0, 8, 4, 2, 6])
+        self.assertEqual(sweeps.adapted({**spec, 'stop': 8.0}, [0.0, 3.0, 1.0])[3], 6.0)
+        # Values already found are kept; a reading that is not a number counts only by its spacing.
+        self.assertEqual(sweeps.adapted(spec, [0.0, None, 1.0], [0, 8, 4]), [0, 8, 4, 2])
+        for sweep, message in (({'x': {**spec, 'adapt': 'power'}}, 'path to the number'),
+                               ({'x': {**spec, 'points': 1}}, '2 to 1000 points'),
+                               ({'x': {**spec, 'points': 10}}, 'do not fit between 0 and 8'),
+                               ({'x': {**spec, 'stop': 0}}, 'ends of an adaptive range differ'),
+                               ({'x': spec, 'y': [1, 2]}, 'varies one parameter')):
+            with self.subTest(sweep=sweep), self.assertRaisesRegex(ValueError, message):
+                sweeps.grid(sweep)
 
     def test_values_and_axes_of_a_sweep(self):
         points, shape, axes = sweeps.grid({'axis': ['x', 'y'], 'volts': {'start': 0, 'stop': 1, 'points': 3}})
@@ -256,6 +283,57 @@ class SweepCase(unittest.TestCase):
         # Given as an argument, the same parameter is a number before anything runs.
         given = self.submit([{'id': 'around', 'operation': 'axis.around', 'arguments': {'center': 10}}]).result(10)
         self.assertEqual(given['around.scan']['angle']['values'], [8, 9, 10, 11, 12])
+
+    def test_an_adaptive_sweep_puts_its_points_on_the_line(self):
+        self.client.register({'id': 'analyzer', 'driver': Resonance.__module__ + ':Resonance'})
+        line = {'view': {'field': 'power', 'peak': 'max'}, 'path': ['peak', 'center']}
+        run = self.submit([
+            {'id': 'adaptive', 'device': 'analyzer', 'operation': 'probe',
+             'sweep': {'hz': {'start': 1.0e9, 'stop': 1.1e9, 'points': 40, 'adapt': ['power']}}},
+            {'id': 'even', 'device': 'analyzer', 'operation': 'probe', 'sweep': {'hz': {'start': 1.0e9, 'stop': 1.1e9, 'points': 40}}},
+            # A coarse look, then 20 points placed around the line it shows.
+            {'id': 'coarse', 'device': 'analyzer', 'operation': 'probe', 'sweep': {'hz': {'start': 1.0e9, 'stop': 1.1e9, 'points': 11}}},
+            {'id': 'fine', 'device': 'analyzer', 'operation': 'probe', 'sweep': {'hz': {
+                'center': {'step': 'coarse', **line}, 'span': 20e6, 'points': 20, 'adapt': ['power']}}}])
+        result = run.result(20)
+        hz = result['adaptive']['power']['data']['axes'][0]
+        self.assertEqual((hz['name'], hz['unit'], len(hz['coordinates'])), ('hz', 'Hz', 40))
+        self.assertEqual(hz['coordinates'], sorted(hz['coordinates']))
+        # Half of the 40 points lie within a line width of the center; spaced evenly, three do.
+        near = [f for f in hz['coordinates'] if abs(f - 1.0613e9) < 3e6]
+        self.assertEqual((len(near) >= 20, sum(abs(1e9 + 1e8 * i / 39 - 1.0613e9) < 3e6 for i in range(40))), (True, 3))
+        adaptive, even = (run.read_array(f'{name}.power', peak='max')['peak'] for name in ('adaptive', 'even'))
+        self.assertAlmostEqual(adaptive['center'], 1.0613e9, delta=2e4)
+        self.assertAlmostEqual(adaptive['width'], 3e6, delta=6e4)
+        self.assertGreater(abs(even['width'] - 3e6), 4 * abs(adaptive['width'] - 3e6))
+        self.assertAlmostEqual(run.read_array('fine.power', peak='max')['peak']['center'], 1.0613e9, delta=5e4)
+        # Each point records the frequency it was given; the first two are the ends.
+        given = {op['step']: op['arguments']['hz'] for op in run.info()['operation_records']}
+        self.assertEqual((given['adaptive.0'], given['adaptive.1'], given['adaptive.2']), (1.0e9, 1.1e9, 1.05e9))
+        self.assertEqual(sorted(given[f'adaptive.{i}'] for i in range(40)), hz['coordinates'])
+
+    def test_a_running_adaptive_sweep_holds_the_points_finished_so_far_in_order(self):
+        run = self.submit([{'id': 'turn', 'device': 'stage', 'operation': 'move_to', 'arguments': {'duration': 0.3},
+                            'sweep': {'angle_deg': {'start': -40, 'stop': 40, 'points': 6, 'adapt': ['angle_actual']}}}])
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            partial = (self.client.request(f'/v1/runs/{run.id}/result') or {}).get('turn')
+            if partial and 3 <= len(partial['angle_actual']['values']) < 6:
+                break
+            time.sleep(0.05)
+        values, axis = partial['angle_actual']['values'], partial['angle_actual']['data']['axes'][0]
+        placed = axis.get('coordinates') or [axis['start'] + i * axis['step'] for i in range(len(values))]
+        self.assertEqual((values, placed), (sorted(values), sorted(values)))
+        self.assertEqual(run.result(10)['turn']['angle_actual']['values'], [-40, -30, -20, 0, 20, 40])
+
+    def test_an_adaptive_sweep_of_a_saved_operation_reads_its_named_result(self):
+        run = self.submit([{'id': 'scan', 'operation': 'axis.measure', 'arguments': {'axis': 'stage'},
+                            'sweep': {'angle': {'start': -45, 'stop': 45, 'points': 9, 'adapt': ['power']}}}])
+        found = run.result(10)['scan']
+        angles = found['power']['data']['axes'][0]['coordinates']
+        self.assertEqual((angles[0], angles[-1], angles, found['angle']['values']), (-45, 45, sorted(angles), angles))
+        for got, angle in zip(found['power']['values'], angles):
+            self.assertAlmostEqual(got, power(angle))
 
     def test_two_parameters_give_a_map_and_a_sweep_inside_a_saved_operation_combines(self):
         run = self.submit([{'id': 'map', 'operation': 'axis.measure',
