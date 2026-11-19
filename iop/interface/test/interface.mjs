@@ -20,6 +20,18 @@ from ai4instruments.iop.engine import Engine
 from ai4instruments.iop.cli import serve
 import socketserver, threading
 import ai4instruments.iop.discovery as discovery
+import array, math
+from ai4instruments.iop import Driver, arrays
+class Analyzer(Driver):
+    def describe(self): return {'operations':{'sweep':{'parameters':{},'effect':'observe'},'image':{'parameters':{},'effect':'observe'}}}
+    def invoke(self, operation, arguments, context):
+        if operation == 'image':
+            spot = array.array('f', [math.exp(-((x - 40) ** 2 + (y - 20) ** 2) / 60) for y in range(48) for x in range(64)])
+            axes = [{'name':'y','unit':'m','start':0,'step':2e-6},{'name':'x','unit':'m','start':0,'step':2e-6}]
+            return arrays.result(spot.tobytes(), arrays.check_result({'dtype':'float32','shape':[48,64],'axes':axes,'unit':'W'}), context, 'image')
+        dip = array.array('d', [1 - 0.8 / (1 + ((i - 600) / 20) ** 2) for i in range(1001)])
+        axis = {'name':'frequency','unit':'Hz','start':1e9,'step':1e5}
+        return arrays.result(dip.tobytes(), arrays.check_result({'dtype':'float64','axes':[axis]}), context, 'trace')
 p=home_path(sys.argv[1]); c=initialize(p,False,0);c['discovery_interval']=0;c['resource_pools']={'cpu':8,'gpu':2};save_json(p/'config.json',c)
 class Instrument(socketserver.StreamRequestHandler):
     def handle(self):
@@ -107,9 +119,16 @@ try {
   await page.click("#overview-discover");
   await page.waitForSelector('[data-register="0"]');
   assert.equal(await page.locator("#discovery-section pre").count(), 0);
-  const identified = (await api("devices")).find(
-    (d) => d.identity?.model === "SR830",
-  );
+  // The connections can be listed before identification of the SR830 has finished.
+  const identifying = performance.now() + 10000;
+  let identified;
+  do {
+    identified = (await api("devices")).find(
+      (d) => d.identity?.model === "SR830",
+    );
+    if (identified) break;
+    await pause(50);
+  } while (performance.now() < identifying);
   assert.ok(identified);
   await page.click(`[data-device="${identified.id}"]`);
   assert.ok(
@@ -479,7 +498,169 @@ sys.stdout.buffer.write(b.getvalue())`,
       document.querySelector('[data-condition="axis.in_range"]') &&
       !document.querySelector('[data-condition="axis.in_range"] .error-text'),
   );
-  assert.equal((await api("conditions"))[0].state, "holds");
+  // The identified SR830 brings the conditions of its model; the platform pass covers only its own instruments.
+  const conditions = await api("conditions");
+  assert.equal(conditions.find((c) => c.id === "axis.in_range").state, "holds");
+  assert.ok(conditions.some((c) => c.id.endsWith(".reference_locked")));
+  // Declared upkeep: the card says the Runtime keeps these conditions.
+  const kept = (await api("platforms")).find((p) => p.id === "bench-01");
+  await api("platforms", {
+    definition: { ...kept.definition, upkeep: { ahead_s: 60 } },
+    expected_revision: kept.revision,
+  });
+  await page.click("#refresh-button");
+  await page.waitForFunction(() =>
+    /自动保持|Upkeep/.test(
+      document.querySelector('[data-maintain="bench-01"]')?.parentElement
+        ?.textContent || "",
+    ),
+  );
+  // An array result is drawn from its view: bucket extremes, the mean and coordinates.
+  await api("devices", { id: "analyzer", driver: "__main__:Analyzer" });
+  const sweep = await api("runs", {
+    name: "Resonance sweep",
+    steps: [{ id: "sweep", device: "analyzer", operation: "sweep" }],
+  });
+  await page.evaluate(
+    (id) => document.dispatchEvent(new CustomEvent("iop:run", { detail: id })),
+    sweep.id,
+  );
+  await page.waitForSelector("#detail-operation-list .array-plot svg polyline");
+  assert.match(
+    await page.locator("#detail-operation-list .array-plot").innerText(),
+    /frequency 1 GHz[\s\S]*1\.1 GHz[\s\S]*0\.2 @ 1\.06 GHz/,
+  );
+  // The dip of the trace: its center and its width at half height, marked on the chart.
+  await page.click('#detail-operation-list [data-array-line="min"]');
+  await page.waitForSelector(
+    "#detail-operation-list .array-plot line.line-mark",
+    { state: "attached" },
+  );
+  assert.match(
+    await page.locator("#detail-operation-list .array-plot").innerText(),
+    /(谷|dip) 1\.06 GHz · (半高宽|width) 3\.99\d* MHz/,
+  );
+  assert.equal(
+    await page
+      .locator("#detail-operation-list .array-plot line.line-mark")
+      .count(),
+    2,
+  );
+  if (images)
+    await page.screenshot({
+      path: join(images, "array-view.png"),
+      fullPage: true,
+      style: "#toast{visibility:hidden}",
+    });
+  await page.click("#modal-close");
+  // An image is drawn as a map of its two axes.
+  const imaged = await api("runs", {
+    name: "Beam image",
+    steps: [{ id: "image", device: "analyzer", operation: "image" }],
+  });
+  await page.evaluate(
+    (id) => document.dispatchEvent(new CustomEvent("iop:run", { detail: id })),
+    imaged.id,
+  );
+  await page.waitForSelector("#detail-operation-list .array-map img");
+  assert.match(
+    await page.locator("#detail-operation-list .array-plot").innerText(),
+    /y[\s\S]*x 0 m[\s\S]*126 µm[\s\S]*1 W @ 40 µm, 80 µm/,
+  );
+  if (images)
+    await page.screenshot({
+      path: join(images, "array-map.png"),
+      fullPage: true,
+      style: "#toast{visibility:hidden}",
+    });
+  // The whole array is saved as a NumPy file.
+  const saving = page.waitForEvent("download");
+  await page.click("#detail-operation-list [data-array-save]");
+  const saved = await saving;
+  assert.equal(saved.suggestedFilename(), "image.npy");
+  assert.match(
+    (await readFile(await saved.path())).subarray(0, 128).toString("latin1"),
+    /^\x93NUMPY[\s\S]*'descr': '<f4'[\s\S]*'shape': \(48, 64\)/,
+  );
+  await page.click("#modal-close");
+  // The experiment form sweeps a numeric parameter; the result gathers what each point returned.
+  await page.click("#new-run");
+  await page.fill("#experiment-name", "Turned axis");
+  await page.selectOption(
+    '[data-step="step-1"] [data-step-device]',
+    "sim-axis",
+  );
+  await page.selectOption(
+    '[data-step="step-1"] [data-step-operation]',
+    "move_to",
+  );
+  await page.fill('[data-step="step-1"] [data-parameter="duration"]', "0");
+  await page.click('[data-step="step-1"] [data-sweep-toggle="angle_deg"]');
+  for (const [part, value] of [
+    ["start", "-45"],
+    ["stop", "45"],
+    ["points", "19"],
+  ])
+    await page.fill(
+      `[data-step="step-1"] [data-sweep="angle_deg"] [data-sweep-${part}]`,
+      value,
+    );
+  await page.click("#experiment-submit");
+  await page.waitForSelector("#run-detail-summary .badge.completed");
+  await page.click('[data-detail-tab="results"]');
+  await page.waitForSelector("#detail-results .array-plot svg polyline");
+  assert.match(
+    await page.locator("#detail-results .array-plot").innerText(),
+    /step-1\.angle_actual · 19 · deg[\s\S]*angle_deg/,
+  );
+  await page.click("#modal-close");
+  // A numeric data stream is drawn per channel from its view.
+  const streamed = await api("runs", {
+    kind: "external",
+    name: "Streamed voltages",
+    request_id: "streamed-voltages",
+  });
+  await api("runs/" + streamed.id + "/streams/voltage", {
+    definition: {
+      format: "float32-le",
+      sample_rate_hz: 1000,
+      channels: [
+        { name: "x", unit: "V" },
+        { name: "y", unit: "V" },
+      ],
+    },
+  });
+  const samples = Float32Array.from({ length: 4000 }, (_, i) =>
+    Math.sin(i / 80),
+  );
+  const appended = await fetch(
+    endpoint + `/v1/runs/${streamed.id}/streams/voltage/chunks?sequence=0`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + token,
+        "Content-Type": "application/octet-stream",
+      },
+      body: Buffer.from(samples.buffer),
+    },
+  );
+  assert.ok(appended.ok);
+  await page.evaluate(
+    (id) => document.dispatchEvent(new CustomEvent("iop:run", { detail: id })),
+    streamed.id,
+  );
+  await page.click('[data-detail-tab="files"]');
+  await page.waitForFunction(
+    () =>
+      document.querySelectorAll("#detail-files .array-plot svg polyline")
+        .length === 2,
+  );
+  assert.match(
+    await page.locator("#detail-files .array-plot").first().innerText(),
+    /voltage · x · float32-le[\s\S]*time 0 s[\s\S]*1\.999 s/,
+  );
+  await page.click("#modal-close");
+  await api("runs/" + streamed.id + "/finish", {});
   const lasting = await api("runs", {
     name: "Continues after browser closes",
     steps: [
@@ -502,7 +683,7 @@ sys.stdout.buffer.write(b.getvalue())`,
   assert.equal(continued.state, "completed", JSON.stringify(continued));
   assert.deepEqual(errors, []);
   console.log(
-    "Interface passed: discovery, registration, topology, workflow, results, resources, search, language, themes, mobile, program ZIP, file download, manual steps, held resources, saved operations, operating conditions and service continuity.",
+    "Interface passed: discovery, registration, topology, workflow, results, resources, search, language, themes, mobile, program ZIP, file download, manual steps, held resources, saved operations, operating conditions, array and stream views, maps, sweeps and service continuity.",
   );
 } finally {
   if (browser) await browser.close();

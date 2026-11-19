@@ -22,7 +22,7 @@ TOOLSETS = {
               'retry_instrument_discovery', 'available_adapters', 'configure_platform', 'configure_resources'),
     'experiments': ('saved_operations', 'operating_conditions', 'run_procedure', 'submit_experiment', 'start_experiment', 'invoke_operation',
                     'finish_experiment', 'submit_operations', 'save_acquisition', 'submit_program', 'continue_program',
-                    'experiment', 'cancel_experiment', 'experiment_updates', 'experiment_files', 'operation_result',
+                    'experiment', 'cancel_experiment', 'experiment_updates', 'experiment_files', 'operation_result', 'read_array',
                     'save_experiment_file', 'download_file'),
     'attention': ('reconnect_instrument', 'release_instrument', 'resolve_resources', 'manual_tasks', 'report_manual_step'),
     'episodes': ('begin_episode', 'record_transition', 'research_episodes'),
@@ -238,19 +238,21 @@ def create_server(client, *, http=False, selection=None):
         return client.saved_operation(operation) if operation else client.saved_operations()
 
     @tool()
-    def operating_conditions(platform: str | None = None, condition: str | None = None, maintain: bool = False,
+    def operating_conditions(platform: str | None = None, device: str | None = None, condition: str | None = None,
+                             maintain: bool = False,
                              conditions: list[str] | None = None, run_id: str | None = None,
                              request_id: str | None = None, force: bool = False, invalidate: str | None = None,
                              maintenance: str | None = None, wait: float = 0) -> dict | list:
-        """Conditions a platform's experiments rely on (environment, equilibrium, references, calibration, alignment, locks, operating point, signal), each with a verification, a tolerance, corrections and a validity time. No arguments: all with their state (holds, due, lost, unknown). condition: one with statistics and records. maintain=true with platform or conditions: verify what is due and correct what drifted, dependencies first; pass request_id, and run_id inside an experiment; force re-verifies what holds. Returns within wait (up to 25 s); read on with maintenance=<id>. invalidate=<reason> marks conditions due after a disturbance."""
+        """Conditions experiments rely on (environment, equilibrium, references, calibration, alignment, locks, operating point, signal), each with a verification, a tolerance, corrections and a validity time. A platform states its own; an instrument's own (warm-up, overload, reference lock) are named <device>.<id> and often come with its model description. No arguments: all with their state (holds, due, lost, unknown); platform or device narrows it. condition: one with statistics and records. maintain=true with platform, device or conditions: verify what is due and correct what drifted, dependencies first; pass request_id, and run_id inside an experiment; force re-verifies what holds. Returns within wait (up to 25 s); read on with maintenance=<id>. invalidate=<reason> marks conditions due after a disturbance. A platform that declares upkeep is maintained by the Runtime while idle; lab_context setup.upkeep shows its next observation."""
         if maintenance:
             return client.request('/v1/maintenance/' + quote(maintenance, safe='') + waiting(wait))
         if invalidate:
             return client.invalidate(conditions or [], invalidate)
         if maintain:
             return client.request('/v1/conditions/maintain' + waiting(wait), {
-                'platform': platform, 'conditions': conditions, 'run_id': run_id, 'request_id': request_id, 'force': force})
-        return client.condition(condition) if condition else client.conditions(platform)
+                'platform': platform, 'conditions': conditions, 'run_id': run_id, 'request_id': request_id, 'force': force,
+                **({'device': device} if device else {})})
+        return client.condition(condition) if condition else client.conditions(platform, device)
 
     @tool()
     def configure_platform(definition: dict, expected_revision: int = 0, preview: bool = False) -> dict:
@@ -273,18 +275,19 @@ def create_server(client, *, http=False, selection=None):
     def submit_experiment(steps: list[dict], request_id: str, name: str = 'Experiment',
                           platform: str | None = None, resources: list[str] | None = None,
                           requirements: dict[str, int] | None = None, requires: list[str] | None = None) -> dict:
-        """Submit instrument operations with after dependencies and optional result bindings. Returns immediately. Reuse request_id only for the identical submission. requires names platform conditions that must hold for the experiment to be accepted."""
+        """Submit instrument operations with after dependencies and optional result bindings. A step with sweep, e.g. {"angle": {"start": -10, "stop": 10, "points": 21}} or {"axis": ["x", "y"]}, runs at each point in turn and its numbers return as arrays over the sweep; read them with read_array(run_id, field). A range may also be a center and span, and its ends may be read from an earlier step as a binding is, e.g. {"angle": {"center": {"step": "coarse", "view": {"field": "power"}, "path": ["summary", "max_at"]}, "span": 2, "points": 21}} around where a coarse sweep found most power. Returns immediately. Reuse request_id only for the identical submission. requires names conditions (operating_conditions lists them) that must hold for the experiment to be accepted."""
         return client.submit(steps, name=name, platform=platform, resources=resources or [],
                              requirements=requirements, request_id=request_id, requires=requires or ()).info(details=False)
 
     @tool()
     def start_experiment(request_id: str, name: str = 'Experiment', platform: str | None = None,
                          resources: list[str] | None = None, parameters: dict | None = None,
-                         requirements: dict[str, int] | None = None, requires: list[str] | None = None) -> dict:
-        """Start one experiment for successive agent decisions. Reserve all mutually dependent devices up front. The run stays open across connections until finished or cancelled. requires names platform conditions it relies on: operations are accepted while they hold, and operating_conditions(maintain=true, run_id=...) restores them."""
+                         requirements: dict[str, int] | None = None, requires: list[str] | None = None,
+                         upkeep: bool = False) -> dict:
+        """Start one experiment for successive agent decisions. Reserve all mutually dependent devices up front. The run stays open across connections until finished or cancelled. requires names the conditions it relies on (operating_conditions lists them): operations are accepted while they hold, and operating_conditions(maintain=true, run_id=...) restores them. upkeep=true has the Runtime keep those conditions inside the experiment: before and between operations it maintains what is due or about to expire."""
         return client.start_experiment(request_id=request_id, name=name, platform=platform,
-                                       resources=resources or [], parameters=parameters,
-                                       requirements=requirements, requires=requires or ()).info(details=False)
+                                       resources=resources or [], parameters=parameters, requirements=requirements,
+                                       requires=requires or (), upkeep=upkeep or None).info(details=False)
 
     @tool()
     def invoke_operation(run_id: str, device: str, operation: str, request_id: str,
@@ -301,11 +304,21 @@ def create_server(client, *, http=False, selection=None):
 
     @tool()
     def submit_operations(run_id: str, steps: list[dict], request_id: str, wait: float = 0) -> dict:
-        """Submit a batch within an existing experiment. Steps run in order by default. after=[] starts an independent branch; after=[IDs] joins branches. All steps are accepted together. With wait up to 25 seconds, the reply includes results of steps that finish in that time; complete tells whether all did."""
+        """Submit a batch within an existing experiment. Steps run in order by default. after=[] starts an independent branch; after=[IDs] joins branches. A step with sweep runs at each point in turn, its ranges given or read from earlier steps as in submit_experiment; results then hold its numbers as arrays over the sweep (read_array with run_id, request_id and field) and the reply counts its points by state. All steps are accepted together. With wait up to 25 seconds, the reply includes results of steps that finish in that time; complete tells whether all did."""
         batch = client.request('/v1/runs/' + quote(run_id, safe='') + '/batches' + waiting(wait),
                                {'steps':steps, 'request_id':request_id})
         batch = compact(batch)
-        return {**batch, 'operations': [summary(op) for op in batch.get('operations', [])]}
+        swept = [step['id'] for step in steps if isinstance(step, dict) and 'sweep' in step and isinstance(step.get('id'), str)]
+        points = {name: [op for op in batch.get('operations', []) if op['step'].startswith(name + '.')] for name in swept}
+        inside = {op['id'] for ops in points.values() for op in ops}
+        shown = {**batch, 'operations': [summary(op) for op in batch.get('operations', []) if op['id'] not in inside]}
+        if swept:
+            shown['sweeps'] = {}
+            for name, ops in points.items():
+                states, errors = [op['state'] for op in ops], [op['error'] for op in ops if op.get('error')]
+                shown['sweeps'][name] = {'points': {state: states.count(state) for state in dict.fromkeys(states)},
+                                         **({'error': errors[0]} if errors else {})}
+        return shown
 
     @tool()
     def save_acquisition(run_id: str, name: str, operation_ids: list[str],
@@ -380,8 +393,31 @@ def create_server(client, *, http=False, selection=None):
 
     @tool(annotations=read_only)
     def operation_result(operation_id: str, values: bool = False) -> dict:
-        """Read one recorded operation and its result without repeating an instrument action. Arrays longer than 64 values show their description unless values is true."""
+        """Read one recorded operation and its result without repeating an instrument action. Arrays longer than 64 values show their description unless values is true; read_array summarizes them."""
         return compact(client.request('/v1/operations/' + quote(operation_id, safe='')), values)
+
+    @tool(annotations=read_only)
+    def read_array(operation_id: str | None = None, field: str | None = None,
+                   along: str | int | list[str | int] | None = None, at: dict[str, str | int] | None = None,
+                   start: int | list[int | None] | None = None, stop: int | list[int | None] | None = None,
+                   low: float | list[float | None] | None = None, high: float | list[float | None] | None = None,
+                   points: int | list[int] | None = None, peak: Literal['max', 'min'] | None = None,
+                   run_id: str | None = None, stream: str | None = None, request_id: str | None = None) -> dict:
+        """Read what an array says without all its values: an array an operation returned (operation_id); an array an experiment's result holds, such as what a sweep gathered (run_id and field, with request_id for the results of a batch); or a numeric data stream of an experiment (run_id and stream, samples by channels). Returns count, min and max with their index and coordinate, mean and std; then exact values when each position holds one element and there are at most points positions, otherwise the min, max and mean of points buckets (default 32). along names the axis followed (default the first), or two axes for a map of an image or a two-parameter sweep, e.g. ["row", "column"] with points [16, 16] (default 16 each) and start, stop, low, high given per axis; at fixes other axes by index or label, e.g. {"channel": "x"}; complex values (axis labels re, im) read as abs unless at chooses re, im, arg or power (|z|^2: the width of a resonance dip in power gives its loaded Q as center over width). Zoom with start/stop (positions) or low/high (coordinates). peak "max", or "min" for a dip, adds the line there: center (between samples), width where it is halfway to the opposite extreme (base), low and high at those points, and its value; window it with low/high when the trace holds several lines. field names the array when a result holds several."""
+        if points is None:
+            points = 16 if isinstance(along, list) and len(along) > 1 else 32
+        options = dict(along=along, at=at, start=start, stop=stop, low=low, high=high, points=points, peak=peak)
+        if operation_id is not None:
+            if run_id is not None or stream is not None or request_id is not None:
+                raise ValueError('Read an operation array with operation_id alone, or an experiment array with run_id')
+            return client.read_array(operation_id, field, **options)
+        if run_id is None:
+            raise ValueError('Give operation_id, or run_id with field or stream')
+        if stream is not None:
+            if field is not None or request_id is not None:
+                raise ValueError('A stream holds one array; give run_id and stream only')
+            return client.run(run_id).stream(stream).read_array(**options)
+        return client.run(run_id).read_array(field, request_id=request_id, **options)
 
     @tool()
     def continue_program(run_id: str, request_id: str | None = None) -> dict:

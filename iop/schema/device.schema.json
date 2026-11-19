@@ -169,6 +169,161 @@
     "instrument_profile": {
       "type": "string",
       "description": "ID of a model description in /v1/instrument-catalog. Its operations, name and documentation are added at registration; operations in config take precedence."
+    },
+    "conditions": {
+      "type": "array",
+      "description": "What must hold for this instrument's readings to mean something, observed and restored with its own operations. Named <device>.<id> in the laboratory; platform conditions may depend on them.",
+      "items": {
+        "$ref": "#/$defs/instrumentCondition"
+      }
+    }
+  },
+  "$defs": {
+    "instrumentStep": {
+      "type": "object",
+      "required": [
+        "operation"
+      ],
+      "additionalProperties": false,
+      "description": "One operation of this instrument; device may be omitted.",
+      "properties": {
+        "device": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "arguments": {
+          "type": "object"
+        }
+      }
+    },
+    "instrumentTolerance": {
+      "type": "object",
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "minimum"
+          ]
+        },
+        {
+          "required": [
+            "maximum"
+          ]
+        },
+        {
+          "required": [
+            "equals"
+          ]
+        }
+      ],
+      "properties": {
+        "value": {
+          "type": "array",
+          "items": {
+            "type": [
+              "string",
+              "integer"
+            ]
+          },
+          "description": "Path into the observation result; default [\"value\"]."
+        },
+        "minimum": {
+          "type": "number"
+        },
+        "maximum": {
+          "type": "number"
+        },
+        "equals": {}
+      }
+    },
+    "instrumentCondition": {
+      "type": "object",
+      "required": [
+        "id",
+        "description",
+        "verify",
+        "accept"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$",
+          "description": "Local name; the laboratory name is <device>.<id>."
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "description": "An extensible label such as equilibrium, reference, calibration, lock or operating_point."
+        },
+        "after": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true,
+          "description": "Local names of this instrument's conditions that must hold first."
+        },
+        "verify": {
+          "$ref": "#/$defs/instrumentStep"
+        },
+        "accept": {
+          "$ref": "#/$defs/instrumentTolerance"
+        },
+        "usable": {
+          "$ref": "#/$defs/instrumentTolerance"
+        },
+        "reference": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": [
+                "string",
+                "integer"
+              ]
+            }
+          }
+        },
+        "correct": {
+          "description": "Operations of this instrument that restore the condition, tried in order; tune is accepted as on platforms.",
+          "oneOf": [
+            {
+              "$ref": "#/$defs/instrumentStep"
+            },
+            {
+              "type": "object",
+              "required": [
+                "tune"
+              ]
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            }
+          ]
+        },
+        "settle": {
+          "type": "number",
+          "minimum": 0
+        },
+        "valid_for": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "note": {
+          "type": "string"
+        }
+      }
     }
   }
 }

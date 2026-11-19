@@ -53,7 +53,7 @@ The HTTP job adapter submits a job, retains its identifier and follows status un
 
 Completed package operations are kept in SQLite; memory retains only the package's unfinished calls. Workflows retain results needed by subsequent steps until completion. Event requests can wait for new records; operation history has cursor-based pagination.
 
-SQLite stores structured records. Images, waveforms and arrays are files. Uploads and downloads stream in chunks and program output is written directly to files. The release adds a file-name index while preserving existing records.
+SQLite stores structured records. Images, waveforms and arrays are files; views and `.npy` exports read them where they lie, the chunks of a stream and the files of a sweep's points in order, without copying. Uploads and downloads stream in chunks and program output is written directly to files. The release adds a file-name index while preserving existing records.
 
 Restart preserves queued work and marks previously active experiments interrupted with their recorded results intact. Loss of a driver or inability to determine a remote job's outcome records the unresolved action and affected resources until the equipment state is established. Program state and physical state are represented separately.
 

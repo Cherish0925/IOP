@@ -96,7 +96,8 @@ def parser():
     p.add_argument('--save', metavar='FILE', help='JSON file with one definition or a list of them')
     p = sub.add_parser('conditions', help='Show what must hold on a platform for its experiments, or maintain it')
     p.add_argument('name', nargs='?', help='One condition with its statistics and records')
-    p.add_argument('--platform'); p.add_argument('--maintain', action='store_true', help='Verify what is due and correct what drifted')
+    p.add_argument('--platform'); p.add_argument('--device', help='One instrument and its own conditions')
+    p.add_argument('--maintain', action='store_true', help='Verify what is due and correct what drifted')
     p.add_argument('--force', action='store_true', help='With --maintain, also verify what still holds')
     p = sub.add_parser('desktop', help='Open the native desktop window'); p.add_argument('--view', default='overview')
     sub.add_parser('shortcuts', help='Install desktop and browser application entries')
@@ -149,6 +150,12 @@ def parser():
         if action == 'run': q.add_argument('procedure')
     p = sub.add_parser('call'); p.add_argument('device'); p.add_argument('operation'); p.add_argument('--arguments', default='{}')
     p.add_argument('--run-id'); p.add_argument('--request-id')
+    p = sub.add_parser('array', help='Summarize an array an operation returned, or read a window of it')
+    p.add_argument('operation_id'); p.add_argument('--field'); p.add_argument('--along')
+    p.add_argument('--at', help='JSON object fixing other axes, e.g. {"component": "arg"}')
+    p.add_argument('--start', type=int); p.add_argument('--stop', type=int)
+    p.add_argument('--low', type=float); p.add_argument('--high', type=float); p.add_argument('--points', type=int)
+    p.add_argument('--peak', choices=['max', 'min'], help='Find the line at the highest value, or the lowest for a dip')
     p = sub.add_parser('runs'); p.add_argument('--limit',type=int,default=20)
     for name in ['result','cancel','files','finish']:
         p = sub.add_parser(name); p.add_argument('run_id')
@@ -217,9 +224,9 @@ def main():
                 output(client.saved_operation(args.name) if args.name else client.saved_operations())
         elif args.command == 'conditions':
             if args.maintain:
-                output(client.maintain(args.platform, [args.name] if args.name else None, force=args.force))
+                output(client.maintain(args.platform, [args.name] if args.name else None, device=args.device, force=args.force))
             else:
-                output(client.condition(args.name) if args.name else client.conditions(args.platform))
+                output(client.condition(args.name) if args.name else client.conditions(args.platform, args.device))
         elif args.command == 'reconnect':
             output(client.reconnect(args.device))
         elif args.command == 'release':
@@ -286,6 +293,10 @@ def main():
             else:
                 run = client.procedure(args.id, 'initialize' if action == 'initialize' else args.procedure)
                 output(run.result() if args.wait else {'run_id':run.id})
+        elif args.command == 'array':
+            output(client.read_array(args.operation_id, args.field, along=args.along,
+                                     at=json.loads(args.at) if args.at else None, start=args.start, stop=args.stop,
+                                     low=args.low, high=args.high, points=args.points, peak=args.peak))
         elif args.command == 'call':
             if args.request_id and not args.run_id:
                 raise ValueError('Use --run-id with --request-id to retry an experiment operation')

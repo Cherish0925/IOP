@@ -43,7 +43,8 @@ class DescriptionCase(unittest.TestCase):
             self.assertEqual(self.box.invoke('get.A.temperature', {}, context)['value'], 12.5)
             self.assertEqual(self.box.invoke('get.A.dummy_complex', {}, context)['value'], {'re': 1.0, 'im': 1.0})
             trace = self.box.invoke('get.A.dummy_parameter_with_setpoints', {}, context)
-            self.assertEqual(trace['data']['axes'], [{'name': 'dummy_sp_axis', 'unit': 'some unit'}])
+            # Evenly spaced setpoints give their axis coordinates.
+            self.assertEqual(trace['data']['axes'], [{'name': 'dummy_sp_axis', 'unit': 'some unit', 'start': 0.0, 'step': 1.0}])
             self.assertEqual(trace['data']['shape'], trace['setpoints'][0]['data']['shape'])
             self.assertEqual((Path(folder) / trace['data']['file']).stat().st_size, trace['data']['bytes'])
             complex_trace = self.box.invoke('get.A.dummy_complex_array_parameter', {}, context)

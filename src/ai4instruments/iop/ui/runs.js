@@ -22,8 +22,19 @@ import {
   emit,
   uniqueID,
   operationResult,
+  drawArrays,
+  arrayFigure,
+  arraysIn,
+  mapAxes,
+  lineAxis,
+  save,
 } from "./core.js";
-import { parametersHTML, parameterValues } from "./devices.js";
+import {
+  parametersHTML,
+  parameterValues,
+  setSweep,
+  sweepValues,
+} from "./devices.js";
 let query = "",
   category = "all",
   detailTimer = null;
@@ -101,14 +112,67 @@ export function bindRuns() {
       }),
   );
 }
-function resultView(value) {
+// Streams of a numeric format, such as float32-le, are drawn per channel from their views.
+const NUMERIC = /^(u?int8(-(le|be))?|(u?int(16|32|64)|float(32|64))-(le|be))$/;
+function streamFigures(id, streams) {
+  return streams
+    .filter((s) => s.bytes && NUMERIC.test(s.definition?.format || ""))
+    .flatMap((s) => {
+      const source = `runs/${encodeURIComponent(id)}/streams/${encodeURIComponent(s.name)}/array`,
+        channels = (s.definition.channels || []).filter(
+          (c) => c && typeof c === "object" && !Array.isArray(c),
+        ),
+        caption = (channel) =>
+          `${esc(s.name)}${channel === undefined ? "" : " · " + esc(channel)} · ${esc(s.definition.format)} · ${size(s.bytes)}`;
+      return channels.length > 1
+        ? channels.map((c, i) =>
+            arrayFigure({
+              source,
+              caption: caption(String(c.name ?? i)),
+              at: { channel: i },
+              line: true,
+              name: s.name,
+            }),
+          )
+        : [
+            arrayFigure({
+              source,
+              caption: caption(channels[0]?.name),
+              line: true,
+              name: s.name,
+            }),
+          ];
+    })
+    .join("");
+}
+// Arrays the result holds, such as what a sweep gathered from its points' values or files, are drawn from their views.
+function heldFigures(id, value, keep) {
+  return arraysIn(value)
+    .filter(
+      ([, data, holder]) =>
+        holder.values !== undefined || Array.isArray(data.files),
+    )
+    .map(([path, data]) =>
+      arrayFigure({
+        source: `runs/${encodeURIComponent(id)}/array`,
+        field: path,
+        caption: `${esc(path)} · ${esc(data.shape.join(" × "))}${data.unit ? " · " + esc(data.unit) : ""}`,
+        keep,
+        map: mapAxes(data),
+        line: lineAxis(data),
+      }),
+    )
+    .join("");
+}
+// A finished experiment's result is final; while a step graph runs, it is what its completed operations give so far.
+function resultView(value, id, final) {
   if (value === null || value === undefined)
     return `<p class="inline-note">${t("此实验没有单独保存汇总结果，可查看每个操作的返回值和输出文件。", "No separate summary was saved. Operation results and output files are available below.")}</p>`;
   const entries =
     typeof value === "object" && !Array.isArray(value)
       ? Object.entries(value)
       : [["result", value]];
-  return `<div class="result-grid">${entries
+  return `${heldFigures(id, value, final)}<div class="result-grid">${entries
     .slice(0, 24)
     .map(
       ([key, v]) =>
@@ -116,28 +180,8 @@ function resultView(value) {
     )
     .join("")}</div>${jsonDetails(value)}`;
 }
-async function downloadFile(file) {
-  let handle;
-  if ("showSaveFilePicker" in window)
-    handle = await window.showSaveFilePicker({
-      suggestedName: file.name.split("/").pop(),
-    });
-  const response = await fetch("/v1/artifacts/" + encodeURIComponent(file.id), {
-    headers: { Authorization: "Bearer " + state.token },
-  });
-  if (!response.ok) throw Error(t("文件读取失败", "Could not read the file"));
-  if (handle) {
-    const writer = await handle.createWritable();
-    await response.body.pipeTo(writer);
-  } else {
-    const url = URL.createObjectURL(await response.blob()),
-      a = document.createElement("a");
-    a.href = url;
-    a.download = file.name.split("/").pop();
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(url), 30000);
-  }
-}
+const downloadFile = (file) =>
+  save("artifacts/" + encodeURIComponent(file.id), file.name.split("/").pop());
 export async function inspectRun(id) {
   clearTimeout(detailTimer);
   const body = modal(
@@ -152,6 +196,7 @@ export async function inspectRun(id) {
     pages = [],
     terminalLoaded = false,
     resultLoaded = false,
+    running = true,
     activeTab = "steps";
   $$("[data-detail-tab]", body).forEach(
     (b) =>
@@ -165,14 +210,20 @@ export async function inspectRun(id) {
       }),
   );
   async function loadResult() {
-    if (activeTab !== "results" || resultLoaded || !terminalLoaded) return;
-    resultLoaded = true;
-    $("#detail-results").innerHTML =
-      `<p class="inline-note">${t("正在读取结果…", "Loading results…")}</p>`;
+    if (activeTab !== "results" || resultLoaded) return;
+    if (!running) resultLoaded = true;
+    if (!$("#detail-results").childElementCount)
+      $("#detail-results").innerHTML =
+        `<p class="inline-note">${t("正在读取结果…", "Loading results…")}</p>`;
     try {
       const value = await api("runs/" + encodeURIComponent(id) + "/result");
-      if (body.isConnected && $("#modal").dataset.runDetail === id)
-        $("#detail-results").innerHTML = resultView(value);
+      if (body.isConnected && $("#modal").dataset.runDetail === id) {
+        $("#detail-results").innerHTML =
+          running && value === null
+            ? `<p class="inline-note">${t("实验正在进行，完成的操作给出结果后显示在此。", "The experiment is running. Results appear here as its operations complete.")}</p>`
+            : resultView(value, id, !running);
+        drawArrays($("#detail-results"));
+      }
     } catch (error) {
       resultLoaded = false;
       if (body.isConnected) toast(error.message, true);
@@ -231,7 +282,7 @@ export async function inspectRun(id) {
         ? page.operations
             .map(
               (o, i) =>
-                `<div class="operation-row"><span class="operation-index">${String(pages.length * 100 + i + 1).padStart(2, "0")}</span><div><h3>${esc(o.step || o.id)} <span class="muted">· ${esc(o.device)} / ${esc(o.operation)}</span></h3><small>${date(o.started || o.created)}${o.ended ? " · " + duration((new Date(o.ended) - new Date(o.started)) / 1000) : ""}${o.progress?.message ? " · " + esc(o.progress.message) : ""}</small>${o.progress?.fraction != null ? `<div class="progress-track"><i style="width:${Math.max(0, Math.min(100, o.progress.fraction * 100))}%"></i></div>` : ""}${o.error ? `<p class="error-text">${esc(typeof o.error === "string" ? o.error : JSON.stringify(o.error))}</p>` : ""}${o.result != null ? operationResult(o.result) : ""}<details class="raw"><summary>${t("参数与完整返回值", "Arguments & full response")}</summary><pre>${esc(JSON.stringify({ arguments: o.arguments, result: o.result }, null, 2))}</pre></details></div>${badge(o.state)}</div>`,
+                `<div class="operation-row"><span class="operation-index">${String(pages.length * 100 + i + 1).padStart(2, "0")}</span><div><h3>${esc(o.step || o.id)} <span class="muted">· ${esc(o.device)} / ${esc(o.operation)}</span></h3><small>${date(o.started || o.created)}${o.ended ? " · " + duration((new Date(o.ended) - new Date(o.started)) / 1000) : ""}${o.progress?.message ? " · " + esc(o.progress.message) : ""}</small>${o.progress?.fraction != null ? `<div class="progress-track"><i style="width:${Math.max(0, Math.min(100, o.progress.fraction * 100))}%"></i></div>` : ""}${o.error ? `<p class="error-text">${esc(typeof o.error === "string" ? o.error : JSON.stringify(o.error))}</p>` : ""}${o.result != null ? operationResult(o.result, o.state === "completed" ? o.id : undefined) : ""}<details class="raw"><summary>${t("参数与完整返回值", "Arguments & full response")}</summary><pre>${esc(JSON.stringify({ arguments: o.arguments, result: o.result }, null, 2))}</pre></details></div>${badge(o.state)}</div>`,
             )
             .join("")
         : empty(
@@ -242,6 +293,7 @@ export async function inspectRun(id) {
               "Operations appear when the experiment program starts using instruments.",
             ),
           );
+      drawArrays($("#detail-operation-list"));
       next = page.cursor;
       $("#ops-prev").parentElement.hidden =
         !pages.length && page.operations.length < 100;
@@ -252,31 +304,32 @@ export async function inspectRun(id) {
         "Page " + (pages.length + 1),
       );
       if (!terminalLoaded || active) {
-        const files = await api(
-          "runs/" + encodeURIComponent(id) + "/artifacts",
-        );
+        const [files, streams] = await Promise.all([
+          api("runs/" + encodeURIComponent(id) + "/artifacts"),
+          api("runs/" + encodeURIComponent(id) + "/streams"),
+        ]);
         if ($("#modal").dataset.runDetail !== id || !body.isConnected) return;
-        $("#detail-files").innerHTML = files.length
-          ? `<div class="table-wrap"><table><thead><tr><th>${t("文件", "File")}</th><th>${t("大小", "Size")}</th><th></th></tr></thead><tbody>${files.map((f, i) => `<tr><td>${icon("file")} <span class="mono">${esc(f.name)}</span></td><td class="nowrap">${size(f.size)}</td><td><button class="button small" data-download="${i}">${icon("download")}${t("下载", "Download")}</button></td></tr>`).join("")}</tbody></table></div>`
-          : empty(
-              "file",
-              t("暂无文件", "No files yet"),
-              t(
-                "程序输出与上传的数据将保存在这里。",
-                "Program outputs and uploaded data will appear here.",
-              ),
-            );
+        $("#detail-files").innerHTML =
+          streamFigures(id, streams) +
+          (files.length
+            ? `<div class="table-wrap"><table><thead><tr><th>${t("文件", "File")}</th><th>${t("大小", "Size")}</th><th></th></tr></thead><tbody>${files.map((f, i) => `<tr><td>${icon("file")} <span class="mono">${esc(f.name)}</span></td><td class="nowrap">${size(f.size)}</td><td><button class="button small" data-download="${i}">${icon("download")}${t("下载", "Download")}</button></td></tr>`).join("")}</tbody></table></div>`
+            : empty(
+                "file",
+                t("暂无文件", "No files yet"),
+                t(
+                  "程序输出与上传的数据将保存在这里。",
+                  "Program outputs and uploaded data will appear here.",
+                ),
+              ));
+        drawArrays($("#detail-files"));
         $$("[data-download]", body).forEach(
           (b) =>
             (b.onclick = () =>
               busy(b, () => downloadFile(files[Number(b.dataset.download)]))),
         );
-        if (!active) {
-          terminalLoaded = true;
-          await loadResult();
-        } else
-          $("#detail-results").innerHTML =
-            `<p class="inline-note">${t("实验正在进行，完成后在此显示汇总结果。", "The experiment is running. Its summary will appear here on completion.")}</p>`;
+        running = active;
+        if (!active) terminalLoaded = true;
+        await loadResult();
       }
       if (active) {
         clearTimeout(detailTimer);
@@ -314,6 +367,13 @@ export function newExperiment() {
       s.device = $("[data-step-device]", el).value;
       s.operation = $("[data-step-operation]", el).value;
       s.after = $("[data-step-after]", el).value;
+      // What was typed for each sweep is kept as typed, to be shown again.
+      s.sweeping = Object.fromEntries(
+        $$("[data-sweep]:not([hidden])", el).map((block) => [
+          block.dataset.sweep,
+          $$("input", block).map((input) => input.value),
+        ]),
+      );
       try {
         s.arguments = parameterValues(
           $("[data-step-args]", el),
@@ -347,7 +407,7 @@ export function newExperiment() {
                   `<option value="${esc(k)}" ${k === s.operation ? "selected" : ""}>${esc(k)}</option>`,
               )
               .join("")}</select>`,
-          )}<div class="full form-grid" data-step-args>${parametersHTML(d.operations[s.operation], s.id)}</div><div class="full">${field(
+          )}<div class="full form-grid" data-step-args>${parametersHTML(d.operations[s.operation], s.id, true)}</div><div class="full">${field(
             t("开始条件", "Start after"),
             `<select data-step-after><option value="">${t("就绪后执行，可与其他步骤并行", "When ready; may run in parallel")}</option>${steps
               .slice(0, i)
@@ -384,15 +444,32 @@ export function newExperiment() {
               : value;
         }
       }
+      for (const [name, typed] of Object.entries(s.sweeping || {})) {
+        setSweep(el, name, true);
+        $$(`[data-sweep="${CSS.escape(name)}"] input`, el).forEach(
+          (input, k) => (input.value = typed[k]),
+        );
+      }
+      $$("[data-sweep-toggle]", el).forEach(
+        (button) =>
+          (button.onclick = () =>
+            setSweep(
+              el,
+              button.dataset.sweepToggle,
+              button.getAttribute("aria-pressed") !== "true",
+            )),
+      );
       $("[data-step-device]", el).onchange = () => {
         capture();
         s.operation = "";
         s.arguments = {};
+        s.sweeping = {};
         render();
       };
       $("[data-step-operation]", el).onchange = () => {
         capture();
         s.arguments = {};
+        s.sweeping = {};
         render();
       };
     }
@@ -417,6 +494,7 @@ export function newExperiment() {
           d = state.devices.find((d) => d.id === s.device);
         if (!el || !d)
           throw Error(t("请先选择设备", "Select an instrument first"));
+        const sweep = sweepValues($("[data-step-args]", el));
         return {
           id: s.id,
           device: s.device,
@@ -425,6 +503,7 @@ export function newExperiment() {
             $("[data-step-args]", el),
             d.operations[s.operation],
           ),
+          ...(Object.keys(sweep).length ? { sweep } : {}),
           after: s.after ? [s.after] : [],
         };
       }),

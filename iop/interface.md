@@ -70,9 +70,9 @@ Provide the service token through `IOP_TOKEN`. Configure the server's listening 
 | Resources | Inspect device and shared capacity use, edit configured capacities and inspect installed adapters. |
 | Connection & settings | Chinese / English, light / dark themes, service computer, version and connection. |
 
-Discovery lists connections visible to the computer. Registration selects the instrument's driver and operation description; platform configuration describes actual wiring. Simple workflows can be assembled from operations and dependencies in the interface. Submit an experiment ZIP for loops, feedback and analysis. Configuration import and JSON editing remain available.
+Discovery lists connections visible to the computer. Registration selects the instrument's driver and operation description; platform configuration describes actual wiring. Simple workflows can be assembled from operations and dependencies in the interface, and a numeric parameter can be swept from, to and in a number of points. Submit an experiment ZIP for loops, feedback and analysis. Configuration import and JSON editing remain available.
 
-Results load separately from operation history, which is paged in groups of 100. Automatic refresh preserves forms being edited. `Ctrl/Cmd + K` finds devices, platforms and experiments.
+Results load separately from operation history, which is paged in groups of 100; while a step graph runs they show what its completed operations give, so a sweep's map fills in. Arrays are drawn from their views, two-axis arrays as maps, and each saves as `.npy`; along one axis, Peak or Dip marks the line there with its center and its width at half height. Automatic refresh preserves forms being edited. `Ctrl/Cmd + K` finds devices, platforms and experiments.
 
 ## Interface implementation
 

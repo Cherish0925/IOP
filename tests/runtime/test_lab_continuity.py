@@ -108,6 +108,24 @@ class ContinuityCase(unittest.TestCase):
                 self.assertEqual(self.engine.remaining_dependencies, {})
             self.assertEqual(run.info(False)['operation_count'], 40)
 
+    def test_waiting_on_a_large_batch_reads_each_operation_a_bounded_number_of_times(self):
+        # Every finished operation wakes the waiter; it rereads only from the first unfinished one.
+        from ai4instruments.iop import batches
+        with self.client.start_experiment(resources=['stage']) as run:
+            steps = [{'id': 'settle', 'device': 'stage', 'operation': 'wait', 'arguments': {'duration': 0.3}}]
+            steps += [self.step(f'p{i}') for i in range(100)]
+            batches.submit(self.engine, run.id, steps, 'scan')
+            reads, waiter, get = [], threading.get_ident(), self.engine.store.get
+            def counted(table, key, *args, **kwargs):
+                if table == 'operations' and threading.get_ident() == waiter:
+                    reads.append(key)
+                return get(table, key, *args, **kwargs)
+            with patch.object(self.engine.store, 'get', counted):
+                receipt = batches.describe(self.engine, run.id, 'scan', wait=20)
+            self.assertTrue(receipt['complete'])
+            self.assertEqual({op['state'] for op in receipt['operations']}, {'completed'})
+            self.assertLess(len(reads), 6 * len(steps))
+
     def test_failure_cancels_batch_dependents(self):
         self.client.register({'id':'absent','driver':'scpi','config':{'host':'127.0.0.1','port':1,'timeout':0.1}})
         run = self.client.start_experiment()

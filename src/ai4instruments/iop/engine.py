@@ -24,7 +24,7 @@ from .config import save_json
 from .device_configuration import METADATA, allowed
 from .drivers import make_driver, parameters
 from .store import Store, dumps, finite, now
-from . import library
+from . import library, views
 from . import platforms as platform_model
 from .resources import Allocator, QueueFull, capacities, quantities
 from .execution import Context
@@ -66,6 +66,8 @@ class Engine:
         self.allocation.limits.update({'pool:' + k: v for k, v in self.capacities.items()})
         self.ready, self.dependents, self.remaining_dependencies, self.remaining = {}, {}, {}, {}
         self.step_ids, self.minimum_capacities = {}, {}
+        # The ends of each range swept, read once for all of its points, by experiment.
+        self.ranges = {}
         self.completed = queue.SimpleQueue()
         self.progress_lock = threading.Lock()
         self.progress_updates = {}
@@ -121,6 +123,7 @@ class Engine:
     def start(self):
         self.thread.start()
         self.monitors.start()
+        self.conditions.start()
         interval = float(self.config.get("discovery_interval", 30))
         if interval > 0:
             def inventory_loop():
@@ -499,7 +502,7 @@ class Engine:
     def _constituents(self, definition):
         """Check the steps against registered devices and saved operations, and that no operation uses itself."""
         for step in definition['steps']:
-            supplied = step.get('arguments', {}).keys() | step.get('bindings', {}).keys()
+            supplied = step.get('arguments', {}).keys() | step.get('bindings', {}).keys() | step.get('sweep', {}).keys()
             if 'device' not in step:
                 inner = self.library[step['operation']]
                 if supplied - inner.get('parameters', {}).keys():
@@ -545,7 +548,8 @@ class Engine:
             if operation is None:
                 problems.append(f"{step['device']}.{step['operation']}: no such operation")
                 continue
-            extra = (step.get('arguments', {}).keys() | step.get('bindings', {}).keys()) - operation.get('parameters', {}).keys()
+            extra = (step.get('arguments', {}).keys() | step.get('bindings', {}).keys() | step.get('sweep', {}).keys()) - \
+                operation.get('parameters', {}).keys()
             if extra:
                 problems.append(f"{step['device']}.{step['operation']}: no parameter " + ', '.join(sorted(extra)))
         found[operation_id] = list(dict.fromkeys(problems))
@@ -676,6 +680,7 @@ class Engine:
                 with self.lock:
                     if self.stopping:
                         raise ValueError("Service is stopping")
+                    self.conditions.prepare_instrument(device_id, record, description)
                     self.devices[device_id] = driver
                     self.device_records[device_id] = record
                     metadata = {k:record[k] for k in METADATA if k in record}
@@ -683,6 +688,7 @@ class Engine:
                     self.descriptions[device_id]['revision'] = self.store.save_device(record)['revision']
                     self.allocation.limits['device:' + device_id] = concurrency
                     self.monitors.configure(device_id, monitors)
+                    self.conditions.index()
                     if persist:
                         saved = {d['id']: d for d in self.config.get('devices', [])}
                         saved[device_id] = record
@@ -750,6 +756,9 @@ class Engine:
                                               **record['config'].get('operations', {})}
             if 'protocol' in enriched['config']:
                 record['config']['protocol'] = {**enriched['config']['protocol'], **record['config'].get('protocol', {})}
+            if enriched.get('conditions'):
+                from .identification import builtin_operations, merge_conditions
+                merge_conditions(record, enriched['conditions'], builtin_operations('scpi'))
             if not record.get('execution'):
                 self.devices[device_id].config.update(record['config'])
         elif enriched.get('profile_candidates') and not record['config'].get('operations'):
@@ -766,6 +775,7 @@ class Engine:
         self.descriptions[device_id]['revision'] = self.store.save_device(record)['revision']
         self.config['devices'] = [record if d['id'] == device_id else d for d in self.config['devices']]
         save_json(self.home / 'config.json', self.config)
+        self.conditions.index()
 
     def instrument_profiles(self):
         return self.instrument_catalog.profiles(self.config)
@@ -807,6 +817,7 @@ class Engine:
                     self.descriptions[device_id]['revision'] = self.store.save_device(record)['revision']
                     self.config['devices'] = [record if d['id'] == device_id else d for d in self.config['devices']]
                     save_json(self.home/'config.json', self.config)
+                    self.conditions.index()
                     with self.store.transaction():
                         self.store.event('instrument.connection_changed', device_id=device_id, connection=enrollment_key)
                     return self.descriptions[device_id]
@@ -852,9 +863,49 @@ class Engine:
                 "after":platform_model.dependencies(step), "state":"queued", "created":now(),
                 "resources":sorted(set(self._resources([device_id], name) + self._resources(step.get("resources", [])))),
                 "request_id":step.get("request_id"),
-                "device_revision":self.descriptions[device_id].get('revision'), **recorded}
+                "device_revision":self.descriptions[device_id].get('revision'), **recorded,
+                **{key: step[key] for key in ('derive', 'gathers', 'swept_by') if step.get(key)}}
+
+    def _described(self, device, operation):
+        """A registered device operation's description, or None."""
+        return self.descriptions.get(device, {}).get('operations', {}).get(operation)
+
+    @staticmethod
+    def _locate(operations):
+        """What operations read from sweeps and ranges, and how to gather a sweep, name operations by ID."""
+        ids = {op['step']: op['id'] for op in operations}
+        for op in operations:
+            if any(map(library.by_id, op['bindings'].values())):
+                op['bindings'] = {key: library.locate(binding, ids) if library.by_id(binding) else binding
+                                  for key, binding in op['bindings'].items()}
+            if 'gathers' in op:
+                op['gathers'] = {sweep: library.locate_gathering(found, ids) for sweep, found in op['gathers'].items()}
+
+    def _recorded(self, operation_id):
+        return self.operations.get(operation_id) or self.store.get('operations', operation_id)
+
+    def _assembled(self, run):
+        """A step graph's result from its operations completed so far: each Basic Operation's result under its
+        step, each use of a saved operation its named result, and each sweep what it gathered; the operations
+        of a sweep's points stay in their records."""
+        by_step = {self.operations[oid]['step']: self.operations[oid] for oid in run['operations']}
+        sweeps = run.get('sweeps', {})
+        result = {step: op.get('result') for step, op in by_step.items()
+                  if op['state'] == 'completed' and not op.get('swept_by')}
+        if run.get('calls') or sweeps:
+            result.update(library.results(run.get('calls', {}), sweeps, by_step, self.home / 'runs' / run['id'] / 'output'))
+        return result
+
+    def run_result(self, run_id):
+        """The saved result of an experiment; while a step graph runs, what its completed operations give so far."""
+        with self.lock:
+            run = self.runs.get(run_id)
+            if run is not None and run['kind'] == 'workflow' and run['state'] in {'queued', 'running'}:
+                return self._assembled(run) or None
+        return self.store.get('runs', run_id).get('result')
 
     def submit(self, spec, package=None):
+        from .errors import RequestError
         with self.lock:
             if self.stopping:
                 raise ValueError("Service is stopping")
@@ -903,8 +954,8 @@ class Engine:
             if program:
                 run['program_call'] = program
             if kind == 'workflow':
-                # A step without device uses a saved Standard or Workflow Operation.
-                steps, calls = library.expand(spec.get("steps", []), self.library.get)
+                # A step without device uses a saved Standard or Workflow Operation; a swept step runs at each point.
+                steps, calls, sweeps = library.expand(spec.get("steps", []), self.library.get, self._described)
                 platform_model.steps(steps)
                 operations = [self._operation(run_id, s) for s in steps]
                 if calls:
@@ -912,6 +963,9 @@ class Engine:
                     for op, step in zip(operations, steps):
                         if 'calls' in step:
                             op['calls'] = step['calls']
+                if sweeps:
+                    run['sweeps'] = sweeps
+                self._locate(operations)
                 if platform and any(op['device'] not in platform['definition']['devices'] for op in operations):
                     raise ValueError('Workflow devices must belong to the selected platform')
                 if run["resources"] or run['requirements']:
@@ -924,9 +978,25 @@ class Engine:
             if len(self.operations) + len(operations) > int(self.config.get('max_active_operations', 100000)):
                 raise QueueFull('The service has reached its configured number of active operations')
             required = self.conditions.required(spec, run.get('calls'), program)
+            if 'upkeep' in spec:
+                from .conditions import experiment_upkeep
+                if kind == 'workflow' or not required:
+                    raise ValueError('upkeep keeps the conditions a continuous experiment or program requires; name them in requires')
+                run['upkeep'] = experiment_upkeep(spec['upkeep'])
+                amounts, _ = self.conditions.requirements(required)
+                missing = {k: n for k, n in amounts.items() if n > self._amounts(run, reserve=True).get(k, 0)}
+                if missing:
+                    raise RequestError('maintenance_resources', 'Reserve the devices and resource quantities used by '
+                                       'maintenance when starting an experiment that keeps its conditions.', resources=missing)
             if required:
                 # The experiment is accepted only while what it relies on holds; the record keeps what that was.
-                run['conditions'] = self.conditions.require(required)
+                # One that keeps its conditions is accepted, and keeps them before its first operation.
+                try:
+                    run['conditions'] = self.conditions.require(required)
+                except RequestError as error:
+                    if error.code != 'conditions_not_held' or 'upkeep' not in run:
+                        raise
+                    run['conditions'] = {}
                 run['requires'] = required
                 for op in operations:
                     op['requires'] = required
@@ -955,6 +1025,8 @@ class Engine:
             self.operations.update({op["id"]:op for op in operations})
             self._index_run(run)
             self.conditions.rely(run_id, required)
+            if run.get('upkeep') and kind == 'external':
+                self.conditions.keep(run, required)
             self.wake.set()
             return json.loads(dumps(run))
 
@@ -1000,8 +1072,6 @@ class Engine:
                 raise ValueError("Operations require an active external experiment or running package")
             if len(self.operations) >= int(self.config.get('max_active_operations', 100000)):
                 raise QueueFull('The service has reached its configured number of active operations')
-            if run.get('requires'):
-                self.conditions.require(run['requires'], run_id)
             op = self._operation(run_id, step)
             if run.get('requires'):
                 op['requires'] = run['requires']
@@ -1015,6 +1085,8 @@ class Engine:
                 raise ValueError("Programs express dependencies by waiting for operation results")
             if op['bindings']:
                 raise ValueError('Programs pass results directly as operation arguments')
+            if run.get('requires') and not self.conditions.keep(run, run['requires']):
+                self.conditions.require(run['requires'], run_id)
             op['request'] = step
             if op['device'] not in run['devices']:
                 run['devices'][op['device']] = copy.deepcopy(self.descriptions[op['device']])
@@ -1152,6 +1224,7 @@ class Engine:
         self.ready.pop(run['id'], None)
         self.remaining.pop(run['id'], None)
         self.step_ids.pop(run['id'], None)
+        self.ranges.pop(run['id'], None)
         self.call_progress.pop(run['id'], None)
         self.minimum_capacities.pop(run['id'], None)
         process = self.processes.get(run['id'])
@@ -1351,11 +1424,9 @@ class Engine:
             future = self.futures[op_id]
             op = self.operations[op_id]; run = self.runs[op['run_id']]
             try:
-                result = future.result()
-                try:
-                    op['result'] = json.loads(dumps(result))
-                except ValueError:
-                    op['result'] = json.loads(dumps(finite(result)))
+                op['result'], derived = future.result()
+                if derived is not None:
+                    op['derived'] = derived
                 if op['operation'] == 'identify' and self.device_records[op['device']]['driver'] == 'scpi' and op['result'].get('identity'):
                     self.learn_identity(op['device'], op['result']['identity'])
                 op['state'] = 'completed'
@@ -1434,10 +1505,7 @@ class Engine:
                     self._finish(run, run.get('end_state', 'cancelled'))
                 elif run['kind'] == 'workflow' or process is not None:
                     if run['kind'] == 'workflow':
-                        run['result'] = {self.operations[oid]['step']: self.operations[oid].get('result') for oid in run['operations']}
-                        if run.get('calls'):
-                            # Each saved operation used as a step returns its named result under that step.
-                            run['result'].update(library.results(run['calls'], run['result']))
+                        run['result'] = self._assembled(run)
                     self._finish(run, 'completed')
         if self.stopping:
             return
@@ -1467,6 +1535,8 @@ class Engine:
             self._save_run(run, 'run.started')
             if run['kind'] == 'package':
                 try:
+                    if run.get('upkeep'):
+                        self.conditions.keep(run, run.get('requires', []))
                     self._start_package(run)
                     package_slots -= 1
                 except Exception as error:
@@ -1509,11 +1579,12 @@ class Engine:
                 if op.get('bindings'):
                     args = dict(op['arguments'])
                     for name, binding in op['bindings'].items():
+                        if library.by_id(binding):
+                            args[name] = library.read(binding, self._recorded, self.home / 'runs' / rid / 'output',
+                                                      known=self.ranges.setdefault(rid, {}))
+                            continue
                         source = op.get('binding_ids', {}).get(name) or self.step_ids[rid][binding['step']]
-                        value = (self.operations.get(source) or self.store.get('operations', source))['result']
-                        for key in binding.get('path', []):
-                            value = value[key]
-                        args[name] = value
+                        args[name] = library.value(self._recorded(source), binding)
                     op['arguments'] = parameters(self.descriptions[op['device']]['operations'][op['operation']], args)
                 error = None
             except Exception as error:
@@ -1542,15 +1613,26 @@ class Engine:
                 from concurrent.futures import Future
                 future = Future(); future.set_exception(error)
             elif getattr(self.devices[op['device']], 'dedicated_thread', False):
-                future = self._own_thread(self.devices[op['device']].invoke, op['operation'], op['arguments'], context)
+                future = self._own_thread(self._call, self.devices[op['device']], op, context)
                 self.waiting_steps.add(op_id)
             else:
-                future = self.pool.submit(self.devices[op['device']].invoke, op['operation'], op['arguments'], context)
+                future = self.pool.submit(self._call, self.devices[op['device']], op, context)
             self.futures[op_id] = future
             def completed(_, oid=op_id):
                 self.completed.put(oid)
                 self.wake.set()
             future.add_done_callback(completed)
+
+    @staticmethod
+    def _call(driver, op, context):
+        """Run one operation on its driver outside the scheduler lock. Its result is made JSON here, and the
+        views that bindings and named results read from its arrays are computed from the files it saved."""
+        result = driver.invoke(op['operation'], op['arguments'], context)
+        try:
+            result = json.loads(dumps(result))
+        except ValueError:
+            result = json.loads(dumps(finite(result)))
+        return result, views.derive(result, context.output_dir, op['derive']) if op.get('derive') else None
 
     @staticmethod
     def _own_thread(function, *args):

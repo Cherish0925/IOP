@@ -1839,3 +1839,138 @@ input::file-selector-button {
     grid-template-columns: 1fr;
   }
 }
+.array-plot {
+  margin: 10px 0 4px;
+}
+.array-plot figcaption {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+.sweep-toggle {
+  margin-left: 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0 6px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.sweep-toggle[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+.sweep-fields:not([hidden]) {
+  display: grid;
+  grid-template-columns: auto 1fr auto 1fr auto 5em;
+  align-items: center;
+  gap: 6px;
+}
+.sweep-fields small {
+  color: var(--muted);
+}
+.array-tools {
+  display: inline-flex;
+  gap: 2px;
+}
+.array-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  border-radius: 6px;
+  padding: 2px 6px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+.array-tool:hover,
+.array-tool:focus-visible,
+.array-tool[aria-pressed="true"] {
+  color: var(--text);
+  background: var(--accent-soft);
+}
+.array-tool svg {
+  width: 14px;
+  height: 14px;
+}
+.array-chart > svg {
+  display: block;
+  width: 100%;
+  height: 150px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.array-plot polyline {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+.array-plot polygon.band {
+  fill: var(--accent);
+  opacity: 0.22;
+}
+.array-plot line.line-mark {
+  stroke: var(--text);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+  vector-effect: non-scaling-stroke;
+}
+.array-axis {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 12px;
+  margin: 2px 0;
+}
+.array-map {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px;
+}
+.array-map img {
+  display: block;
+  width: 100%;
+  height: 220px;
+  image-rendering: pixelated;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.array-rows {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: flex-end;
+  padding-bottom: 22px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.array-scale {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0;
+  color: var(--muted);
+}
+.array-scale i {
+  flex: 0 1 160px;
+  height: 8px;
+  border-radius: 4px;
+  background: linear-gradient(
+    to right,
+    rgb(68 1 84),
+    rgb(59 82 139),
+    rgb(33 145 140),
+    rgb(94 201 98),
+    rgb(253 231 37)
+  );
+}

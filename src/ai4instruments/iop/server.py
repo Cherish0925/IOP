@@ -87,6 +87,16 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _send_pieces(self, length, pieces, name):
+        """A file made on the fly, such as an array as .npy, sent in pieces."""
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/octet-stream')
+        self.send_header('Content-Length', str(length))
+        self.send_header('Content-Disposition', 'attachment; filename="%s"' % name.replace('"', ''))
+        self.end_headers()
+        for piece in pieces:
+            self.wfile.write(piece)
+
     def do_GET(self):
         self._handle('GET')
 
@@ -186,11 +196,13 @@ class Handler(BaseHTTPRequestHandler):
             elif len(parts) == 4 and parts[:2] == ['v1', 'library'] and parts[3] == 'history' and method == 'GET':
                 result = engine.store.saved_operation_history(parts[2])
             elif parts == ['v1', 'conditions'] and method == 'GET':
-                result = engine.conditions.listing(query.get('platform'))
+                result = engine.conditions.listing(query.get('platform'), query.get('device'))
             elif parts == ['v1', 'conditions', 'maintain'] and method == 'POST':
                 job = engine.conditions.maintain(body.get('platform'), body.get('conditions'), body.get('run_id'),
-                                                 body.get('request_id'), body.get('force', False))
+                                                 body.get('request_id'), body.get('force', False), body.get('device'))
                 result = engine.conditions.job(job['id'], query.get('wait', 0)) if query.get('wait') else job
+            elif parts == ['v1', 'upkeep'] and method == 'GET':
+                result = engine.conditions.upkeep_status(query.get('platform'))
             elif parts == ['v1', 'conditions', 'invalidate'] and method == 'POST':
                 result = engine.conditions.invalidate(body['conditions'], body['reason'])
             elif len(parts) == 3 and parts[:2] == ['v1', 'conditions'] and method == 'GET':
@@ -224,6 +236,9 @@ class Handler(BaseHTTPRequestHandler):
                     monitors = engine.monitors.summary(parts[2])
                     if monitors:
                         result['monitors'] = monitors
+                    conditions = engine.conditions.listing(device=parts[2])
+                    if conditions:
+                        result['conditions'] = conditions
             elif len(parts) == 4 and parts[:2] == ['v1', 'devices'] and parts[3] == 'history' and method == 'GET':
                 result = engine.store.device_history(parts[2], query.get('limit', 100))
             elif len(parts) == 4 and parts[:2] == ['v1', 'devices'] and parts[3] == 'configuration' and method == 'POST':
@@ -253,6 +268,13 @@ class Handler(BaseHTTPRequestHandler):
                 result = {'events':rows, 'cursor':rows[-1]['sequence'] if rows else int(query.get('after',0))}
             elif len(parts) == 3 and parts[:2] == ['v1','operations'] and method == 'GET':
                 result = engine.store.wait_operation(parts[2], query.get('wait', 0))
+            elif len(parts) == 4 and parts[:2] == ['v1', 'operations'] and parts[3] == 'array' and method == 'GET':
+                from . import views
+                result = views.operation_array(engine, parts[2], **views.options(query))
+            elif len(parts) == 4 and parts[:2] == ['v1', 'operations'] and parts[3] == 'array.npy' and method == 'GET':
+                from . import views
+                return self._send_pieces(*views.operation_npy(engine, parts[2], query.get('field')),
+                                         (query.get('field') or 'array') + '.npy')
             elif len(parts) == 3 and parts[:2] == ['v1','runs'] and method == 'GET':
                 result = engine.run_info(parts[2], details=query.get('details', 'true') != 'false')
             elif len(parts) in (4, 5, 6) and parts[:2] == ['v1', 'runs'] and parts[3] == 'episodes':
@@ -267,10 +289,27 @@ class Handler(BaseHTTPRequestHandler):
                         engine, parts[2], parts[4], query.get('after', -1), query.get('limit', 100))
                 else:
                     raise KeyError(url.path)
+            elif len(parts) == 4 and parts[:2] == ['v1', 'runs'] and parts[3] == 'array' and method == 'GET':
+                from . import views
+                options = views.options({key: value for key, value in query.items() if key != 'request_id'})
+                result = views.result_array(engine, parts[2], query.get('request_id'), **options)
+            elif len(parts) == 4 and parts[:2] == ['v1', 'runs'] and parts[3] == 'array.npy' and method == 'GET':
+                from . import views
+                return self._send_pieces(*views.result_npy(engine, parts[2], query.get('request_id'), query.get('field')),
+                                         (query.get('field') or 'array') + '.npy')
+            elif len(parts) == 4 and parts[:2] == ['v1', 'runs'] and parts[3] == 'streams' and method == 'GET':
+                from .streams import listing
+                result = listing(engine, parts[2])
             elif len(parts) in (5, 6) and parts[:2] == ['v1', 'runs'] and parts[3] == 'streams':
                 from .streams import describe, chunks
                 if len(parts) == 6 and parts[5] == 'chunks' and method == 'GET':
                     result = chunks(engine, parts[2], parts[4], query.get('after', -1), query.get('limit', 100))
+                elif len(parts) == 6 and parts[5] == 'array' and method == 'GET':
+                    from . import streams, views
+                    result = streams.array_view(engine, parts[2], parts[4], **views.options(query))
+                elif len(parts) == 6 and parts[5] == 'array.npy' and method == 'GET':
+                    from . import streams
+                    return self._send_pieces(*streams.array_npy(engine, parts[2], parts[4]), parts[4] + '.npy')
                 elif len(parts) == 5:
                     result = describe(engine, parts[2], parts[4], body['definition'] if method == 'POST' else None)
                 else:
@@ -316,7 +355,7 @@ class Handler(BaseHTTPRequestHandler):
                 elif action == 'result' and method == 'POST':
                     result = engine.save_result(run_id, body['result'])
                 elif action == 'result' and method == 'GET':
-                    result = engine.store.get('runs', run_id).get('result')
+                    result = engine.run_result(run_id)
                 elif action == 'artifacts':
                     result = engine.artifact(run_id, body['name'], base64.b64decode(body['data'], validate=True), body.get('operation_ids', [])) if method == 'POST' else engine.store.list('artifacts', run_id, 10000)
                 else:
