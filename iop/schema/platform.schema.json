@@ -694,6 +694,11 @@
             "max",
             "min"
           ]
+        },
+        "prominence": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "With peak, read every line that stands out by this much: path [\"peaks\"]"
         }
       }
     },

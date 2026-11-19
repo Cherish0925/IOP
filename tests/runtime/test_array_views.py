@@ -19,6 +19,10 @@ from .test_arrays import start
 
 # A resonance dip over a frequency sweep: 1001 points, 1.0 to 1.1 GHz.
 DIP = [1.0 - 0.8 / (1 + ((i - 600) / 20) ** 2) for i in range(1001)]
+# Three modes on the same sweep, 0.77, 0.5 and 0.3 deep, on a ripple 0.005 high.
+MODES = [1.0 - sum(depth / (1 + ((1.0e9 + 1e5 * i - center) / half) ** 2)
+                   for center, half, depth in ((1.0213e9, 1.05e6, 0.77), (1.0587e9, 0.8e6, 0.5), (1.0841e9, 1.5e6, 0.3)))
+         + 0.005 * math.sin(i / 7) for i in range(1001)]
 FREQUENCY = {'name': 'frequency', 'unit': 'Hz', 'start': 1.0e9, 'step': 1.0e5}
 
 
@@ -280,6 +284,22 @@ class ViewCase(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'strictly increase or decrease'):
             self.view([0, 2, 0], {'dtype': 'float64', 'axes': [{'name': 'x', 'coordinates': [0, 1, 0]}]}, peak='max')
 
+    def test_the_lines_of_a_spectrum_stand_out_by_their_prominence(self):
+        trace = {'dtype': 'float64', 'axes': [FREQUENCY]}
+        modes = self.view(MODES, trace, peak='min', prominence=0.1)['peaks']
+        self.assertEqual(len(modes), 3)
+        for line, center, width in zip(modes, (1.0213e9, 1.0587e9, 1.0841e9), (2.1e6, 1.6e6, 3e6)):
+            self.assertAlmostEqual(line['center'], center, delta=3e4)
+            self.assertAlmostEqual(line['width'], width, delta=0.03 * width)
+        self.assertEqual([round(line['prominence'], 1) for line in modes], [0.8, 0.5, 0.3])
+        # A larger prominence leaves the two deeper modes; a small one adds the ripple's own dips.
+        self.assertEqual(len(self.view(MODES, trace, peak='min', prominence=0.4)['peaks']), 2)
+        self.assertGreater(len(self.view(MODES, trace, peak='min', prominence=0.001)['peaks']), 3)
+        for options, message in (({'prominence': 0.1}, 'read with a peak or a dip'),
+                                 ({'peak': 'min', 'prominence': 0}, 'positive number')):
+            with self.assertRaisesRegex(ValueError, message):
+                self.view(MODES, trace, **options)
+
     def test_inline_values_are_viewed_without_a_file(self):
         holder = arrays.result(_payload(DIP[:100], {}), arrays.check_result({'dtype': 'float64'}), None)
         self.assertEqual(views.view(holder, points=4)['envelope']['position'], [0, 25, 50, 75])
@@ -304,6 +324,8 @@ class ViewCase(unittest.TestCase):
             (nan_trace, {'dtype': 'float64'}, {'points': 37, 'peak': 'max'}),
             (nan_trace, {'dtype': 'float32', 'byte_order': 'big'}, {'start': 101, 'stop': 4093, 'peak': 'min'}),
             (DIP, {'dtype': 'float64', 'axes': [FREQUENCY]}, {'low': 1.05e9, 'high': 1.07e9, 'peak': 'min'}),
+            (MODES, {'dtype': 'float64', 'axes': [FREQUENCY]}, {'peak': 'min', 'prominence': 0.1}),
+            (nan_trace, {'dtype': 'float32', 'byte_order': 'big'}, {'start': 101, 'stop': 9000, 'peak': 'max', 'prominence': 1e8}),
             ([0, 2, 0], {'dtype': 'float64', 'axes': [{'name': 'x', 'coordinates': [0, 1, 3]}]}, {'peak': 'max'}),
             ([0, -2, 0], {'dtype': 'float64', 'axes': [{'name': 'x', 'coordinates': [3, 1, 0]}]}, {'peak': 'min'}),
             (z, {'dtype': 'float64', 'shape': [-1, 2], 'axes': [{'name': 'k'}, {'name': 'component', 'labels': ['re', 'im']}]},
@@ -331,6 +353,7 @@ class ViewCase(unittest.TestCase):
                 for a, b in zip(native['buckets']['mean'], python['buckets']['mean']):
                     self.assertTrue(a is b is None or abs(a - b) <= 1e-9 * max(1.0, abs(b)))
                 self.assertEqual(native.get('peak'), python.get('peak'))
+                self.assertEqual(native.get('peaks'), python.get('peaks'))
         # The chunks of a stream: the same values split across files at arbitrary byte boundaries.
         holder, path = saved(folder, nan_trace, {'dtype': 'float64'})
         payload, parts = path.read_bytes(), []
@@ -376,6 +399,8 @@ class ServiceViewCase(unittest.TestCase):
         zoomed = self.client.read_array(sweep['id'], low=1.0598e9, high=1.0602e9)
         self.assertEqual(zoomed['values'], DIP[598:603])
         self.assertEqual(self.client.read_array(sweep['id'], peak='min', points=2)['peak']['center'], 1.06e9)
+        self.assertEqual([line['index'] for line in self.client.read_array(sweep['id'], peak='min', prominence=0.5)['peaks']],
+                         [600])
         printed = subprocess.check_output([sys.executable, '-m', 'ai4instruments.iop', '--endpoint', self.client.endpoint,
                                            'array', sweep['id'], '--low', '1.0598e9', '--high', '1.0602e9', '--peak', 'min'],
                                           env=dict(os.environ, IOP_TOKEN=self.config['token']), text=True)
@@ -396,8 +421,8 @@ class ServiceViewCase(unittest.TestCase):
         self.assertIn('read_array', mcp.TOOLSETS['experiments'])
         # The schema field is inputSchema in MCP SDK 1.x and input_schema in 2.x.
         schema = getattr(tools['read_array'], 'input_schema', None) or tools['read_array'].inputSchema
-        self.assertTrue({'operation_id', 'field', 'along', 'at', 'start', 'stop', 'low', 'high', 'points', 'peak'}
-                        <= set(schema['properties']))
+        self.assertTrue({'operation_id', 'field', 'along', 'at', 'start', 'stop', 'low', 'high', 'points', 'peak',
+                         'prominence'} <= set(schema['properties']))
         self.assertIn('read_array', tools['operation_result'].description)
 
     def test_scpi_arrays_carry_coordinates_read_from_the_instrument(self):

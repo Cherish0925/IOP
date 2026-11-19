@@ -117,6 +117,8 @@ struct Request {
     fixed: Vec<Option<usize>>,
     complex: Option<Complex>,
     peak: Option<Peak>,
+    /// With a peak: read every line that stands out by at least this much, rather than the one at the extreme.
+    prominence: Option<f64>,
     /// Listed coordinates for the selected trace; uniform axes can use positions.
     coordinates: Option<Vec<f64>>,
 }
@@ -125,6 +127,8 @@ struct Request {
 const CELLS: usize = 4_000_000;
 /// Positions a line is read over, at most; their values are kept while it is found.
 const TRACE: usize = 20_000_000;
+/// Lines one view reads, at most.
+const LINES: usize = 1000;
 
 fn invalid(message: impl Into<String>) -> Box<dyn Error> {
     Box::new(io::Error::new(io::ErrorKind::InvalidInput, message.into()))
@@ -258,6 +262,17 @@ fn parse(request: &Value) -> Result<Request, Box<dyn Error>> {
             )));
         }
     }
+    let prominence = match &request["prominence"] {
+        Value::Null => None,
+        value => match value.as_f64() {
+            Some(p) if p.is_finite() && p > 0.0 && peak.is_some() => Some(p),
+            _ => {
+                return Err(invalid(
+                    "prominence is a positive number, read with a peak or a dip",
+                ))
+            }
+        },
+    };
     let coordinates = if request["coordinates"].is_null() {
         None
     } else {
@@ -288,6 +303,7 @@ fn parse(request: &Value) -> Result<Request, Box<dyn Error>> {
         fixed,
         complex,
         peak,
+        prominence,
         coordinates,
     })
 }
@@ -527,7 +543,13 @@ fn view(r: &Request) -> Result<Value, Box<dyn Error>> {
         }
     });
     if let Some(peak) = r.peak {
-        found["peak"] = line(&trace, r.along[0].start, peak, r.coordinates.as_deref());
+        let coordinates = r.coordinates.as_deref();
+        match r.prominence {
+            Some(least) => {
+                found["peaks"] = lines(&trace, r.along[0].start, peak, coordinates, least)?
+            }
+            None => found["peak"] = line(&trace, r.along[0].start, peak, coordinates),
+        }
     }
     Ok(found)
 }
@@ -550,9 +572,76 @@ fn line(trace: &[f64], first: usize, peak: Peak, coordinates: Option<&[f64]>) ->
             }
         }
     }
-    let Some(i) = top else {
-        return Value::Null;
+    match top {
+        Some(i) => describe(trace, first, i, base, sign, coordinates),
+        None => Value::Null,
+    }
+}
+
+/// The lines of a trace that stand out by at least `least`: each highest value (lowest for a dip) between
+/// lower ones whose prominence, its height above the higher of the lowest values on either side before a
+/// higher one or the end of the trace, is that much. That higher lowest value is the line's base, and the
+/// line is described as `line` describes the one at the extreme. In order of position.
+fn lines(
+    trace: &[f64],
+    first: usize,
+    peak: Peak,
+    coordinates: Option<&[f64]>,
+    least: f64,
+) -> Result<Value, Box<dyn Error>> {
+    let sign = if peak == Peak::Max { 1.0 } else { -1.0 };
+    let finite: Vec<usize> = (0..trace.len()).filter(|&i| trace[i].is_finite()).collect();
+    let z: Vec<f64> = finite.iter().map(|&i| sign * trace[i]).collect();
+    // The lowest value from each one back to the nearest higher one, kept for each value on a stack of
+    // higher ones: a value that rises above those before it takes in their lowest values.
+    let lowest = |order: &mut dyn Iterator<Item = usize>| -> Vec<f64> {
+        let mut found = vec![0.0; z.len()];
+        let mut higher: Vec<(f64, f64)> = Vec::new();
+        for k in order {
+            let mut low = z[k];
+            while let Some(&(value, below)) = higher.last() {
+                if value > z[k] {
+                    break;
+                }
+                low = low.min(below);
+                higher.pop();
+            }
+            found[k] = low;
+            higher.push((z[k], low));
+        }
+        found
     };
+    let (left, right) = (lowest(&mut (0..z.len())), lowest(&mut (0..z.len()).rev()));
+    let mut found = Vec::new();
+    for k in 1..z.len().saturating_sub(1) {
+        if z[k - 1] < z[k] && z[k + 1] <= z[k] {
+            let base = left[k].max(right[k]);
+            if z[k] - base >= least {
+                if found.len() == LINES {
+                    return Err(invalid(format!(
+                        "More than {LINES} lines stand out by this prominence; ask for a larger one"
+                    )));
+                }
+                let mut line = describe(trace, first, finite[k], sign * base, sign, coordinates);
+                line["prominence"] = number(z[k] - base);
+                found.push(line);
+            }
+        }
+    }
+    Ok(Value::Array(found))
+}
+
+/// The line at position `i` of a trace over a base: its position refined between its neighbours by the
+/// parabola through the three, its value there, and the positions, interpolated, where the trace on either
+/// side first comes halfway from that value to the base.
+fn describe(
+    trace: &[f64],
+    first: usize,
+    i: usize,
+    base: f64,
+    sign: f64,
+    coordinates: Option<&[f64]>,
+) -> Value {
     let y1 = trace[i];
     let place = |index: usize| coordinates.map_or((first + index) as f64, |values| values[index]);
     let (mut center, mut value) = (place(i), y1);
@@ -856,6 +945,64 @@ mod tests {
             &name,
             &[2, 3],
             json!({"peak": "top", "fixed": [[1, 0]]})
+        ))
+        .is_err());
+    }
+
+    #[test]
+    fn the_lines_of_a_trace_stand_out_by_their_prominence() {
+        // Lines 1, 0.6 and 0.3 high, 8, 12 and 6 wide, on a ripple whose own crests rise 0.02.
+        let shape = |x: f64, c: f64, w: f64| 1.0 / (1.0 + ((x - c) / w).powi(2));
+        let values: Vec<f64> = (0..400)
+            .map(|i| {
+                let x = i as f64;
+                shape(x, 80.3, 4.0)
+                    + 0.6 * shape(x, 200.7, 6.0)
+                    + 0.3 * shape(x, 320.2, 3.0)
+                    + 0.01 * (x / 3.0).sin()
+            })
+            .collect();
+        let (_keep, name) = file(&values);
+        let found = |peak: &str, least: f64, name: &str| {
+            view(
+                &parse(&request(
+                    name,
+                    &[400],
+                    json!({"peak": peak, "prominence": least}),
+                ))
+                .unwrap(),
+            )
+            .unwrap()["peaks"]
+                .as_array()
+                .unwrap()
+                .clone()
+        };
+        let peaks = found("max", 0.1, &name);
+        assert_eq!(peaks.len(), 3);
+        for (line, (center, width)) in peaks.iter().zip([(80.3, 8.0), (200.7, 12.0), (320.2, 6.0)])
+        {
+            let at = |key: &str| line[key].as_f64().unwrap();
+            assert!((at("position") - center).abs() < 0.1, "{line}");
+            assert!((at("right") - at("left") - width).abs() < 0.6, "{line}");
+        }
+        assert!(peaks[1]["prominence"].as_f64().unwrap() > 0.55);
+        // The ripple's crests stand out by little; a dip reads the lines of the trace turned over.
+        let small = found("max", 0.01, &name);
+        let ripple = |line: &&Value| line["prominence"].as_f64().unwrap() < 0.03;
+        assert_eq!(
+            (small.len() > 3, small.iter().filter(ripple).count()),
+            (true, small.len() - 3)
+        );
+        let turned: Vec<f64> = values.iter().map(|v| -v).collect();
+        let (_turned, turned_name) = file(&turned);
+        let dips = found("min", 0.1, &turned_name);
+        assert_eq!(dips.len(), 3);
+        assert_eq!(dips[2]["index"], peaks[2]["index"]);
+        assert!(parse(&request(&name, &[400], json!({"prominence": 0.1}))).is_err());
+        assert!(parse(&request(
+            &name,
+            &[400],
+            json!({"peak": "max", "prominence": 0})
         ))
         .is_err());
     }

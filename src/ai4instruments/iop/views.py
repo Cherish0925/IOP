@@ -22,6 +22,7 @@ from .arrays import DTYPES, _typecode
 
 POINTS = 64
 MAX_POINTS = 2000
+LINES = 1000
 MAX_CELLS = 250_000
 PYTHON_LIMIT = 4_000_000
 COMPONENTS = ['re', 'im']
@@ -133,10 +134,12 @@ def _short(value):
     return None if value is None else float(f'{value:.7g}')
 
 
-def plan(data, along=None, at=None, start=None, stop=None, low=None, high=None, points=POINTS, peak=None):
+def plan(data, along=None, at=None, start=None, stop=None, low=None, high=None, points=POINTS, peak=None,
+         prominence=None):
     """Resolve axis names, labels and coordinates into the request iop-execd and Python compute. ``along``
     names one axis, or a list of two for a map; start, stop, low and high then give one value per axis
-    (None for none) and points a number for each axis or for both. ``peak`` is max or min."""
+    (None for none) and points a number for each axis or for both. ``peak`` is max or min, and with
+    ``prominence`` every line that stands out by that much is read."""
     shape, axes = list(data['shape']), list(data.get('axes') or [])
     if len(axes) != len(shape) or any(not isinstance(a, dict) or not isinstance(a.get('name'), str) for a in axes):
         axes = []
@@ -186,6 +189,9 @@ def plan(data, along=None, at=None, start=None, stop=None, low=None, high=None, 
         # Complex values are read as their modulus unless a component or the argument is chosen.
         complex_mode = 'abs'
         shown[named(component)] = 'abs'
+    if prominence is not None and (peak is None or isinstance(prominence, bool) or not isinstance(prominence, (int, float))
+                                   or not math.isfinite(prominence) or prominence <= 0):
+        raise ValueError('prominence is a positive number, read with a peak or a dip')
     if peak is not None:
         if peak not in ('max', 'min'):
             raise ValueError('peak is max, or min for a dip')
@@ -225,6 +231,8 @@ def plan(data, along=None, at=None, start=None, stop=None, low=None, high=None, 
             raise ValueError('A peak is read along one axis; fix the others with at: '
                              + ', '.join(map(str, summarized)))
         request['peak'] = peak
+        if prominence is not None:
+            request['prominence'] = prominence
         listed = coordinates[0]
         if isinstance(listed, list):
             selected = listed[starts[0]:stops[0]]
@@ -332,7 +340,10 @@ def python(request, values=None):
         else:
             seq = list(map(float, flat[first:end:step]))
         counted = [bounds[b + 1] - bounds[b] for b in range(points)]
-        line = _line(seq, start, request['peak'], request.get('coordinates')) if request.get('peak') else None
+        if 'prominence' in request:
+            line = _lines(seq, start, request['peak'], request.get('coordinates'), request['prominence'])
+        elif request.get('peak'):
+            line = _line(seq, start, request['peak'], request.get('coordinates'))
         clean = math.isfinite(sum(seq))
         parts = [seq[bounds[b] - start:bounds[b + 1] - start] for b in range(points)]
         if not clean:
@@ -352,7 +363,7 @@ def python(request, values=None):
                 'buckets': {'start': [bounds[:-1]], 'count': counted, 'finite': [len(p) for p in parts],
                             'min': [min(p) if p else None for p in parts], 'max': [max(p) if p else None for p in parts],
                             'mean': [math.fsum(p) / len(p) if p else None for p in parts]},
-                **({'peak': line} if request.get('peak') else {})}
+                **({'peaks' if 'prominence' in request else 'peak': line} if request.get('peak') else {})}
 
     # Several elements per position, or two axes followed: walk the slabs read in storage order, as iop-execd does.
     count = finite = 0
@@ -418,9 +429,48 @@ def _line(seq, first, peak, coordinates=None):
                 top = i
             if math.isnan(base) or sign * y < sign * base:
                 base = y
-    if top is None:
-        return None
-    i, y1 = top, seq[top]
+    return None if top is None else _describe(seq, first, top, base, sign, coordinates)
+
+
+def _lines(seq, first, peak, coordinates, least):
+    """The lines of a trace that stand out by at least ``least``, as iop-execd finds them: each highest value
+    (lowest for a dip) between lower ones whose prominence, its height above the higher of the lowest values
+    on either side before a higher one or the end of the trace, is that much. That higher lowest value is the
+    line's base, and the line is described as ``_line`` describes the one at the extreme. In order of
+    position."""
+    sign = 1.0 if peak == 'max' else -1.0
+    finite = [i for i, y in enumerate(seq) if math.isfinite(y)]
+    z = [sign * seq[i] for i in finite]
+
+    def lowest(order):
+        # The lowest value from each one back to the nearest higher one, kept for each value on a stack of
+        # higher ones: a value that rises above those before it takes in their lowest values.
+        found, higher = [0.0] * len(z), []
+        for k in order:
+            low = z[k]
+            while higher and higher[-1][0] <= z[k]:
+                low = min(low, higher.pop()[1])
+            found[k] = low
+            higher.append((z[k], low))
+        return found
+    left, right = lowest(range(len(z))), lowest(range(len(z) - 1, -1, -1))
+    found = []
+    for k in range(1, len(z) - 1):
+        if z[k - 1] < z[k] and z[k + 1] <= z[k]:
+            base = max(left[k], right[k])
+            if z[k] - base >= least:
+                if len(found) == LINES:
+                    raise ValueError(f'More than {LINES} lines stand out by this prominence; ask for a larger one')
+                found.append({**_describe(seq, first, finite[k], sign * base, sign, coordinates),
+                              'prominence': _finite(z[k] - base)})
+    return found
+
+
+def _describe(seq, first, i, base, sign, coordinates):
+    """The line at position ``i`` of a trace over a base: its position refined between its neighbours by the
+    parabola through the three, its value there, and the positions, interpolated, where the trace on either
+    side first comes halfway from that value to the base."""
+    y1 = seq[i]
     place = (lambda index: first + index) if coordinates is None else coordinates.__getitem__
     center, value = float(place(i)), y1
     if 0 < i < len(seq) - 1 and math.isfinite(seq[i - 1]) and math.isfinite(seq[i + 1]):
@@ -479,7 +529,10 @@ def _peak(found, coordinates):
         line['width'] = abs(sides[1] - sides[0])
     for side in sorted(sides):
         line['low' if side < center else 'high'] = side
-    line.update(value=found['value'], base=found['base'], index=found['index'])
+    line.update(value=found['value'], base=found['base'])
+    if 'prominence' in found:
+        line['prominence'] = found['prominence']
+    line['index'] = found['index']
     return line
 
 
@@ -492,20 +545,21 @@ def _flatten(values):
 
 
 def view(holder, source=None, along=None, at=None, start=None, stop=None, low=None, high=None, points=POINTS,
-         peak=None, field='', use_native=True):
+         peak=None, prominence=None, field='', use_native=True):
     """What one array says: a summary, and exact values when each position holds one element within
     ``points`` positions, otherwise the minimum, maximum and mean of ``points`` buckets of positions. Along
-    two axes, the same over a map of buckets. With ``peak``, the line at the highest or lowest value.
+    two axes, the same over a map of buckets. With ``peak``, the line at the highest or lowest value, or with
+    ``prominence`` every line that stands out by that much.
 
     ``source`` is the file that holds the array, or ``[[path, size], ...]`` for the chunks of a stream or
     the files of a sweep's points; without it the inline values are read.
     """
     data = holder['data']
-    request, context = plan(data, along, at, start, stop, low, high, points, peak)
+    request, context = plan(data, along, at, start, stop, low, high, points, peak, prominence)
     if source is not None:
         request['segments'] = source if isinstance(source, list) else [[str(source), Path(source).stat().st_size]]
         computed = native(request) if use_native else None
-        if (computed is None or peak is not None and 'peak' not in computed
+        if (computed is None or peak is not None and ('peaks' if prominence is not None else 'peak') not in computed
                 or request.get('coordinates') and computed.get('peak') and not computed['peak'].get('coordinates')):
             # An iop-execd that does not find lines leaves them to Python.
             computed = python(request)
@@ -564,6 +618,8 @@ def view(holder, source=None, along=None, at=None, start=None, stop=None, low=No
               **({'summarized': context['summarized']} if context['summarized'] else {}), 'summary': summary}
     if computed.get('peak'):
         result['peak'] = _peak(computed['peak'], context['coordinates'][0])
+    if 'peaks' in computed:
+        result['peaks'] = [_peak(line, context['coordinates'][0]) for line in computed['peaks']]
     sizes = [len(starts) for starts in buckets['start']]
     shaped = (lambda values: values) if one else (lambda values: _nest(values, sizes))
     if exact:
@@ -617,7 +673,8 @@ def options(query):
         raise ValueError('Unknown view options: ' + ', '.join(sorted(unknown)))
     return {'field': query.get('field'), 'along': value('along', None), 'at': at, 'start': value('start', int),
             'stop': value('stop', int), 'low': value('low', float), 'high': value('high', float),
-            'points': value('points', int) if 'points' in query else POINTS, 'peak': query.get('peak')}
+            'points': value('points', int) if 'points' in query else POINTS, 'peak': query.get('peak'),
+            'prominence': value('prominence', float)}
 
 
 def _source(holder, folder=None, output=None):
@@ -763,7 +820,7 @@ def result_npy(engine, run_id, request_id=None, field=None):
 # A step binding or a saved operation's named result can take its value through a view of an array:
 # {"step": ..., "view": {...}, "path": [...]} reads path inside the view. These views are computed
 # once, when the operation that returned the array completes, and kept in its record as "derived".
-OPTIONS = ('field', 'along', 'at', 'start', 'stop', 'low', 'high', 'points', 'peak')
+OPTIONS = ('field', 'along', 'at', 'start', 'stop', 'low', 'high', 'points', 'peak', 'prominence')
 
 
 def check(value, what):
@@ -771,12 +828,14 @@ def check(value, what):
     if not isinstance(value, dict) or set(value) - set(OPTIONS):
         raise ValueError(f'{what}: view takes ' + ', '.join(OPTIONS))
     kinds = {'field': (str,), 'along': (str, int), 'at': (dict,), 'start': (int,), 'stop': (int,),
-             'low': (int, float), 'high': (int, float), 'points': (int,), 'peak': (str,)}
+             'low': (int, float), 'high': (int, float), 'points': (int,), 'peak': (str,), 'prominence': (int, float)}
     if value.get('peak', 'max') not in ('max', 'min'):
         raise ValueError(f'{what}: view peak is max, or min for a dip')
+    if 'prominence' in value and 'peak' not in value:
+        raise ValueError(f'{what}: view prominence reads the lines of a peak or a dip; give peak')
     for key, item in value.items():
-        # Along two axes, the options other than field, at and peak give one value per axis.
-        items = item if isinstance(item, list) and key not in ('field', 'at', 'peak') else [item]
+        # Along two axes, the options other than field, at, peak and prominence give one value per axis.
+        items = item if isinstance(item, list) and key not in ('field', 'at', 'peak', 'prominence') else [item]
         if any(isinstance(i, bool) or not (isinstance(i, kinds[key]) or i is None and key in ('start', 'stop', 'low', 'high'))
                for i in items) or not items:
             raise ValueError(f'{what}: view {key} has the wrong type')

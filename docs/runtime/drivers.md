@@ -112,6 +112,12 @@ Listed coordinates are used directly for the fit and half-height interpolation, 
 {"peak": {"center": 1.06e9, "width": 3.996e6, "low": 1.058e9, "high": 1.062e9, "value": 0.2, "base": 0.999, "index": 600}}
 ```
 
+With `prominence`, `peaks` lists every line that stands out by at least that much, in order of position: the modes of a resonator chain, the lines of a spectrum. A line's prominence is its height above the higher of the lowest values on either side before a higher line or the end of the selection; that value is its `base`, and its `width` is taken where it comes halfway from its `value` to that base. Ripple and noise stand out by little, so a prominence above their height leaves only the lines; at most 1000 are read. / 加 `prominence` 时，`peaks` 按位置列出突出程度不小于该值的每一条谱线，例如谐振器链的各个模式、光谱中的各条谱线。一条谱线的突出程度是它高出两侧最低值中较高者的高度（两侧各自取到更高的谱线或所选范围的端点为止）；这个较高的最低值就是它的 `base`，`width` 在从 `value` 到该基线一半处取得。纹波和噪声的突出程度小，取高于它们的 `prominence` 就只剩下谱线；一次最多读出 1000 条。
+
+```json
+{"peaks": [{"center": 1.021297e9, "width": 2.098e6, "low": 1.020244e9, "high": 1.022341e9, "value": 0.225, "base": 1.001, "prominence": 0.776, "index": 213}, ...]}
+```
+
 Saved operations and step bindings can take a value through a view, such as the frequency of a resonance; see [operations](operations.md). A data stream of a numeric format reads the same way, as samples by channels; see [continuous data](../../iop/continuity.md#continuous-data). `GET /v1/runs/{id}/array` reads an array an experiment's result holds, such as what a [sweep](operations.md#sweeps--扫描) gathered, and with `request_id` one in the results of a batch. / 已保存操作和步骤绑定也可以经视图取值，例如谐振频率，见[操作](operations.md)。数值格式的数据流同样可读，形状为“采样 × 通道”，见[连续数据](../../iop/continuity.zh-CN.md#连续数据)。`GET /v1/runs/{id}/array` 读取实验结果中的数组，例如[扫描](operations.md#sweeps--扫描)汇集的数组；加 `request_id` 则读取某个批次结果中的数组。
 
 The whole array comes as a NumPy `.npy` file, which `numpy.load` reads: `GET /v1/operations/{id}/array.npy`, `/v1/runs/{id}/array.npy` and `/v1/runs/{id}/streams/{name}/array.npy`, `array_file` in Python and `arrayFile` in TypeScript. A last axis of re/im pairs becomes complex values, a stream gives its whole samples by channels, and a map a sweep gathered from its points' files is read from them in order. / 整个数组以 NumPy `.npy` 文件取得，`numpy.load` 可直接读取：上述三个路径加 `.npy`，Python 的 `array_file`，TypeScript 的 `arrayFile`。最后一维为 re/im 时成为复数；数据流给出完整的“采样 × 通道”；扫描由各点文件汇集的二维图按顺序从这些文件读出。
