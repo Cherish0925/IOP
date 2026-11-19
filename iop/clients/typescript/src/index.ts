@@ -1,4 +1,4 @@
-export type Step = { id: string; device?: string; operation: string; arguments?: Record<string, unknown>; after?: string[]; resources?: string[]; requirements?: Record<string, number>; bindings?: Record<string, Source>; sweep?: Sweep; repeat?: number; until?: Until; retake?: true; retry?: { times: number; after_s?: number } };
+export type Step = { id: string; device?: string; operation: string; arguments?: Record<string, unknown>; after?: string[]; resources?: string[]; requirements?: Record<string, number>; bindings?: Record<string, Source>; sweep?: Sweep; repeat?: number; until?: Until; retake?: true; retry?: { times: number; after_s?: number }; seek?: Seek };
 /** A value an earlier step returned: path selects inside its result or, with view, inside a view of an array it returned. */
 export type Source = { step: string; path?: (string | number)[]; view?: ArrayViewOptions };
 /** An end of a range: a number, or one read from an earlier step when the sweep runs. */
@@ -7,6 +7,8 @@ export type End = number | Source;
 export type Sweep = Record<string, (number | string)[] | ({ start: End; stop: End } | { center: End; span: End }) & { points: number; adapt?: (string | number)[] }>;
 /** Stop a sweep after a point whose reading at path is above or below a limit, or is not a number, or with view once path in that view of what the sweep gathered is, read after `points` points; the later points are skipped and the steps after the sweep run. */
 export type Until = { path: (string | number)[]; above?: number; below?: number; view?: ArrayViewOptions; points?: number };
+/** Where a reading is largest or smallest, found by a compass search over the parameters in over; a number may be read from an earlier step as a binding is. */
+export type Seek = { maximize?: (string | number)[]; minimize?: (string | number)[]; over: Record<string, { minimum: number | Source; maximum: number | Source; step: number | Source; start?: number | Source; resolution?: number | Source }>; points?: number; gain?: number };
 export type Endpoint = { device: string; port: string };
 export type Procedure = { steps: Step[]; resources?: string[] };
 export type ConditionStep = { device?: string; operation: string; arguments?: Record<string, unknown> };

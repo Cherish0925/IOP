@@ -124,6 +124,18 @@ class Flaky(Driver):
         return {'value': arguments['x']}
 
 
+class Fiber(Driver):
+    """Power coupled into a fiber, largest with its end at x 0.37 mm, y -0.81 mm."""
+
+    def describe(self):
+        mm = {'type': 'number', 'minimum': -5, 'maximum': 5, 'unit': 'mm'}
+        return {'operations': {'couple': {'parameters': {'x': mm, 'y': mm}, 'effect': 'observe'}}}
+
+    def invoke(self, operation, arguments, context):
+        x, y = arguments['x'], arguments['y']
+        return {'power': math.exp(-((x - 0.37) ** 2 + (y + 0.81) ** 2) / 0.5), 'unit': 'mW'}
+
+
 class GatherCase(unittest.TestCase):
     """What a sweep returns, from what its points returned."""
 
@@ -549,6 +561,42 @@ class SweepCase(unittest.TestCase):
         with self.assertRaisesRegex(IOPError, 'retry is'):
             self.submit([{'id': 'scan', 'device': 'flaky', 'operation': 'read', 'retry': {'times': 0}}])
 
+    def test_a_seek_finds_where_a_reading_is_largest(self):
+        self.client.register({'id': 'fiber', 'driver': Fiber.__module__ + ':Fiber'})
+        over = {'x': {'minimum': -2, 'maximum': 2, 'step': 0.5, 'start': -1.5},
+                'y': {'minimum': -2, 'maximum': 2, 'step': 0.5, 'start': 1.2}}
+        best = {key: {'step': 'align', 'path': ['best', 'at', key]} for key in over}
+        run = self.submit([{'id': 'align', 'device': 'fiber', 'operation': 'couple',
+                            'seek': {'maximize': ['power'], 'over': over, 'points': 60}},
+                           {'id': 'there', 'device': 'fiber', 'operation': 'couple', 'bindings': best, 'after': ['align']}])
+        result = run.result(30)
+        # Once no step of 1/32 mm helps, the search ends: the other points are skipped and the next step goes there.
+        found = result['align']['best']
+        self.assertAlmostEqual(found['at']['x'], 0.37, delta=0.02)
+        self.assertAlmostEqual(found['at']['y'], -0.81, delta=0.02)
+        self.assertEqual(result['there']['power'], found['reading'])
+        taken = len(result['align']['power']['values'])
+        self.assertLess(taken, 60)
+        self.assertEqual(run.info(details=False)['operation_states'], {'completed': taken + 1, 'skipped': 60 - taken})
+        self.assertEqual(result['align']['positions']['y']['data']['unit'], 'mm')
+        self.assertEqual(result['align']['positions']['x']['values'][found['index']], found['at']['x'])
+        # Over a saved operation that turns the stage and reads the meter, from where a coarse sweep read most.
+        start = {'step': 'coarse', 'view': {'field': 'power'}, 'path': ['summary', 'max_at']}
+        result = self.submit([
+            {'id': 'coarse', 'operation': 'axis.measure', 'arguments': {'axis': 'stage'},
+             'sweep': {'angle': {'start': -60, 'stop': 30, 'points': 7}}},
+            {'id': 'fine', 'operation': 'axis.measure', 'arguments': {'axis': 'stage'}, 'after': ['coarse'],
+             'seek': {'maximize': ['power'], 'over': {'angle': {'minimum': -60, 'maximum': 30, 'step': 4, 'start': start}}}}
+        ]).result(30)
+        self.assertEqual(result['fine']['best'], {'index': 0, 'at': {'angle': 0}, 'reading': 1.0})
+        self.assertEqual(result['fine']['positions']['angle']['values'][:3], [0, 4, -4])
+        with self.assertRaisesRegex(IOPError, 'seek x goes from -9 to 2; couple takes nothing outside -5 to 5 mm'):
+            self.submit([{'id': 'align', 'device': 'fiber', 'operation': 'couple', 'seek': {
+                'maximize': ['power'], 'over': {**over, 'x': {'minimum': -9, 'maximum': 2, 'step': 0.5}}}}])
+        with self.assertRaisesRegex(IOPError, 'a seek places its own points'):
+            self.submit([{'id': 'align', 'device': 'fiber', 'operation': 'couple', 'sweep': {'x': [0, 1]},
+                          'seek': {'maximize': ['power'], 'over': {'y': over['y']}}}])
+
     def test_a_step_graph_continues_where_it_stopped(self):
         self.client.register({'id': 'flaky', 'driver': Flaky.__module__ + ':Flaky'})
         Flaky.calls = 0
@@ -805,7 +853,7 @@ class SweepCase(unittest.TestCase):
                 ({'id': 's', 'device': 'stage', 'operation': 'move_to', 'sweep': {'angle_deg': [1, 2]},
                   'until': {'path': ['angle_actual'], 'above': 2, 'below': 3}}, 'below is less than above'),
                 ({'id': 's', 'device': 'stage', 'operation': 'move_to', 'sweep': {'angle_deg': [1, 2]},
-                  'until': {'path': ['angle_actual'], 'above': '${limit}'}}, 'values of sweep, repeat and until')):
+                  'until': {'path': ['angle_actual'], 'above': '${limit}'}}, 'values of sweep, repeat, until and seek')):
             with self.assertRaisesRegex(IOPError, message):
                 self.submit([step])
         # An end read from an earlier result is a number only once it is read: the first point fails if it is not.

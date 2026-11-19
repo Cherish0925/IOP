@@ -104,6 +104,9 @@
           },
           "retry": {
             "$ref": "#/$defs/retry"
+          },
+          "seek": {
+            "$ref": "#/$defs/seek"
           }
         }
       },
@@ -456,6 +459,81 @@
           "maximum": 3600,
           "default": 1,
           "description": "Seconds to wait before each further call"
+        }
+      }
+    },
+    "seek": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 2,
+      "description": "Find where a reading is largest or smallest: each point moves the parameters over by a compass search from start, keeping a move whose reading improves on the best by more than gain, trying the other direction when one does not help, and halving every step when none does; the search ends once each step is below its resolution, and the later points are skipped. What it gathered holds the readings over an axis named evaluation, the places read under positions, and the best under best (index, at, reading). Not with sweep, repeat, until or retake",
+      "properties": {
+        "maximize": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": [
+              "string",
+              "integer"
+            ]
+          },
+          "description": "The path to the number each point reads that the seek makes largest, such as [\"power\"]"
+        },
+        "minimize": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": [
+              "string",
+              "integer"
+            ]
+          },
+          "description": "The path to the number each point reads that the seek makes smallest"
+        },
+        "over": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 10,
+          "description": "Each parameter the seek moves, up to 10, with the range it never leaves",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "minimum",
+              "maximum",
+              "step"
+            ],
+            "properties": {
+              "minimum": {
+                "description": "The lowest value the seek takes; a number, or read from an earlier step as a binding is"
+              },
+              "maximum": {
+                "description": "The highest value the seek takes"
+              },
+              "step": {
+                "description": "The first move, halved each time no move helps"
+              },
+              "start": {
+                "description": "Where the seek starts; the middle of the range by default. May be read from an earlier step, such as where a coarse sweep read most"
+              },
+              "resolution": {
+                "description": "The smallest step worth taking; a sixteenth of step by default"
+              }
+            }
+          }
+        },
+        "points": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000,
+          "default": 40,
+          "description": "How many places the seek may read"
+        },
+        "gain": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0,
+          "description": "The smallest improvement that counts, above the noise of a reading"
         }
       }
     }

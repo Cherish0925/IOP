@@ -15,7 +15,7 @@ import math
 import re
 from collections import deque
 from . import arrays, sweeps as sweeping, views
-from .drivers import parameters
+from .drivers import parameters, span
 from .platforms import dependencies, name, sources
 
 LAYERS = ('standard', 'workflow')
@@ -98,12 +98,13 @@ def check(definition, lookup):
             raise ValueError(f"Step {step['id']}: arguments must be an object")
         if 'retry' in step:
             retried(step['retry'], f"Step {step['id']}")
-        if 'sweep' in step or 'repeat' in step:
+        if 'sweep' in step or 'repeat' in step or 'seek' in step:
             swept(step)
         elif 'until' in step or 'retake' in step:
             raise ValueError(f"Step {step['id']}: until and retake belong to a sweep or a repetition; give the step one")
         used = (placeholders(step.get('arguments', {})) | placeholders(step.get('device', ''))
-                | placeholders(step.get('sweep', {})) | placeholders(step.get('repeat')) | placeholders(step.get('until', {})))
+                | placeholders(step.get('sweep', {})) | placeholders(step.get('repeat')) | placeholders(step.get('until', {}))
+                | placeholders(step.get('seek', {})))
         if used - declared.keys():
             raise ValueError(f"Step {step['id']}: describe parameter " + ', '.join(sorted(used - declared.keys())))
         if 'device' not in step:
@@ -157,7 +158,20 @@ def retried(value, what):
 
 
 def swept(step):
-    """The points, shape and axes of a step's sweep or repetition, or None while parameters still give them."""
+    """The points, shape and axes of a step's sweep, repetition or seek, or None while parameters still give them."""
+    if 'seek' in step:
+        if step.keys() & {'sweep', 'repeat', 'until', 'retake'}:
+            raise ValueError(f"Step {step['id']}: a seek places its own points; it does not also sweep, repeat, stop "
+                             "with until or retake")
+        over = step['seek'].get('over') if isinstance(step['seek'], dict) else None
+        if isinstance(over, dict) and set(over) & (set(step.get('arguments', {})) | set(step.get('bindings', {}))):
+            raise ValueError(f"Step {step['id']}: a parameter the seek moves is not also given in arguments or bindings")
+        if placeholders(step['seek']):
+            return None
+        try:
+            return sweeping.seeking(step['seek'])
+        except ValueError as error:
+            raise ValueError(f"Step {step['id']}: {error}") from None
     sweep = step.get('sweep', {})
     if 'sweep' in step and (not isinstance(sweep, dict) or not sweep):
         raise ValueError(f"Step {step['id']}: sweep maps parameters to the values they take")
@@ -206,7 +220,7 @@ def expand(steps, lookup, describe=None):
     for step in steps:
         if ('until' in step or 'retake' in step) and 'sweep' not in step and 'repeat' not in step:
             raise ValueError(f"Step {step.get('id')}: until and retake belong to a sweep or a repetition; give the step one")
-    if all('device' in step and 'sweep' not in step and 'repeat' not in step for step in steps):
+    if all('device' in step and not step.keys() & {'sweep', 'repeat', 'seek'} for step in steps):
         return derived(steps, {}), {}, {}
     queue = deque((copy.deepcopy(step), [], []) for step in steps)
     flat, calls, sweeps, finishes, identifiers = [], {}, {}, {}, set()
@@ -216,24 +230,40 @@ def expand(steps, lookup, describe=None):
             if step['id'] in identifiers:
                 raise ValueError('Step IDs contains duplicates after expanding saved operations or sweeps: ' + step['id'])
             identifiers.add(step['id'])
-        if 'sweep' in step or 'repeat' in step:
+        if step.keys() & {'sweep', 'repeat', 'seek'}:
             sweep_id = step.get('id')
             if not isinstance(sweep_id, str) or not sweep_id or not isinstance(step.get('operation'), str):
                 raise ValueError('Each step needs id and operation')
             found = swept(step)
             if found is None or placeholders(step.get('until', {})):
-                raise ValueError(f'Step {sweep_id}: give the values of sweep, repeat and until; "${{name}}" takes them '
-                                 'from the parameters of a saved operation')
+                raise ValueError(f'Step {sweep_id}: give the values of sweep, repeat, until and seek; "${{name}}" takes '
+                                 'them from the parameters of a saved operation')
             points, shape, axes = found
             if len(flat) + len(queue) + len(points) > 10000:
                 raise ValueError('An expanded workflow has at most 10000 steps')
             spec = (describe(step['device'], step['operation']) if describe else None) if 'device' in step \
                 else lookup(step['operation'])
+            described = (spec or {}).get('parameters') or {}
             for axis in axes:
-                unit = ((spec or {}).get('parameters') or {}).get(axis['name'], {}).get('unit')
+                unit = described.get(axis['name'], {}).get('unit') if 'seek' not in step else None
                 if isinstance(unit, str) and unit:
                     axis['unit'] = unit
-            base = {key: value for key, value in step.items() if key not in ('sweep', 'repeat', 'until', 'continues')}
+            seek = None
+            if 'seek' in step:
+                for name, item in step['seek']['over'].items():
+                    field = described.get(name) if spec is not None else {}
+                    if not isinstance(field, dict):
+                        raise ValueError(f"Step {sweep_id}: seek moves {name}, which {step['operation']} does not take")
+                    low, high = item['minimum'], item['maximum']
+                    if (sweeping._number(low) and low < field.get('minimum', -math.inf)
+                            or sweeping._number(high) and high > field.get('maximum', math.inf)):
+                        raise ValueError(f"Step {sweep_id}: seek {name} goes from {low} to {high}; {step['operation']} "
+                                         f"takes nothing {span(field)}")
+                # The units of the parameters a seek moves, for the places it gathers.
+                units = {name: described[name]['unit'] for name in step['seek']['over']
+                         if isinstance(described.get(name, {}).get('unit'), str)}
+                seek = {**step['seek'], **({'units': units} if units else {})}
+            base = {key: value for key, value in step.items() if key not in ('sweep', 'repeat', 'until', 'continues', 'seek')}
             previous, copies = list(step.get('after', [])), []
             for index, values in enumerate(points):
                 point = copy.deepcopy(base)
@@ -247,15 +277,21 @@ def expand(steps, lookup, describe=None):
                     point['bindings'] = {**base.get('bindings', {}), **reads}
                 # Each later point of a sweep with until first reads whether the point before stopped it; the first
                 # point is where the step itself would have read whether an enclosing sweep stopped.
-                if index and 'until' in step:
+                if index and ('until' in step or seek):
                     point['continues'] = [{'sweep': sweep_id, 'index': index}]
                 elif not index and 'continues' in step:
                     point['continues'] = step['continues']
+                if seek:
+                    # Each point of a seek finds where it is when it runs, from what the points before it read.
+                    point['bindings'] = {**base.get('bindings', {}), **{
+                        name: {'seek': step['seek'], 'name': name, 'index': index, 'within': sweep_id}
+                        for name in step['seek']['over']}}
                 previous = [point['id']]
                 copies.append((point, enclosing, swept_by + [sweep_id]))
             queue.extendleft(reversed(copies))
             sweeps[sweep_id] = {'points': [point['id'] for point, _, _ in copies], 'shape': shape, 'axes': axes,
-                                'swept_by': swept_by, **({'until': step['until']} if 'until' in step else {})}
+                                'swept_by': swept_by, **({'until': step['until']} if 'until' in step else {}),
+                                **({'seek': seek} if seek else {})}
             finishes[sweep_id] = [previous[0]]
             continue
         if 'device' in step:
@@ -343,7 +379,9 @@ def expand(steps, lookup, describe=None):
                     raise ValueError(f'Step {call}: the sweep of {item_id} takes its values from arguments; a bound '
                                      'parameter gives only the start, stop, center or span of a range')
                 item['sweep'] = fill(item['sweep'], arguments)
-            for key in ('repeat', 'until'):
+            if isinstance(item.get('seek'), dict) and isinstance(item['seek'].get('over'), dict):
+                item['seek'] = {**item['seek'], 'over': {key: ranged(spec) for key, spec in item['seek']['over'].items()}}
+            for key in ('repeat', 'until', 'seek'):
                 if key in item:
                     if placeholders(item[key]) - arguments.keys():
                         raise ValueError(f'Step {call}: {key} in {item_id} takes its values from arguments')
@@ -376,6 +414,15 @@ def expand(steps, lookup, describe=None):
                                           for key, end in binding['range'].items()}}
             if isinstance(binding.get('within'), str):
                 # The sweep a point of an adaptive range belongs to, read without waiting for its last point.
+                found['within'] = {'step': held(binding['within']), 'sweep': binding['within']}
+            return found
+        if 'seek' in binding:
+            # A place a seek reads: the numbers that bound its search are read as a range's ends, and the sweep it
+            # belongs to without waiting for its last point.
+            found = {**binding, 'seek': {**binding['seek'], 'over': {
+                name: {key: source(end) if isinstance(end, dict) else end for key, end in item.items()}
+                for name, item in binding['seek']['over'].items()}}}
+            if isinstance(binding.get('within'), str):
                 found['within'] = {'step': held(binding['within']), 'sweep': binding['within']}
             return found
         if 'sweep' in binding:
@@ -412,6 +459,9 @@ def expand(steps, lookup, describe=None):
                     for axis in record['axes']]
             holding[sweep_id] = {'shape': record['shape'], 'axes': axes, 'points': points,
                                  **({'until': record['until']} if 'until' in record else {})}
+            if 'seek' in record:
+                holding[sweep_id]['seek'] = {**record['seek'], 'over': {
+                    name: source({'range': item})['range'] for name, item in record['seek']['over'].items()}}
         return final
 
     for step in flat:
@@ -433,11 +483,18 @@ def expand(steps, lookup, describe=None):
 
 def by_id(binding):
     """Whether a binding names operations by ID once they are created: one that reads a sweep or a range."""
-    return 'sweep' in binding or 'range' in binding
+    return 'sweep' in binding or 'range' in binding or 'seek' in binding
 
 
 def locate(source, ids):
     """A source with the steps it reads named by their operation IDs."""
+    if 'seek' in source:
+        found = {**source, 'seek': {**source['seek'], 'over': {
+            name: {key: locate(end, ids) if isinstance(end, dict) else end for key, end in item.items()}
+            for name, item in source['seek']['over'].items()}}}
+        if 'within' in source:
+            found['within'] = locate(source['within'], ids)
+        return found
     if 'range' in source:
         found = {**source, 'range': {key: locate(end, ids) if isinstance(end, dict) else end
                                      for key, end in source['range'].items()}}
@@ -453,7 +510,11 @@ def locate_gathering(gathering, ids):
               else {'step': ids[point['step']]} for point in gathering['points']]
     axes = [{**axis, 'range': locate({'range': axis['range']}, ids)['range']} if 'range' in axis else axis
             for axis in gathering['axes']]
-    return {**gathering, 'points': points, 'axes': axes}
+    found = {**gathering, 'points': points, 'axes': axes}
+    if 'seek' in gathering:
+        found['seek'] = {**gathering['seek'], 'over': {name: locate({'range': item}, ids)['range']
+                                                       for name, item in gathering['seek']['over'].items()}}
+    return found
 
 
 def derived(flat, calls):
@@ -511,6 +572,13 @@ def read(source, record, output=None, located=False, known=None):
     ``output`` is the experiment's output folder, where the points of a sweep saved their files. A point of a
     range takes its value from the ends read once its points run, and in an adaptive range also from what the
     earlier points read; ``known`` keeps these for the other points."""
+    if 'seek' in source:
+        within = source['within']
+        spec, readings = _search(record(within['step'])['gathers'][within['sweep']], source['index'], record, output)
+        positions = sweeping.sought(spec, readings)[0]
+        if source['index'] >= len(positions):
+            raise ValueError(f"{within['sweep']}: its search ended before this point")
+        return positions[source['index']][source['name']]
     if 'range' in source:
         key = json.dumps(source['range'], sort_keys=True) if known is not None else None
         found = known.get(key) if key else None
@@ -567,6 +635,8 @@ def gathered(sweep, record, output=None, known=None):
     read from earlier results has its coordinates once those results exist. The points of an adaptive range
     that have finished are gathered in the order of their values, which are the coordinates of its axis;
     ``known`` keeps those values for the next time."""
+    if 'seek' in sweep:
+        return _sought(sweep, record, output)
     found = []
     for point in sweep['points']:
         if 'named' in point:
@@ -601,6 +671,45 @@ def gathered(sweep, record, output=None, known=None):
     return sweeping.gather(found, shape, axes)
 
 
+def _search(sweep, count, record, output=None):
+    """A seek with the numbers it reads from earlier results, and what its first points read."""
+    seek = sweep['seek']
+    spec = {**seek, 'over': {name: ends(item, record, output) for name, item in seek['over'].items()}}
+    path = spec.get('maximize', spec.get('minimize'))
+    return spec, [_reading(point, path, record, output) for point in sweep['points'][:count]]
+
+
+def _sought(sweep, record, output=None):
+    """What a seek gathered: what its points read, over the places in the order read; those places, under
+    positions; and the best of them, under best."""
+    done = 0
+    while done < len(sweep['points']) and _finished(sweep['points'][done], record):
+        done += 1
+    found = []
+    for point in sweep['points'][:done]:
+        if 'named' in point:
+            found.append(_named(point['named'], record, output, located=True))
+        else:
+            operation = record(point['step'])
+            found.append(_located(operation.get('result'), operation))
+    axes = [{key: item for key, item in axis.items() if key != 'range'} for axis in sweep['axes']]
+    gathered = sweeping.gather(found, [done], axes)
+    result = gathered if isinstance(gathered, dict) and not sweeping._array(gathered) else \
+        {} if gathered is None else {'value': gathered}
+    try:
+        spec, readings = _search(sweep, done, record, output)
+        positions, best, _ = sweeping.sought(spec, readings)
+    except (KeyError, IndexError, TypeError, ValueError):
+        return result
+    units = sweep['seek'].get('units', {})
+    result['positions'] = {name: {'data': {'dtype': 'float64', 'shape': [done], 'count': done, 'axes': axes,
+                                           **({'unit': units[name]} if name in units else {})},
+                                  'values': [place[name] for place in positions[:done]]} for name in spec['over']}
+    if best is not None and done:
+        result['best'] = {'index': best, 'at': positions[best], 'reading': readings[best]}
+    return result
+
+
 def _finished(point, record):
     """Whether a point of a sweep has finished: its operation, or those its named results read."""
     steps = [item['step'] for item in point['named'].values()] if 'named' in point else [point['step']]
@@ -613,6 +722,11 @@ def stopped(marker, record, output=None, known=None):
     is in that view of what the sweep has gathered so far, and while it is not a number, from too few points or
     a fit that finds no line, the sweep goes on. With points, it is read once that many points have run."""
     sweep = record(marker['step'])['gathers'][marker['sweep']]
+    if 'seek' in sweep:
+        # A seek stops once its search has ended: every step below its resolution.
+        spec, readings = _search(sweep, marker['index'], record, output)
+        ended = sweeping.sought(spec, readings)[2]
+        return {'point': marker['index'] - 1, 'reading': readings[-1], 'ended': True} if ended else None
     until, point = sweep['until'], marker['index'] - 1
     if marker['index'] < until.get('points', 1):
         return None

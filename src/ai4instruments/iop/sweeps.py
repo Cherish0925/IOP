@@ -7,7 +7,9 @@ reads its value when it runs. An adaptive range places each point from what the 
 where the reading changes most, points come closer together. A step that repeats runs that many times
 at each point, over a last axis named repeat, or that many times in turn without a sweep. A sweep with
 ``until`` stops after a point whose reading is beyond a limit, before the next point runs, or once a view
-of what it has gathered is, such as the error of a mean or of a fitted center. What the points return is
+of what it has gathered is, such as the error of a mean or of a fitted center. A seek moves its parameters by a
+compass search to where a reading is largest or smallest, each point placed from what the earlier ones read,
+and ends once its steps are below their resolution. What the points return is
 gathered: numbers in the same place become an array over the sweep, with one axis for each swept name;
 arrays of one shape in the same place combine into one array with the sweep's axes in front, from the
 values the records hold or from the files the points saved, read in order; other values are kept when
@@ -21,6 +23,9 @@ from . import arrays, views
 MAX_POINTS = 10_000
 ADAPTIVE_POINTS = 1000
 REPEAT = 'repeat'
+# The axis of a seek: the places it read, in order. What bounds a parameter's search.
+SEEK = 'evaluation'
+SEARCH = {'minimum', 'maximum', 'step', 'start', 'resolution'}
 ENDS = ({'start', 'stop'}, {'center', 'span'})
 # An adaptive range does not divide intervals narrower than this part of its even spacing.
 FINEST = 1024
@@ -189,6 +194,102 @@ def beyond(until, reading):
     """Whether a point's reading stops its sweep: beyond a limit, or not a number, so the limit is not known to
     hold."""
     return not _number(reading) or reading > until.get('above', math.inf) or reading < until.get('below', -math.inf)
+
+
+def seeking(spec):
+    """Check a seek, and give its points, shape and axis: each point finds where it is when it runs, from what the
+    points before it read. The numbers that bound a parameter's search may be read from earlier results, as the
+    ends of a range are; they are checked once read."""
+    if (not isinstance(spec, dict) or spec.keys() - {'maximize', 'minimize', 'over', 'points', 'gain'}
+            or len(spec.keys() & {'maximize', 'minimize'}) != 1):
+        raise ValueError('seek is {"maximize" or "minimize": the path to the number each point reads, "over": '
+                         '{parameter: {"minimum", "maximum", "step", "start", "resolution"}}, "points", "gain"}')
+    path = spec.get('maximize', spec.get('minimize'))
+    if not isinstance(path, list) or not path or any(type(part) not in (str, int) for part in path):
+        raise ValueError('seek: maximize or minimize is the path to the number each point reads, such as ["power"]')
+    over = spec.get('over')
+    if (not isinstance(over, dict) or not 1 <= len(over) <= 10
+            or any(not isinstance(item, dict) or item.keys() - SEARCH or not {'minimum', 'maximum', 'step'} <= item.keys()
+                   for item in over.values())):
+        raise ValueError('seek: over maps each parameter it moves, up to 10, to its minimum, maximum and step, '
+                         'with start and resolution if wanted')
+    for name, item in over.items():
+        if not any(isinstance(value, dict) for value in item.values()):
+            bounded(name, item)
+    points, gain = spec.get('points', 40), spec.get('gain', 0)
+    if type(points) is not int or not 1 <= points <= ADAPTIVE_POINTS:
+        raise ValueError(f'seek: points is how many places it may read, from 1 to {ADAPTIVE_POINTS}')
+    if not _number(gain) or gain < 0:
+        raise ValueError('seek: gain is the smallest improvement that counts, above the noise of a reading')
+    return [{} for _ in range(points)], [points], [{'name': SEEK, 'start': 0, 'step': 1}]
+
+
+def bounded(name, item):
+    """A parameter's search: the range it never leaves, its first step, where it starts (the middle unless given)
+    and the smallest step worth taking (a sixteenth of the first unless given)."""
+    if not all(_number(item.get(key)) for key in ('minimum', 'maximum', 'step')) or item['step'] <= 0 \
+            or item['minimum'] >= item['maximum']:
+        raise ValueError(f'seek {name}: give step > 0 and minimum < maximum; no point leaves that range')
+    start = item.get('start', (item['minimum'] + item['maximum']) / 2)
+    resolution = item.get('resolution', item['step'] / 16)
+    if not _number(start) or not item['minimum'] <= start <= item['maximum']:
+        raise ValueError(f'seek {name}: start is {start!r}, outside {item["minimum"]} to {item["maximum"]}')
+    if not _number(resolution) or not 0 < resolution <= item['step']:
+        raise ValueError(f'seek {name}: resolution is the smallest step worth taking, above 0 and at most step')
+    return item['minimum'], item['maximum'], item['step'], start, resolution
+
+
+def sought(spec, readings):
+    """Where a seek puts its points once they read these readings, which point is best, and whether the search
+    has ended. A compass search: from its start, it moves one parameter at a time by its step and keeps a move
+    whose reading improves on the best by more than gain, going on that way; when a direction does not help, it
+    tries the other; when no parameter helps, it halves every step, and it ends once each is below its
+    resolution. A reading that is not a number is never better. The positions are one more than the readings
+    while the search goes on."""
+    names = list(spec['over'])
+    bounds = [bounded(name, spec['over'][name]) for name in names]
+    sign, gain = (1 if 'maximize' in spec else -1), spec.get('gain', 0)
+
+    def score(reading):
+        return sign * reading if _number(reading) else -math.inf
+
+    def search():
+        at, steps = [bound[3] for bound in bounds], [bound[2] for bound in bounds]
+        best, chosen, count = score((yield at, None)), 0, 1
+        while True:
+            moved = False
+            for i, (low, high, _, _, resolution) in enumerate(bounds):
+                if steps[i] < resolution:
+                    continue
+                for direction in (1, -1):
+                    advanced = False
+                    while True:
+                        trial = list(at)
+                        trial[i] = min(max(at[i] + direction * steps[i], low), high)
+                        if trial[i] == at[i]:
+                            break
+                        found = score((yield trial, chosen))
+                        count += 1
+                        if found <= best + gain:
+                            break
+                        at, best, chosen, advanced, moved = trial, found, count - 1, True, True
+                    if advanced:
+                        break
+            if not moved:
+                steps = [step / 2 for step in steps]
+                if all(step < bound[4] for step, bound in zip(steps, bounds)):
+                    return chosen
+
+    walk = search()
+    position, best = next(walk)
+    positions = [dict(zip(names, position))]
+    for reading in readings:
+        try:
+            position, best = walk.send(reading)
+        except StopIteration as end:
+            return positions, end.value, True
+        positions.append(dict(zip(names, position)))
+    return positions, best, False
 
 
 def grid(sweep, repeat=None):
