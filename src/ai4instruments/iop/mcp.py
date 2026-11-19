@@ -373,11 +373,11 @@ def create_server(client, *, http=False, selection=None):
                                      requirements=requirements).info(details=False)
 
     @tool(annotations=read_only)
-    def experiment(run_id: str, after: int = 0, limit: int = 20, include_result: bool = False) -> dict:
-        """Read experiment status, a summary of the next operations (limit up to 100) and the first 20 output files. Pass the returned cursor as after; page files with experiment_files. maintenance marks operations that kept the experiment's conditions; in_doubt marks one taken while a condition it relied on may not have held: found lost after the verification it was taken under, or disturbed while it ran. operation_result returns a full record; arrays longer than 64 values show their description unless values is true."""
+    def experiment(run_id: str, after: int = 0, limit: int = 20, include_result: bool = False, in_doubt: bool = False) -> dict:
+        """Read experiment status, a summary of the next operations (limit up to 100) and the first 20 output files. Pass the returned cursor as after; page files with experiment_files. maintenance marks operations that kept the experiment's conditions; in_doubt marks one taken while a condition it relied on may not have held: found lost after the verification it was taken under, or disturbed while it ran. With in_doubt=true only those are listed, such as the points of a sweep to take again. operation_result returns a full record; arrays longer than 64 values show their description unless values is true."""
         run = client.run(run_id)
         files = run.file_page(0, 20)
-        result = {'run': run.info(details=False), 'operations': overview(run.operations(after, max(1, min(int(limit), 100)))),
+        result = {'run': run.info(details=False), 'operations': overview(run.operations(after, max(1, min(int(limit), 100)), in_doubt)),
                   'files': files['files'], 'files_cursor': files['cursor'], 'more_files': files['has_more']}
         if include_result:
             result['result'] = compact(client.request('/v1/runs/' + quote(run_id, safe='') + '/result'))

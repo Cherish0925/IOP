@@ -324,7 +324,8 @@ class Handler(BaseHTTPRequestHandler):
                     if wait:
                         result = engine.store.wait_operation(result['id'], wait)
                 elif action == 'operations' and method == 'GET':
-                    result = engine.store.operation_page(run_id, query.get('after', 0), query.get('limit', 200))
+                    result = engine.store.operation_page(run_id, query.get('after', 0), query.get('limit', 200),
+                                                         query.get('in_doubt') == 'true')
                 elif action == 'updates' and method == 'GET':
                     result = engine.store.run_updates(run_id, query.get('after', 0), query.get('limit', 100), query.get('wait', 0))
                 elif action == 'file-page' and method == 'GET':

@@ -50,7 +50,9 @@ def laboratory(engine, refresh=False, detail='summary'):
         unassigned = sorted(engine.devices.keys() - assigned)
         pending = [c for c in inventory.get('groups', inventory.get('connections', []))
                    if c.get('status') != 'registered' and c.get('transport') != 'usb']
-        active = [{k: r[k] for k in ('id', 'name', 'kind', 'state') if k in r}
+        # An experiment with data in doubt names the conditions; its operations in doubt are listed with in_doubt=true.
+        active = [{k: r[k] for k in ('id', 'name', 'kind', 'state') if k in r} |
+                  ({'in_doubt': sorted(r['in_doubt'])} if r.get('in_doubt') else {})
                   for r in engine.runs.values()]
         result = {
             'schema_version': 1, 'generated': now(),

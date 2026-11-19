@@ -293,6 +293,8 @@ class ConditionsCase(unittest.TestCase):
         self.assertEqual(current.info()['in_doubt']['path.aligned']['outcome'], 'disturbed')
         self.assertEqual({c: d['outcome'] for c, d in integration['in_doubt'].items()},
                          {'source.stable': 'disturbed', 'path.aligned': 'disturbed'})
+        active = next(r for r in self.client.context()['active_runs'] if r['id'] == current.id)
+        self.assertEqual(active['in_doubt'], ['path.aligned', 'source.stable'])
         current.finish()
 
     def test_a_condition_without_a_working_correction_is_lost_and_blocks_what_depends_on_it(self):

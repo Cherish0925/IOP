@@ -197,9 +197,11 @@ class Store:
             row = self.db.execute('SELECT body FROM artifacts WHERE run_id=? AND name=?', (run_id, name)).fetchone()
             return json.loads(row[0]) if row else None
 
-    def operation_page(self, run_id, after=0, limit=200):
+    def operation_page(self, run_id, after=0, limit=200, in_doubt=False):
+        """A page of an experiment's operations in order; with in_doubt, only those marked in doubt."""
+        where = " AND json_extract(body,'$.in_doubt') IS NOT NULL" if in_doubt else ''
         with self.lock:
-            rows = self.db.execute('SELECT rowid,body FROM operations WHERE run_id=? AND rowid>? ORDER BY rowid LIMIT ?',
+            rows = self.db.execute(f'SELECT rowid,body FROM operations WHERE run_id=? AND rowid>?{where} ORDER BY rowid LIMIT ?',
                                   (run_id, int(after), min(max(int(limit), 1), 1000))).fetchall()
         return {'operations':[json.loads(body) for _, body in rows], 'cursor':rows[-1][0] if rows else int(after)}
 

@@ -201,8 +201,8 @@ class UpkeepCase(unittest.TestCase):
         steps = [{'id': 'scan', 'device': 'detector', 'operation': 'integrate', 'arguments': {'seconds': 0.15}, 'repeat': 6}]
         # One reserves what its steps use, and with it what keeps the alignment; one claims each instrument in turn.
         for resources in (['detector'], []):
-            info = self.client.submit(steps, platform='chain', resources=resources, requires=['path.aligned'],
-                                      upkeep=True).wait(timeout=30)
+            run = self.client.submit(steps, platform='chain', resources=resources, requires=['path.aligned'], upkeep=True)
+            info = run.wait(timeout=30)
             self.assertEqual(info['state'], 'completed')
             operations = info['operation_records']
             points = [op for op in operations if op['step'].startswith('scan.')]
@@ -218,6 +218,8 @@ class UpkeepCase(unittest.TestCase):
             for op in points:
                 self.assertEqual('path.aligned' in op.get('in_doubt', {}), op['conditions']['path.aligned']['accepted'] != last)
             self.assertTrue(all(op.get('in_doubt') for op in points[:-1] if op['result']['signal'] < 0.8))
+            self.assertEqual([op['id'] for op in run.operations(in_doubt=True)['operations']],
+                             [op['id'] for op in sorted(operations, key=lambda op: op['created']) if op.get('in_doubt')])
             self.assertEqual(list(info['result']), ['scan'])
             self.assertEqual({'device:coupler', 'device:source'} <= set(info['resources']), bool(resources))
 

@@ -544,8 +544,10 @@ class Run:
         """Read new events and changed operation states without measurement arrays."""
         return self.client.request('/v1/runs/'+self.id+'/updates?' + urlencode({'after':after, 'limit':limit, 'wait':wait}))
 
-    def operations(self, after=0, limit=200):
-        return self.client.request('/v1/runs/' + self.id + '/operations?' + urlencode({'after':after,'limit':limit}))
+    def operations(self, after=0, limit=200, in_doubt=False):
+        """A page of this experiment's operations; with ``in_doubt``, only those a condition may have spoiled."""
+        return self.client.request('/v1/runs/' + self.id + '/operations?' + urlencode(
+            {'after': after, 'limit': limit, **({'in_doubt': 'true'} if in_doubt else {})}))
 
     def upload(self, source, name=None, *, operation_ids=()):
         source = Path(source)

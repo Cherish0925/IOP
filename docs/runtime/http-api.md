@@ -32,7 +32,7 @@ Base URL: `http://127.0.0.1:8765`. API bodies are JSON objects. Requests to `/v1
 | POST | `/v1/packages` | Package below | Accepted run record |
 | GET | `/v1/runs` | `limit=100&details=false` for compact summaries | Most recent runs first |
 | GET | `/v1/runs/{run_id}` | `details=false` for a compact state | Run; detailed response includes recent `operation_records` |
-| GET | `/v1/runs/{run_id}/operations` | `after=0&limit=200` | `{"operations":[...],"cursor":N}`; ordered operation history |
+| GET | `/v1/runs/{run_id}/operations` | `after=0&limit=200`, `in_doubt=true` | `{"operations":[...],"cursor":N}`; ordered operation history; with `in_doubt`, only the operations marked in doubt |
 | POST | `/v1/runs/{run_id}/operations` | Operation below; optional `wait=0..25` query | Operation in an external experiment or running package; identical request IDs return existing operations |
 | GET | `/v1/operations/{operation_id}` | `wait=0..25` | State, times, result or error |
 | GET | `/v1/operations/{operation_id}/array` | `field`, `along`, `at` (JSON object), `start`/`stop` or `low`/`high`, `points=64`; along two axes, JSON lists with one value per axis | What an array the operation returned says: summary, then exact values or an envelope, a map along two axes; see [Reading arrays](drivers.md#reading-arrays--读取数组) |
