@@ -10,6 +10,17 @@ from . import arrays, text_protocol
 from .store import now
 
 
+def unit(field):
+    return " " + field["unit"] if isinstance(field.get("unit"), str) and field["unit"] else ""
+
+
+def span(field):
+    """The range a numeric parameter accepts, in its unit."""
+    if "minimum" in field and "maximum" in field:
+        return f"outside {field['minimum']} to {field['maximum']}{unit(field)}"
+    return f"above {field['maximum']}{unit(field)}" if "maximum" in field else f"below {field['minimum']}{unit(field)}"
+
+
 def parameters(spec, supplied):
     fields = spec.get("parameters", {})
     unknown = set(supplied) - set(fields)
@@ -33,7 +44,7 @@ def parameters(spec, supplied):
             if kind == "integer" and not isinstance(value, int):
                 raise ValueError(name + " must be an integer")
             if "minimum" in field and value < field["minimum"] or "maximum" in field and value > field["maximum"]:
-                raise ValueError(name + " is outside the operation's range")
+                raise ValueError(f"{name} is {value}{unit(field)}, {span(field)}" + (f": {field['limit']}" if "limit" in field else ""))
         elif kind == "string" and not isinstance(value, str):
             raise ValueError(name + " must be a string")
         elif kind == "boolean" and not isinstance(value, bool):

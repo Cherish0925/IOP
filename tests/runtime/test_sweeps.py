@@ -485,6 +485,30 @@ class SweepCase(unittest.TestCase):
         self.assertEqual(found['current']['values'].index(None), 55)
         self.assertEqual(self.client.saved_operation('diode.point')['uses']['calls'], 55)
 
+    def test_a_device_record_limits_what_its_setup_tolerates(self):
+        from .test_conditions import Part
+        limits = {'source': {'volts': {'maximum': 0.6, 'note': 'The diode overheats above 0.6 V'}}}
+        self.client.register({'id': 'smu', 'driver': Diode.__module__ + ':Diode', 'limits': limits})
+        volts = next(d for d in self.client.devices() if d['id'] == 'smu')['operations']['source']['parameters']['volts']
+        self.assertEqual((volts['maximum'], volts['limit']), (0.6, 'The diode overheats above 0.6 V'))
+        # A ramp that would go beyond is refused before anything runs, with the reason; within, it runs.
+        Diode.given = []
+        with self.assertRaises(IOPError) as refused:
+            self.submit([{'id': 'ramp', 'device': 'smu', 'operation': 'source',
+                          'sweep': {'volts': {'start': 0, 'stop': 1, 'points': 101}}}])
+        self.assertEqual(refused.exception.code, 'invalid_arguments')
+        self.assertIn('volts is 0.61 V, above 0.6 V: The diode overheats above 0.6 V', str(refused.exception))
+        self.assertEqual(Diode.given, [])
+        ramp = self.submit([{'id': 'ramp', 'device': 'smu', 'operation': 'source', 'sweep': {'volts': [0, 0.3, 0.6]}}])
+        self.assertEqual(ramp.result(10)['ramp']['current']['data']['shape'], [3])
+        # A limit stays within what the instrument accepts, on a numeric parameter of one of its operations.
+        for limits, message in (({'set_x': {'position': {'maximum': 2}}}, 'takes nothing outside -1 to 1'),
+                                ({'set_x': {'position': {'minimum': 0.5, 'maximum': 0.2}}}, 'minimum is above maximum'),
+                                ({'set_x': {'speed': {'maximum': 1}}}, 'numeric parameter'), ({'jump': {'x': {}}}, 'name an operation')):
+            with self.subTest(limits=limits), self.assertRaisesRegex(IOPError, message):
+                self.client.register({'id': 'coupler', 'driver': Part.__module__ + ':Part', 'config': {'part': 'coupler'},
+                                      'limits': limits})
+
     def test_a_step_repeats_for_the_spread_of_a_reading_or_until_a_reading(self):
         # Twenty readings in turn; at each of two angles, three readings, a row per angle.
         result = self.submit([{'id': 'read', 'device': 'meter', 'operation': 'measure', 'repeat': 20},

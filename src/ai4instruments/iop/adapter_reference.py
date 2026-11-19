@@ -18,6 +18,8 @@ RECORD = {
     'config': 'the fields below',
     'resources': 'names of shared physical objects; operations on devices sharing one do not overlap',
     'allowed_operations': 'name patterns to keep; omit to keep all',
+    'limits': ('{operation: {parameter: {minimum, maximum, note}}}: bounds this setup tolerates on numeric arguments, '
+               'within what the instrument accepts; arguments beyond them are refused, with the note'),
     'calibration': '{id, date, valid_until, certificate, uncertainty, enforce}',
     'monitors': '[{id, operation, interval_s, minimum, maximum, equals, on_violation: record | hold, hold: [resources]}]',
     'conditions': ('[{id, description, verify: {operation, arguments}, accept: {value, minimum, maximum, equals}, correct, after, '

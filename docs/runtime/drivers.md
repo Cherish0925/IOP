@@ -319,9 +319,11 @@ Use values actually returned by `iop discover`; the numbers above are placeholde
 
 使用 `iop discover` 返回的真实字段值。服务默认每 30 秒发现一次，已登记的设备不重复添加。设备地址发生变化时，修改配置并重启。
 
-## Limit available operations / 限定可用操作
+## Limit operations and their arguments / 限定可用操作与参数范围
 
 A device record can list `allowed_operations`: name patterns such as `["read_*", "set_voltage"]` or `["get.*", "set.ch1.*"]`. Other operations disappear from the description and are refused on submission, for every driver and entry point. Use it to remove the generic SCPI `query` and `write` or Modbus register writes from production instruments, so the ranges of named operations cannot be bypassed. `identify` stays available for discovery. Patterns that match no operation are refused when the device is saved. / 设备记录可用 `allowed_operations` 列出允许的操作名模式；其余操作从说明中移除，提交时被拒绝，对所有驱动和入口一致生效。可用来去掉通用 `query`、`write` 等底层命令，使具名操作的参数范围不被绕过。`identify` 保留用于识别。
+
+A device record can also set `limits` on the numeric arguments of its operations, for what this setup tolerates rather than what the instrument can do: `{"source": {"volts": {"maximum": 0.6, "note": "The diode overheats above 0.6 V"}}}`. The description then carries those bounds, the note under `limit`, so an agent reading it sees them before planning. Every operation is checked against them when it is submitted and again when a value read from earlier results is given at its start, so a sweep that would reach 0.61 V is refused before anything runs, with `volts is 0.61 V, above 0.6 V: The diode overheats above 0.6 V`, and so is a bound or adaptive value that would. A limit stays within what the instrument takes, on a numeric parameter of one of its operations; otherwise the device is not saved. With `allowed_operations` removing generic writes, no entry point goes beyond them. / 设备记录还可以用 `limits` 给操作的数值参数设定界限，表达本装置能承受的范围，而非仪器本身的能力，例如 `{"source": {"volts": {"maximum": 0.6, "note": "二极管超过 0.6 V 会过热"}}}`。说明随之带上这些界限，说明文字放在 `limit` 下，Agent 规划之前即可看到。每个操作在提交时、以及在开始时取得由先前结果给出的数值时都按界限核对：会到达 0.61 V 的扫描在任何操作运行之前就被拒绝，并给出 `volts is 0.61 V, above 0.6 V` 及说明；绑定或自适应给出的越界数值同样被拒绝。界限必须在仪器可接受的范围之内，且针对其某个操作的数值参数，否则设备不予保存。配合 `allowed_operations` 去掉通用写入，任何入口都无法越过这些界限。
 
 ## Calibration / 标定
 

@@ -186,7 +186,7 @@ def create_server(client, *, http=False, selection=None):
 
     @tool()
     def register_instrument(definition: dict) -> dict:
-        """Register an installed driver and connection configuration. Repeating the identical definition reuses the device."""
+        """Register an installed driver and connection configuration. Repeating the identical definition reuses the device. limits, e.g. {"set_current": {"current": {"maximum": 0.05, "note": "The diode is damaged above 50 mA"}}}, bounds what this setup tolerates: arguments beyond are refused before the instrument is called, with the note."""
         return client.register(definition)
 
     @tool()

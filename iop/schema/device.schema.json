@@ -37,6 +37,31 @@
       "minItems": 1,
       "description": "Operation name patterns available on this instrument, such as read_* or set.ch1.*; identify stays available. Omit to allow all."
     },
+    "limits": {
+      "type": "object",
+      "description": "Bounds this setup tolerates on the numeric arguments of operations, within what the instrument accepts, such as {\"set_current\": {\"current\": {\"maximum\": 0.05, \"note\": \"The diode is damaged above 50 mA\"}}}. Arguments beyond them are refused before the instrument is called, with the note; the description shows them.",
+      "additionalProperties": {
+        "type": "object",
+        "minProperties": 1,
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "minimum": {
+              "type": "number"
+            },
+            "maximum": {
+              "type": "number"
+            },
+            "note": {
+              "type": "string",
+              "description": "Why, shown when an argument is refused"
+            }
+          }
+        }
+      }
+    },
     "execution": {
       "type": "object",
       "required": [
