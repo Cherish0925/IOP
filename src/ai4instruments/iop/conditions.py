@@ -655,13 +655,17 @@ class Conditions:
                 saved.update(accepted=time, reference=kept)
                 saved.pop('invalidated', None)
             else:
-                # Data taken since the last accepted verification relied on a condition now found lost.
+                # Data taken since the last accepted verification relied on a condition now found lost: the
+                # experiment keeps the first such interval, and each operation in progress since then is marked.
+                entry = {'since': saved.get('accepted'), 'found': time, 'outcome': result}
                 for other in relying:
                     run = engine.runs.get(other) or engine.store.get('runs', other)
                     if run and condition_id not in run.setdefault('in_doubt', {}):
-                        run['in_doubt'][condition_id] = {'since': saved.get('accepted'), 'found': time, 'outcome': result}
+                        run['in_doubt'][condition_id] = entry
                         engine.store.put('runs', run)
                         doubtful.append(other)
+                    if saved.get('accepted'):
+                        engine.doubt(other, condition_id, saved['accepted'], entry)
             saved['relying'] = [other for other in relying if other in engine.runs]
             saved.update(verified=time, outcome=result, value=value, error=error)
             saved.pop('forecast', None)
@@ -708,11 +712,14 @@ class Conditions:
                 saved['invalidated'] = reason if condition_id in names else 'dependency disturbed: ' + reason
                 saved.pop('forecast', None)
                 time = now()
+                entry = {'since': time, 'found': time, 'outcome': 'disturbed', 'reason': reason}
                 for run_id in saved.get('relying', []):
                     run = self.engine.runs.get(run_id)
                     if run and condition_id not in run.setdefault('in_doubt', {}):
-                        run['in_doubt'][condition_id] = {'since': time, 'found': time, 'outcome': 'disturbed', 'reason': reason}
+                        run['in_doubt'][condition_id] = entry
                         self.engine.store.put('runs', run)
+                    # An operation in progress took data through the disturbance.
+                    self.engine.doubt(run_id, condition_id, time, entry)
                 self.engine.store.record_condition(condition_id, saved, {'type': 'invalidated', 'time': time, 'reason': reason},
                                                    'condition.invalidated', reason=reason)
             return [row for row in self.listing() if row['id'] in names]

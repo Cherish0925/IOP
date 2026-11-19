@@ -802,7 +802,8 @@ footer span:last-child {
 .badge.interrupted {
   color: var(--danger);
 }
-.badge.queued {
+.badge.queued,
+.doubt {
   color: var(--gold);
 }
 .section-title {

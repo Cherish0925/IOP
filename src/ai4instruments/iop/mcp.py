@@ -58,7 +58,7 @@ def compact(value, values=False):
 
 # Fields of an operation that an experiment overview needs; operation_result returns the full record.
 OVERVIEW_FIELDS = ('id', 'step', 'device', 'operation', 'arguments', 'state', 'ended', 'error', 'outcome_unknown',
-                   'calibration_expired', 'result', 'files')
+                   'calibration_expired', 'maintenance', 'in_doubt', 'result', 'files')
 
 
 def drop_titles(schema):
@@ -306,7 +306,7 @@ def create_server(client, *, http=False, selection=None):
 
     @tool()
     def submit_operations(run_id: str, steps: list[dict], request_id: str, wait: float = 0) -> dict:
-        """Submit a batch within an existing experiment. Steps run in order by default. after=[] starts an independent branch; after=[IDs] joins branches. A step with sweep runs at each point in turn, its ranges given or read from earlier steps as in submit_experiment; results then hold its numbers as arrays over the sweep (read_array with run_id, request_id and field) and the reply counts its points by state; with until, as in submit_experiment, stopped gives the point that stopped it and its reading. All steps are accepted together. With wait up to 25 seconds, the reply includes results of steps that finish in that time; complete tells whether all did."""
+        """Submit a batch within an existing experiment. Steps run in order by default. after=[] starts an independent branch; after=[IDs] joins branches. A step with sweep runs at each point in turn, its ranges given or read from earlier steps as in submit_experiment; results then hold its numbers as arrays over the sweep (read_array with run_id, request_id and field) and the reply counts its points by state; with until, as in submit_experiment, stopped gives the point that stopped it and its reading; in_doubt counts points taken while a condition they relied on was later found lost. All steps are accepted together. With wait up to 25 seconds, the reply includes results of steps that finish in that time; complete tells whether all did."""
         batch = client.request('/v1/runs/' + quote(run_id, safe='') + '/batches' + waiting(wait),
                                {'steps':steps, 'request_id':request_id})
         batch = compact(batch)
@@ -320,8 +320,10 @@ def create_server(client, *, http=False, selection=None):
             for name, ops in points.items():
                 states, errors = [op['state'] for op in ops], [op['error'] for op in ops if op.get('error')]
                 stopped = [op['gathers'][name]['stopped'] for op in ops if 'stopped' in op.get('gathers', {}).get(name, {})]
+                doubtful = sum(1 for op in ops if op.get('in_doubt'))
                 shown['sweeps'][name] = {'points': {state: states.count(state) for state in dict.fromkeys(states)},
                                          **({'stopped': stopped[0]} if stopped else {}),
+                                         **({'in_doubt': doubtful} if doubtful else {}),
                                          **({'error': errors[0]} if errors else {})}
         return shown
 
@@ -372,7 +374,7 @@ def create_server(client, *, http=False, selection=None):
 
     @tool(annotations=read_only)
     def experiment(run_id: str, after: int = 0, limit: int = 20, include_result: bool = False) -> dict:
-        """Read experiment status, a summary of the next operations (limit up to 100) and the first 20 output files. Pass the returned cursor as after; page files with experiment_files. operation_result returns a full record; arrays longer than 64 values show their description unless values is true."""
+        """Read experiment status, a summary of the next operations (limit up to 100) and the first 20 output files. Pass the returned cursor as after; page files with experiment_files. maintenance marks operations that kept the experiment's conditions; in_doubt marks one taken while a condition it relied on may not have held: found lost after the verification it was taken under, or disturbed while it ran. operation_result returns a full record; arrays longer than 64 values show their description unless values is true."""
         run = client.run(run_id)
         files = run.file_page(0, 20)
         result = {'run': run.info(details=False), 'operations': overview(run.operations(after, max(1, min(int(limit), 100)))),

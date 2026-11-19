@@ -347,6 +347,13 @@ class Engine:
         """Whether an operation of this experiment is in progress."""
         return any(self.operations[oid]['run_id'] == run_id for oid in self.futures)
 
+    def doubt(self, run_id, condition_id, after, entry):
+        """Its data may have been taken while a condition did not hold: mark each operation of this experiment
+        that relied on the condition and was in progress after that moment, in its record and in memory."""
+        for oid in self.store.doubt(run_id, condition_id, after, entry):
+            if oid in self.operations:
+                self.operations[oid].setdefault('in_doubt', {}).setdefault(condition_id, entry)
+
     def _index_run(self, run):
         self.ready[run['id']] = OrderedDict()
         run['involved_resources'] = sorted(self._amounts(run, reserve=True).keys() |

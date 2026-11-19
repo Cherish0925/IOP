@@ -280,9 +280,19 @@ class ConditionsCase(unittest.TestCase):
         earlier = self.client.submit([{'id': 'read', 'device': 'detector', 'operation': 'read'}], requires=['path.aligned'])
         earlier.result(5)
         current = self.client.start_experiment(requires=['path.aligned'])
+        # An integration in progress when the enclosure is opened took its data through the disturbance.
+        batch = self.client.request(f'/v1/runs/{current.id}/batches', {'request_id': 'long', 'steps': [
+            {'id': 'long', 'device': 'detector', 'operation': 'integrate', 'arguments': {'seconds': 0.5}}]})
+        path = '/v1/operations/' + batch['operations'][0]['id']
+        while self.client.request(path)['state'] == 'queued':
+            time.sleep(0.01)
         self.client.invalidate(['source.stable'], 'enclosure opened')
+        integration = self.client.request(path + '?wait=5')
         self.assertNotIn('in_doubt', earlier.info())
+        self.assertNotIn('in_doubt', earlier.info()['operation_records'][0])
         self.assertEqual(current.info()['in_doubt']['path.aligned']['outcome'], 'disturbed')
+        self.assertEqual({c: d['outcome'] for c, d in integration['in_doubt'].items()},
+                         {'source.stable': 'disturbed', 'path.aligned': 'disturbed'})
         current.finish()
 
     def test_a_condition_without_a_working_correction_is_lost_and_blocks_what_depends_on_it(self):
@@ -314,8 +324,10 @@ class ConditionsCase(unittest.TestCase):
         WORLD['alignment'] = 0.2
         self.client.configure_platform(platform(SOURCE, {**PATH, 'correct': []}), expected_revision=1)
         self.client.maintain('chain', force=True)
-        doubt = run.info()['in_doubt']['path.aligned']
+        later = run.info()
+        doubt = later['in_doubt']['path.aligned']
         self.assertEqual((doubt['outcome'], doubt['since']), ('drifted', info['conditions']['path.aligned']['accepted']))
+        self.assertEqual(later['operation_records'][0]['in_doubt'], {'path.aligned': doubt})
 
     def test_saved_operations_name_the_conditions_they_require(self):
         self.client.save_operation({'id': 'signal.read', 'layer': 'standard', 'description': 'Read the signal',

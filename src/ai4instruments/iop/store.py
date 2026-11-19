@@ -376,6 +376,21 @@ class Store:
             if event:
                 self.event(event, data.pop('run_id', None), condition=condition, **data)
 
+    def doubt(self, run_id, condition, after, entry):
+        """Mark the operations of an experiment that relied on a condition and were in progress after a moment,
+        each with the first such entry; return their IDs."""
+        with self.lock:
+            rows = self.db.execute("SELECT id,body FROM operations WHERE run_id=? AND "
+                                   "(state='running' OR json_extract(body,'$.ended')>?)", (run_id, after)).fetchall()
+            marked = []
+            for identifier, body in rows:
+                item = json.loads(body)
+                if condition in item.get('conditions', {}) and condition not in item.get('in_doubt', {}):
+                    item.setdefault('in_doubt', {})[condition] = entry
+                    self.db.execute('UPDATE operations SET body=? WHERE id=?', (dumps(item), identifier))
+                    marked.append(identifier)
+            return marked
+
     def maintenance(self, identifier=None, request_id=None):
         with self.lock:
             row = self.db.execute('SELECT body FROM maintenance WHERE ' + ('id=?' if identifier else 'request_id=?'),

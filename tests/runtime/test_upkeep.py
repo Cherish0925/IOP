@@ -210,6 +210,12 @@ class UpkeepCase(unittest.TestCase):
             self.assertGreaterEqual(len({op['conditions']['path.aligned']['accepted'] for op in points}), 2)
             self.assertIn('coupler', {op['device'] for op in upkept})
             self.assertEqual(info['in_doubt']['path.aligned']['outcome'], 'drifted')
+            # A reading is in doubt when a later verification found the alignment drifted, so each faded one
+            # before the end is; those relying on the last verification are not.
+            last = max(op['conditions']['path.aligned']['accepted'] for op in points)
+            for op in points:
+                self.assertEqual('path.aligned' in op.get('in_doubt', {}), op['conditions']['path.aligned']['accepted'] != last)
+            self.assertTrue(all(op.get('in_doubt') for op in points[:-1] if op['result']['signal'] < 0.8))
             self.assertEqual(list(info['result']), ['scan'])
             self.assertEqual({'device:coupler', 'device:source'} <= set(info['resources']), bool(resources))
 
