@@ -1,4 +1,4 @@
-export type Step = { id: string; device?: string; operation: string; arguments?: Record<string, unknown>; after?: string[]; resources?: string[]; requirements?: Record<string, number>; bindings?: Record<string, Source>; sweep?: Sweep; until?: Until };
+export type Step = { id: string; device?: string; operation: string; arguments?: Record<string, unknown>; after?: string[]; resources?: string[]; requirements?: Record<string, number>; bindings?: Record<string, Source>; sweep?: Sweep; repeat?: number; until?: Until };
 /** A value an earlier step returned: path selects inside its result or, with view, inside a view of an array it returned. */
 export type Source = { step: string; path?: (string | number)[]; view?: ArrayViewOptions };
 /** An end of a range: a number, or one read from an earlier step when the sweep runs. */

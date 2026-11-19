@@ -95,12 +95,12 @@ def check(definition, lookup):
             raise ValueError(f"Step {step['id']}: device must be a name")
         if not isinstance(step.get('arguments', {}), dict):
             raise ValueError(f"Step {step['id']}: arguments must be an object")
-        if 'sweep' in step:
+        if 'sweep' in step or 'repeat' in step:
             swept(step)
         elif 'until' in step:
-            raise ValueError(f"Step {step['id']}: until stops a sweep; give the step one")
+            raise ValueError(f"Step {step['id']}: until stops a sweep or a repetition; give the step one")
         used = (placeholders(step.get('arguments', {})) | placeholders(step.get('device', ''))
-                | placeholders(step.get('sweep', {})) | placeholders(step.get('until', {})))
+                | placeholders(step.get('sweep', {})) | placeholders(step.get('repeat')) | placeholders(step.get('until', {})))
         if used - declared.keys():
             raise ValueError(f"Step {step['id']}: describe parameter " + ', '.join(sorted(used - declared.keys())))
         if 'device' not in step:
@@ -144,9 +144,9 @@ def check(definition, lookup):
 
 
 def swept(step):
-    """The points, shape and axes of a step's sweep, or None while parameters still give its values."""
-    sweep = step['sweep']
-    if not isinstance(sweep, dict) or not sweep:
+    """The points, shape and axes of a step's sweep or repetition, or None while parameters still give them."""
+    sweep = step.get('sweep', {})
+    if 'sweep' in step and (not isinstance(sweep, dict) or not sweep):
         raise ValueError(f"Step {step['id']}: sweep maps parameters to the values they take")
     if set(sweep) & (set(step.get('arguments', {})) | set(step.get('bindings', {}))):
         raise ValueError(f"Step {step['id']}: a swept parameter is not also given in arguments or bindings")
@@ -155,10 +155,10 @@ def swept(step):
             sweeping.limits(step['until'])
         except ValueError as error:
             raise ValueError(f"Step {step['id']}: {error}") from None
-    if placeholders(sweep):
+    if placeholders(sweep) or placeholders(step.get('repeat')):
         return None
     try:
-        return sweeping.grid(sweep)
+        return sweeping.grid(sweep, step.get('repeat'))
     except ValueError as error:
         raise ValueError(f"Step {step['id']}: {error}") from None
 
@@ -178,9 +178,9 @@ def expand(steps, lookup, describe=None):
     if not isinstance(steps, list) or any(not isinstance(step, dict) for step in steps):
         raise ValueError('Each step must be an object')
     for step in steps:
-        if 'until' in step and 'sweep' not in step:
-            raise ValueError(f"Step {step.get('id')}: until stops a sweep; give the step one")
-    if all('device' in step and 'sweep' not in step for step in steps):
+        if 'until' in step and 'sweep' not in step and 'repeat' not in step:
+            raise ValueError(f"Step {step.get('id')}: until stops a sweep or a repetition; give the step one")
+    if all('device' in step and 'sweep' not in step and 'repeat' not in step for step in steps):
         return derived(steps, {}), {}, {}
     queue = deque((copy.deepcopy(step), [], []) for step in steps)
     flat, calls, sweeps, finishes, identifiers = [], {}, {}, {}, set()
@@ -190,14 +190,14 @@ def expand(steps, lookup, describe=None):
             if step['id'] in identifiers:
                 raise ValueError('Step IDs contains duplicates after expanding saved operations or sweeps: ' + step['id'])
             identifiers.add(step['id'])
-        if 'sweep' in step:
+        if 'sweep' in step or 'repeat' in step:
             sweep_id = step.get('id')
             if not isinstance(sweep_id, str) or not sweep_id or not isinstance(step.get('operation'), str):
                 raise ValueError('Each step needs id and operation')
             found = swept(step)
             if found is None or placeholders(step.get('until', {})):
-                raise ValueError(f'Step {sweep_id}: give the values of the sweep and the limits of until; "${{name}}" '
-                                 'takes them from the parameters of a saved operation')
+                raise ValueError(f'Step {sweep_id}: give the values of sweep, repeat and until; "${{name}}" takes them '
+                                 'from the parameters of a saved operation')
             points, shape, axes = found
             if len(flat) + len(queue) + len(points) > 10000:
                 raise ValueError('An expanded workflow has at most 10000 steps')
@@ -207,7 +207,7 @@ def expand(steps, lookup, describe=None):
                 unit = ((spec or {}).get('parameters') or {}).get(axis['name'], {}).get('unit')
                 if isinstance(unit, str) and unit:
                     axis['unit'] = unit
-            base = {key: value for key, value in step.items() if key not in ('sweep', 'until', 'continues')}
+            base = {key: value for key, value in step.items() if key not in ('sweep', 'repeat', 'until', 'continues')}
             previous, copies = list(step.get('after', [])), []
             for index, values in enumerate(points):
                 point = copy.deepcopy(base)
@@ -317,10 +317,11 @@ def expand(steps, lookup, describe=None):
                     raise ValueError(f'Step {call}: the sweep of {item_id} takes its values from arguments; a bound '
                                      'parameter gives only the start, stop, center or span of a range')
                 item['sweep'] = fill(item['sweep'], arguments)
-            if 'until' in item:
-                if placeholders(item['until']) - arguments.keys():
-                    raise ValueError(f'Step {call}: until in {item_id} takes its limits from arguments')
-                item['until'] = fill(item['until'], arguments)
+            for key in ('repeat', 'until'):
+                if key in item:
+                    if placeholders(item[key]) - arguments.keys():
+                        raise ValueError(f'Step {call}: {key} in {item_id} takes its values from arguments')
+                    item[key] = fill(item[key], arguments)
             for key in ('resources', 'requirements'):
                 if key in step and key not in item:
                     item[key] = copy.deepcopy(step[key])

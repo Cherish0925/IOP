@@ -219,6 +219,12 @@
                 "sweep": {
                   "$ref": "#/$defs/sweep"
                 },
+                "repeat": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 10000,
+                  "description": "Run the step this many times in turn, at each point of its sweep if it has one; what it returns is gathered over a last axis named repeat"
+                },
                 "until": {
                   "$ref": "#/$defs/until"
                 }
@@ -805,7 +811,7 @@
       ],
       "minProperties": 2,
       "additionalProperties": false,
-      "description": "Stop the sweep after a point whose reading is above or below a limit, or is not a number: the later points are skipped without reaching an instrument, and the steps after the sweep run. The first point always runs",
+      "description": "Stop a sweep or repetition after a point whose reading is above or below a limit, or is not a number: the later points are skipped without reaching an instrument, and the steps after the sweep run. The first point always runs",
       "properties": {
         "path": {
           "type": "array",

@@ -4,8 +4,10 @@ A step with ``sweep`` runs once for each combination of the values it gives, one
 the first name changing slowest. A range gives evenly spaced values from start to stop, or around a
 center over a span; its ends may be read from earlier results, as bindings are, and each point then
 reads its value when it runs. An adaptive range places each point from what the earlier ones read:
-where the reading changes most, points come closer together. A sweep with ``until`` stops after a point
-whose reading is beyond a limit, before the next point runs. What the points return is gathered:
+where the reading changes most, points come closer together. A step that repeats runs that many times
+at each point, over a last axis named repeat, or that many times in turn without a sweep. A sweep with
+``until`` stops after a point whose reading is beyond a limit, before the next point runs. What the
+points return is gathered:
 numbers in the same place become an array over the sweep, with one axis for each swept name; arrays of
 one shape in the same place combine into one array with the sweep's axes in front, from the values the
 records hold or from the files the points saved, read in order; other values are kept when they are the
@@ -18,6 +20,7 @@ from . import arrays
 
 MAX_POINTS = 10_000
 ADAPTIVE_POINTS = 1000
+REPEAT = 'repeat'
 ENDS = ({'start', 'stop'}, {'center', 'span'})
 # An adaptive range does not divide intervals narrower than this part of its even spacing.
 FINEST = 1024
@@ -178,18 +181,28 @@ def beyond(until, reading):
     return not _number(reading) or reading > until.get('above', math.inf) or reading < until.get('below', -math.inf)
 
 
-def grid(sweep):
-    """The arguments each point adds, in order, and the shape and axes of the sweep."""
-    if not isinstance(sweep, dict) or not sweep:
+def grid(sweep, repeat=None):
+    """The arguments each point adds, in order, and the shape and axes of the sweep. With ``repeat``, each
+    point runs that many times in turn, over a last axis named repeat; the sweep may then be empty."""
+    if repeat is not None and (type(repeat) is not int or not 1 <= repeat <= MAX_POINTS):
+        raise ValueError(f'repeat is how many times a step runs at each point, from 1 to {MAX_POINTS}')
+    if not isinstance(sweep, dict) or not sweep and repeat is None:
         raise ValueError('sweep maps parameters to the values they take')
-    shape = [_count(name, spec) for name, spec in sweep.items()]
-    if len(sweep) > 1 and any(isinstance(spec, dict) and 'adapt' in spec for spec in sweep.values()):
-        raise ValueError('An adaptive sweep varies one parameter; sweep the others in a step around it')
+    if repeat is not None and REPEAT in sweep:
+        raise ValueError('The axis a step repeats over is named repeat; it does not also sweep a parameter so named')
+    shape = [_count(name, spec) for name, spec in sweep.items()] + ([repeat] if repeat is not None else [])
+    if len(shape) > 1 and any(isinstance(spec, dict) and 'adapt' in spec for spec in sweep.values()):
+        raise ValueError('An adaptive sweep varies one parameter and does not repeat; sweep or repeat in a step '
+                         'around it')
     if math.prod(shape) > MAX_POINTS:
         raise ValueError(f'A sweep has at most {MAX_POINTS} points; this one has {math.prod(shape)}')
     found = [taken(name, spec) for name, spec in sweep.items()]
     points = [dict(zip(sweep, combination)) for combination in itertools.product(*(values for values, _ in found))]
-    return points, shape, [axis for _, axis in found]
+    axes = [axis for _, axis in found]
+    if repeat is not None:
+        points = [copy.deepcopy(point) for point in points for _ in range(repeat)]
+        axes.append({'name': REPEAT, 'start': 0, 'step': 1})
+    return points, shape, axes
 
 
 def _array(value):

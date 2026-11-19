@@ -69,8 +69,32 @@ class Diode(Driver):
         return {'current': 1e-12 * math.expm1(arguments['volts'] / 0.02585), 'unit': 'A'}
 
 
+class Counter(Driver):
+    """A reading that grows by one each time it is taken."""
+    count = 0
+
+    def describe(self):
+        return {'operations': {'read': {'parameters': {}, 'effect': 'observe'}}}
+
+    def invoke(self, operation, arguments, context):
+        Counter.count += 1
+        return {'count': Counter.count}
+
+
 class GatherCase(unittest.TestCase):
     """What a sweep returns, from what its points returned."""
+
+    def test_a_step_repeats_at_each_point_over_a_last_axis(self):
+        self.assertEqual(sweeps.grid({}, 3), ([{}, {}, {}], [3], [{'name': 'repeat', 'start': 0, 'step': 1}]))
+        points, shape, axes = sweeps.grid({'axis': ['x', 'y']}, 2)
+        self.assertEqual((points, shape, [axis['name'] for axis in axes]),
+                         ([{'axis': 'x'}, {'axis': 'x'}, {'axis': 'y'}, {'axis': 'y'}], [2, 2], ['axis', 'repeat']))
+        for sweep, repeat, message in (({}, 0, 'from 1 to 10000'), ({}, True, 'from 1 to 10000'),
+                                       ({'repeat': [1, 2]}, 2, 'named repeat'),
+                                       ({'x': {'start': 0, 'stop': 8, 'points': 5, 'adapt': ['power']}}, 2, 'does not repeat'),
+                                       ({'x': list(range(101))}, 100, 'at most 10000 points')):
+            with self.subTest(sweep=sweep, repeat=repeat), self.assertRaisesRegex(ValueError, message):
+                sweeps.grid(sweep, repeat)
 
     def test_until_stops_a_sweep_beyond_its_limits_or_without_a_number(self):
         until = sweeps.limits({'path': ['current'], 'above': 1e-3, 'below': -1e-3})
@@ -415,6 +439,31 @@ class SweepCase(unittest.TestCase):
         self.assertEqual(found['current']['values'].index(None), 55)
         self.assertEqual(self.client.saved_operation('diode.point')['uses']['calls'], 55)
 
+    def test_a_step_repeats_for_the_spread_of_a_reading_or_until_a_reading(self):
+        # Twenty readings in turn; at each of two angles, three readings, a row per angle.
+        result = self.submit([{'id': 'read', 'device': 'meter', 'operation': 'measure', 'repeat': 20},
+                              {'id': 'rows', 'operation': 'axis.measure', 'arguments': {'axis': 'stage'},
+                               'sweep': {'angle': [0, 45]}, 'repeat': 3, 'after': ['read']}]).result(20)
+        read = result['read']['power']['data']
+        self.assertEqual((read['shape'], read['axes']), ([20], [{'name': 'repeat', 'start': 0, 'step': 1}]))
+        rows = result['rows']['power']
+        self.assertEqual((rows['data']['shape'], [axis['name'] for axis in rows['data']['axes']]), ([2, 3], ['angle', 'repeat']))
+        self.assertEqual([[round(value, 9) for value in row] for row in rows['values']], [[1, 1, 1], [0, 0, 0]])
+        # A saved operation takes how many times from a parameter.
+        self.client.save_operation({'id': 'meter.spread', 'layer': 'standard', 'description': 'Read the meter several times',
+                                    'parameters': {'n': {'type': 'integer', 'minimum': 1}},
+                                    'steps': [{'id': 'read', 'device': 'meter', 'operation': 'measure', 'repeat': '${n}'}],
+                                    'result': {'power': {'step': 'read', 'path': ['power']}}})
+        spread = self.submit([{'id': 'spread', 'operation': 'meter.spread', 'arguments': {'n': 4}}]).result(10)
+        self.assertEqual(spread['spread']['power']['data']['shape'], [4])
+        # Repeated until a reading passes a limit, a step waits for it: here the fifth reading, above 4.
+        self.client.register({'id': 'counter', 'driver': Counter.__module__ + ':Counter'})
+        Counter.count = 0
+        run = self.submit([{'id': 'poll', 'device': 'counter', 'operation': 'read', 'repeat': 100,
+                            'until': {'path': ['count'], 'above': 4}}])
+        self.assertEqual(run.result(10)['poll']['count']['values'][:6], [1, 2, 3, 4, 5, None])
+        self.assertEqual(run.info(details=False)['operation_states'], {'completed': 5, 'skipped': 95})
+
     def test_two_parameters_give_a_map_and_a_sweep_inside_a_saved_operation_combines(self):
         run = self.submit([{'id': 'map', 'operation': 'axis.measure',
                             'sweep': {'axis': ['stage', 'aux'], 'angle': [0, 45]}}])
@@ -531,10 +580,11 @@ class SweepCase(unittest.TestCase):
                   'sweep': {'angle_deg': {'center': {'step': 'nowhere'}, 'span': 1, 'points': 3}}}, 'unknown step'),
                 ({'id': 's', 'device': 'stage', 'operation': 'move_to', 'until': {'path': ['angle_actual'], 'above': 1}},
                  'until stops a sweep'),
+                ({'id': 's', 'device': 'stage', 'operation': 'move_to', 'repeat': 0}, 'from 1 to 10000'),
                 ({'id': 's', 'device': 'stage', 'operation': 'move_to', 'sweep': {'angle_deg': [1, 2]},
                   'until': {'path': ['angle_actual'], 'above': 2, 'below': 3}}, 'below is less than above'),
                 ({'id': 's', 'device': 'stage', 'operation': 'move_to', 'sweep': {'angle_deg': [1, 2]},
-                  'until': {'path': ['angle_actual'], 'above': '${limit}'}}, 'limits of until')):
+                  'until': {'path': ['angle_actual'], 'above': '${limit}'}}, 'values of sweep, repeat and until')):
             with self.assertRaisesRegex(IOPError, message):
                 self.submit([step])
         # An end read from an earlier result is a number only once it is read: the first point fails if it is not.
