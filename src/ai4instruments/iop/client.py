@@ -246,7 +246,7 @@ class Client:
         return self.request('/v1/conditions/' + quote(condition_id, safe=''))
 
     def read_array(self, operation_id, field=None, *, along=None, at=None, start=None, stop=None, low=None,
-                   high=None, points=None, peak=None, prominence=None, level=None):
+                   high=None, points=None, peak=None, prominence=None, level=None, fit=None):
         """What an array an operation returned says, without moving all its values.
 
         Returns the count, extremes with their index (and coordinate), mean and standard deviation,
@@ -258,12 +258,13 @@ class Client:
         ``peak`` ("max", or "min" for a dip) adds the line there: its center between samples, its width
         where it is halfway to the opposite extreme, and its value; with ``prominence``, ``peaks`` lists every
         line that stands out by that much, each with its width at half its prominence. ``level`` adds
-        ``crossings``: each place the trace crosses that value, between samples, rising or falling. ``field``
-        names the array when a result holds several.
+        ``crossings``: each place the trace crosses that value, between samples, rising or falling. ``fit``
+        "line" adds the straight line through the trace: its slope, intercept, where it reaches zero and the
+        residual. ``field`` names the array when a result holds several.
         """
         return self.request('/v1/operations/' + quote(operation_id, safe='') + '/array' +
                             view_query(field=field, along=along, at=at, start=start, stop=stop, low=low, high=high,
-                                       points=points, peak=peak, prominence=prominence, level=level))
+                                       points=points, peak=peak, prominence=prominence, level=level, fit=fit))
 
     def array_file(self, operation_id, field=None):
         """The whole array an operation returned as the bytes of a NumPy .npy file, which numpy.load reads; a last
@@ -416,11 +417,11 @@ class Run:
         return self.client.request('/v1/runs/' + self.id + '/resume', {'request_id': request_id or str(uuid.uuid4())})
 
     def read_array(self, field=None, *, request_id=None, along=None, at=None, start=None, stop=None, low=None,
-                   high=None, points=None, peak=None, prominence=None, level=None):
+                   high=None, points=None, peak=None, prominence=None, level=None, fit=None):
         """What an array this experiment's result holds says, such as what a sweep gathered; with
         ``request_id``, an array in the results of that batch. The options are those of Client.read_array."""
         query = view_query(field=field, along=along, at=at, start=start, stop=stop, low=low, high=high, points=points,
-                           peak=peak, prominence=prominence, level=level)
+                           peak=peak, prominence=prominence, level=level, fit=fit)
         if request_id is not None:
             query += ('&' if query else '?') + urlencode({'request_id': request_id})
         return self.client.request('/v1/runs/' + self.id + '/array' + query)
@@ -600,12 +601,12 @@ class DataStream:
         return self.client.request(self.path + '/chunks?' + urlencode({'after': after, 'limit': limit}))
 
     def read_array(self, *, along=None, at=None, start=None, stop=None, low=None, high=None, points=None, peak=None,
-                   prominence=None, level=None):
+                   prominence=None, level=None, fit=None):
         """What a numeric stream (format such as float32-le) says, its chunks read as one array of samples
         by channels; the options are those of Client.read_array, and at={"channel": name} picks a channel."""
         return self.client.request(self.path + '/array' + view_query(along=along, at=at, start=start, stop=stop,
                                                                      low=low, high=high, points=points, peak=peak,
-                                                                     prominence=prominence, level=level))
+                                                                     prominence=prominence, level=level, fit=fit))
 
     def array_file(self):
         """The whole samples of a numeric stream, by channels, as the bytes of a NumPy .npy file."""

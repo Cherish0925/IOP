@@ -322,6 +322,21 @@ class ViewCase(unittest.TestCase):
             self.view([0] * 6, {'dtype': 'float64', 'shape': [2, 3], 'axes': [{'name': 'row'}, {'name': 'column'}]},
                       level=0)
 
+    def test_a_straight_line_through_the_straight_part_of_a_trace(self):
+        # A laser gives 0.4 W/A above its threshold at 25 mA and a little spontaneous light throughout. The line
+        # through the light above 30 mA reaches zero at 24.94 mA: the threshold by its usual definition.
+        current = {'name': 'current', 'unit': 'A', 'start': 0, 'step': 1e-3}
+        light = [1e-3 * i * 1e-3 + 0.4 * max(0.0, i * 1e-3 - 0.025) for i in range(61)]
+        fit = self.view(light, {'dtype': 'float64', 'axes': [current], 'unit': 'W'}, low=0.03, fit='line')['fit']
+        for key, expected in (('slope', 0.401), ('intercept', -0.01), ('zero', 0.01 / 0.401), ('residual', 0)):
+            self.assertAlmostEqual(fit[key], expected, delta=1e-12)
+        self.assertEqual(fit['count'], 31)
+        with self.assertRaisesRegex(ValueError, 'fit is line'):
+            self.view(light, {'dtype': 'float64'}, fit='curve')
+        with self.assertRaisesRegex(ValueError, 'A fit is read along one axis; fix the others with at: column'):
+            self.view([0] * 6, {'dtype': 'float64', 'shape': [2, 3], 'axes': [{'name': 'row'}, {'name': 'column'}]},
+                      fit='line')
+
     def test_inline_values_are_viewed_without_a_file(self):
         holder = arrays.result(_payload(DIP[:100], {}), arrays.check_result({'dtype': 'float64'}), None)
         self.assertEqual(views.view(holder, points=4)['envelope']['position'], [0, 25, 50, 75])
@@ -357,6 +372,9 @@ class ViewCase(unittest.TestCase):
             (nan_trace, {'dtype': 'float64'}, {'points': 37, 'level': 3e9}),
             (nan_trace, {'dtype': 'float32', 'byte_order': 'big'}, {'start': 101, 'stop': 9000, 'level': 3.5e9, 'peak': 'max'}),
             ([-1, 1, -1, 1], {'dtype': 'float64', 'axes': [{'name': 'x', 'coordinates': [0, 2, 1, 3]}]}, {'level': 0}),
+            (nan_trace, {'dtype': 'float64'}, {'points': 37, 'fit': 'line'}),
+            (DIP, {'dtype': 'float64', 'axes': [FREQUENCY]}, {'low': 1.05e9, 'high': 1.07e9, 'fit': 'line', 'level': 0.5}),
+            ([1, 3, 2, 5], {'dtype': 'float64', 'axes': [{'name': 'x', 'coordinates': [0, 2, 1, 3]}]}, {'fit': 'line'}),
         ]
         compared = 0
         for values, description, options in cases:
@@ -380,6 +398,7 @@ class ViewCase(unittest.TestCase):
                 self.assertEqual(native.get('peak'), python.get('peak'))
                 self.assertEqual(native.get('peaks'), python.get('peaks'))
                 self.assertEqual(native.get('crossings'), python.get('crossings'))
+                self.assertEqual(native.get('fit'), python.get('fit'))
         # The chunks of a stream: the same values split across files at arbitrary byte boundaries.
         holder, path = saved(folder, nan_trace, {'dtype': 'float64'})
         payload, parts = path.read_bytes(), []
@@ -431,10 +450,13 @@ class ServiceViewCase(unittest.TestCase):
                          [(1.058e9, False), (1.062e9, True)])
         printed = subprocess.check_output([sys.executable, '-m', 'ai4instruments.iop', '--endpoint', self.client.endpoint,
                                            'array', sweep['id'], '--low', '1.0598e9', '--high', '1.0602e9', '--peak', 'min',
-                                           '--level', '0.201'], env=dict(os.environ, IOP_TOKEN=self.config['token']), text=True)
+                                           '--level', '0.201', '--fit', 'line'],
+                                          env=dict(os.environ, IOP_TOKEN=self.config['token']), text=True)
         printed = json.loads(printed)
         self.assertEqual((printed['values'], printed['peak']['center'], [c['rising'] for c in printed['crossings']]),
                          (DIP[598:603], 1.06e9, [False, True]))
+        # The window is symmetric about the dip: the line through it is flat.
+        self.assertEqual((printed['fit']['slope'], printed['fit']['zero'], printed['fit']['count']), (0.0, None, 5))
         with self.assertRaisesRegex(IOPError, "several arrays.*'items.trace', 'items.reference'"):
             self.client.read_array(pair['id'])
         self.assertEqual(self.client.read_array(pair['id'], 'items.reference', points=2)['envelope']['max'], [1.0, 1.0])
@@ -452,7 +474,7 @@ class ServiceViewCase(unittest.TestCase):
         # The schema field is inputSchema in MCP SDK 1.x and input_schema in 2.x.
         schema = getattr(tools['read_array'], 'input_schema', None) or tools['read_array'].inputSchema
         self.assertTrue({'operation_id', 'field', 'along', 'at', 'start', 'stop', 'low', 'high', 'points', 'peak',
-                         'prominence', 'level'} <= set(schema['properties']))
+                         'prominence', 'level', 'fit'} <= set(schema['properties']))
         self.assertIn('read_array', tools['operation_result'].description)
 
     def test_scpi_arrays_carry_coordinates_read_from_the_instrument(self):

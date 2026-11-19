@@ -121,6 +121,8 @@ struct Request {
     prominence: Option<f64>,
     /// Read where the trace crosses this level, rising or falling.
     level: Option<f64>,
+    /// Fit a straight line through the trace.
+    fit: bool,
     /// Listed coordinates for the selected trace; uniform axes can use positions.
     coordinates: Option<Vec<f64>>,
 }
@@ -257,17 +259,23 @@ fn parse(request: &Value) -> Result<Request, Box<dyn Error>> {
             _ => return Err(invalid("level is a finite number")),
         },
     };
-    if peak.is_some() || level.is_some() {
+    let fit = match request["fit"].as_str() {
+        None if request["fit"].is_null() => false,
+        Some("line") => true,
+        _ => return Err(invalid("fit is line, a straight line through the trace")),
+    };
+    let traced = peak.is_some() || level.is_some() || fit;
+    if traced {
         let one =
             along.len() == 1 && (0..shape.len()).all(|d| d == along[0].axis || fixed[d].is_some());
         if !one {
             return Err(invalid(
-                "A peak or a level is read along one axis, with every other axis fixed",
+                "A peak, a level or a fit is read along one axis, with every other axis fixed",
             ));
         }
         if along[0].stop - along[0].start > TRACE {
             return Err(invalid(format!(
-                "A peak or a level is read over at most {TRACE} positions; select fewer with start and stop"
+                "A peak, a level or a fit is read over at most {TRACE} positions; select fewer with start and stop"
             )));
         }
     }
@@ -295,9 +303,9 @@ fn parse(request: &Value) -> Result<Request, Box<dyn Error>> {
                     .ok_or_else(|| invalid("coordinates must be finite numbers"))
             })
             .collect::<Result<_, _>>()?;
-        if (peak.is_none() && level.is_none()) || values.len() != along[0].stop - along[0].start {
+        if !traced || values.len() != along[0].stop - along[0].start {
             return Err(invalid(
-                "coordinates gives one number for each selected position of a peak or a level",
+                "coordinates gives one number for each selected position of a peak, a level or a fit",
             ));
         }
         if peak.is_some()
@@ -320,6 +328,7 @@ fn parse(request: &Value) -> Result<Request, Box<dyn Error>> {
         peak,
         prominence,
         level,
+        fit,
         coordinates,
     })
 }
@@ -452,7 +461,7 @@ fn view(r: &Request) -> Result<Value, Box<dyn Error>> {
         max_index: Vec::new(),
     };
     // Along one axis with the others fixed, positions are read in order: the trace a line is found in.
-    let traced = r.peak.is_some() || r.level.is_some();
+    let traced = r.peak.is_some() || r.level.is_some() || r.fit;
     let mut trace = Vec::with_capacity(if traced {
         r.along[0].stop - r.along[0].start
     } else {
@@ -571,7 +580,55 @@ fn view(r: &Request) -> Result<Value, Box<dyn Error>> {
     if let Some(level) = r.level {
         found["crossings"] = crossings(&trace, r.along[0].start, level, r.coordinates.as_deref())?;
     }
+    if r.fit {
+        found["fit"] = line_through(&trace, r.along[0].start, r.coordinates.as_deref());
+    }
     Ok(found)
+}
+
+/// The straight line through the finite values of a trace that starts at position `first`, by least squares
+/// in its positions or listed coordinates, taken from their means: its slope, its value at zero, where it
+/// reaches zero, the root mean square of what it leaves and the number of values. Null for fewer than two
+/// places.
+fn line_through(trace: &[f64], first: usize, coordinates: Option<&[f64]>) -> Value {
+    let place = |index: usize| coordinates.map_or((first + index) as f64, |values| values[index]);
+    let points: Vec<(f64, f64)> = trace
+        .iter()
+        .enumerate()
+        .filter(|(_, y)| y.is_finite())
+        .map(|(i, &y)| (place(i), y))
+        .collect();
+    let n = points.len() as f64;
+    let (sx, sy) = points
+        .iter()
+        .fold((0.0, 0.0), |(sx, sy), (x, y)| (sx + x, sy + y));
+    let (mx, my) = (sx / n, sy / n);
+    let (mut sxx, mut sxy) = (0.0, 0.0);
+    for (x, y) in &points {
+        let dx = x - mx;
+        sxx += dx * dx;
+        sxy += dx * (y - my);
+    }
+    if points.len() < 2 || sxx == 0.0 {
+        return Value::Null;
+    }
+    let slope = sxy / sxx;
+    let mut squares = 0.0;
+    for (x, y) in &points {
+        let left = (y - my) - slope * (x - mx);
+        squares += left * left;
+    }
+    let mut found = json!({
+        "slope": number(slope),
+        "intercept": number(my - slope * mx),
+        "zero": if slope != 0.0 { number(mx - my / slope) } else { Value::Null },
+        "residual": number((squares / n).sqrt()),
+        "count": points.len(),
+    });
+    if coordinates.is_some() {
+        found["coordinates"] = json!(true);
+    }
+    found
 }
 
 /// Where a trace that starts at position `first` crosses `level`, in order: between neighbouring finite
@@ -1130,6 +1187,67 @@ mod tests {
             json!({"peak": "max", "coordinates": [0.0, 2.0, 1.0]})
         ))
         .is_err());
+    }
+
+    #[test]
+    fn a_straight_line_is_fitted_through_a_trace() {
+        let fit_of = |values: &[f64], extra: Value| {
+            let (_keep, name) = file(values);
+            view(&parse(&request(&name, &[values.len()], extra)).unwrap()).unwrap()["fit"].clone()
+        };
+        let near = |found: &Value, key: &str, expected: f64| {
+            assert!(
+                (found[key].as_f64().unwrap() - expected).abs() < 1e-12,
+                "{key}: {found}"
+            );
+        };
+        // 2 x + 1 with a missing value: it reaches zero at -0.5 and leaves nothing over.
+        let line: Vec<f64> = (0..10)
+            .map(|x| {
+                if x == 4 {
+                    f64::NAN
+                } else {
+                    2.0 * x as f64 + 1.0
+                }
+            })
+            .collect();
+        let found = fit_of(&line, json!({"fit": "line"}));
+        for (key, expected) in [
+            ("slope", 2.0),
+            ("intercept", 1.0),
+            ("zero", -0.5),
+            ("residual", 0.0),
+        ] {
+            near(&found, key, expected);
+        }
+        assert_eq!(found["count"], json!(9));
+        // A window keeps the positions of the array, and listed coordinates give the line in them.
+        near(
+            &fit_of(&line, json!({"fit": "line", "start": 5, "stop": 10})),
+            "zero",
+            -0.5,
+        );
+        let listed = fit_of(
+            &[1.0, 3.0, 5.0],
+            json!({"fit": "line", "coordinates": [10.0, 20.0, 30.0]}),
+        );
+        near(&listed, "slope", 0.2);
+        near(&listed, "zero", 5.0);
+        assert_eq!(listed["coordinates"], json!(true));
+        // Fewer than two places give no line.
+        assert_eq!(
+            fit_of(&[f64::NAN, 2.0], json!({"fit": "line"})),
+            Value::Null
+        );
+        assert_eq!(
+            fit_of(
+                &[1.0, 2.0],
+                json!({"fit": "line", "coordinates": [3.0, 3.0]})
+            ),
+            Value::Null
+        );
+        let (_keep, name) = file(&line);
+        assert!(parse(&request(&name, &[10], json!({"fit": "curve"}))).is_err());
     }
 
     #[test]

@@ -137,6 +137,7 @@ serve(p)
     assert.ok(Math.abs((view.summary.min_at ?? 0) - 1.06e9) < 1);
     assert.equal((await client.readArray(swept,{low:1.0598e9,high:1.0602e9})).values?.length,5);
     assert.deepEqual((await client.readArray(swept,{level:0.6})).crossings?.map(c=>[c.at,c.rising]),[[1.058e9,false],[1.062e9,true]]);
+    assert.equal((await client.readArray(swept,{low:1.0598e9,high:1.0602e9,fit:'line'})).fit?.slope,0);
     const turned = await client.submit([{id:'turn',device:'stage',operation:'move_to',arguments:{duration:0},sweep:{angle_deg:{start:0,stop:30,points:4}}}]);
     const gathered = await turned.result();
     assert.deepEqual(gathered.turn.angle_actual.values,[0,10,20,30]);

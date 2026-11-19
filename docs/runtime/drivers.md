@@ -124,6 +124,12 @@ With `prominence`, `peaks` lists every line that stands out by at least that muc
 {"crossings": [{"at": 1.058e9, "rising": false, "index": 580}, {"at": 1.062e9, "rising": true, "index": 619}]}
 ```
 
+`fit: "line"` gives the straight line through the selection by least squares, in the coordinates of its axis: its `slope`, its `intercept` at coordinate 0, `zero`, the coordinate where it reaches 0, the `residual`, the root mean square of what it leaves, and the `count` of values it went through. With `low` and `high` around the straight part of a curve, this is a laser's threshold current, where the line through its light above threshold reaches zero, with its slope efficiency; the resistance of an I–V curve; or the drift of a signal over time. With the summary's `std` of the same selection, 1 − (residual/std)² is the coefficient of determination. / `fit: "line"` 用最小二乘给出所选范围的直线，以该轴的坐标计：`slope` 斜率、坐标 0 处的 `intercept`、直线到达 0 处的坐标 `zero`、直线拟合后剩余部分的均方根 `residual`，以及参与拟合的数值个数 `count`。用 `low`、`high` 选出曲线的直线段，即可得到激光器的阈值电流（阈值以上的出光直线到达零的位置）和斜率效率、I–V 曲线的电阻、信号随时间的漂移。与同一范围摘要中的 `std` 一起，1 − (residual/std)² 即决定系数。
+
+```json
+{"fit": {"slope": 0.401, "intercept": -0.01, "zero": 0.024938, "residual": 0.0, "count": 31}}
+```
+
 Saved operations and step bindings can take a value through a view, such as the frequency of a resonance; see [operations](operations.md). A data stream of a numeric format reads the same way, as samples by channels; see [continuous data](../../iop/continuity.md#continuous-data). `GET /v1/runs/{id}/array` reads an array an experiment's result holds, such as what a [sweep](operations.md#sweeps--扫描) gathered, and with `request_id` one in the results of a batch. / 已保存操作和步骤绑定也可以经视图取值，例如谐振频率，见[操作](operations.md)。数值格式的数据流同样可读，形状为“采样 × 通道”，见[连续数据](../../iop/continuity.zh-CN.md#连续数据)。`GET /v1/runs/{id}/array` 读取实验结果中的数组，例如[扫描](operations.md#sweeps--扫描)汇集的数组；加 `request_id` 则读取某个批次结果中的数组。
 
 The whole array comes as a NumPy `.npy` file, which `numpy.load` reads: `GET /v1/operations/{id}/array.npy`, `/v1/runs/{id}/array.npy` and `/v1/runs/{id}/streams/{name}/array.npy`, `array_file` in Python and `arrayFile` in TypeScript. A last axis of re/im pairs becomes complex values, a stream gives its whole samples by channels, and a map a sweep gathered from its points' files is read from them in order. / 整个数组以 NumPy `.npy` 文件取得，`numpy.load` 可直接读取：上述三个路径加 `.npy`，Python 的 `array_file`，TypeScript 的 `arrayFile`。最后一维为 re/im 时成为复数；数据流给出完整的“采样 × 通道”；扫描由各点文件汇集的二维图按顺序从这些文件读出。

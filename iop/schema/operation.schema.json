@@ -152,7 +152,7 @@
     },
     "view": {
       "type": "object",
-      "description": "Read the value from a view of an array the step returned: field, along, at, start, stop, low, high, points, peak; path then selects inside the view. Along two axes, a map, along names both and the others give one value per axis. peak max, or min for a dip, finds the line: path [\"peak\", \"center\"] or [\"peak\", \"width\"]; level finds where the trace crosses a value: path [\"crossings\", 0, \"at\"] (see docs/runtime/drivers.md, Reading arrays)",
+      "description": "Read the value from a view of an array the step returned: field, along, at, start, stop, low, high, points, peak; path then selects inside the view. Along two axes, a map, along names both and the others give one value per axis. peak max, or min for a dip, finds the line: path [\"peak\", \"center\"] or [\"peak\", \"width\"]; level finds where the trace crosses a value: path [\"crossings\", 0, \"at\"]; fit line gives the straight line through it: path [\"fit\", \"slope\"] or [\"fit\", \"zero\"] (see docs/runtime/drivers.md, Reading arrays)",
       "additionalProperties": false,
       "properties": {
         "field": {
@@ -255,6 +255,12 @@
         "level": {
           "type": "number",
           "description": "Read where the trace crosses this value, between samples, rising or falling"
+        },
+        "fit": {
+          "enum": [
+            "line"
+          ],
+          "description": "Fit a straight line through the trace by least squares"
         }
       }
     },
