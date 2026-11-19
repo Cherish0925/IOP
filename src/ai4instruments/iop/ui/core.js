@@ -250,7 +250,7 @@ function ends(along, listed = along.coordinates) {
   return falling ? both.reverse() : both;
 }
 // Two axes followed: rows down the first, columns across the second, as an image is read.
-function map(view) {
+function map(view, perRow) {
   const s = view.summary;
   if (s.min === null)
     return `<small class="muted">${t("没有有限数值", "No finite values")}</small>`;
@@ -289,7 +289,7 @@ function map(view) {
       down.unit && down.unit === across.unit && width > 0 && height > 0
         ? ` style="max-width:calc(280px * ${width / height})"`
         : "";
-  return `<div class="array-map"><div class="array-rows"><span>${esc(top)}</span><span>${esc(String(down.axis))}</span><span>${esc(bottom)}</span></div><div class="array-image"${proportion}><img src="${canvas.toDataURL()}" alt="${esc(String(down.axis))} × ${esc(String(across.axis))}"${proportion ? ` style="height:auto;aspect-ratio:${width / height}"` : ""}><div class="array-axis"><span>${esc(String(across.axis))} ${esc(left)}</span><span>${esc(right)}</span></div></div></div><div class="array-scale"><small>${esc(quantity(s.min, unit))}</small><i></i><small>${esc(quantity(s.max, unit))}</small></div><small class="muted">${t("最小", "min")} ${esc(quantity(s.min, unit))} @ ${esc(place(s.min_index, s.min_at))} · ${t("最大", "max")} ${esc(quantity(s.max, unit))} @ ${esc(place(s.max_index, s.max_at))} · ${t("均值", "mean")} ${esc(quantity(s.mean, unit))}${s.nonfinite ? " · " + s.nonfinite + t(" 个非有限值", " not finite") : ""}${
+  return `<div class="array-map"><div class="array-rows"><span>${esc(top)}</span><span>${esc(String(down.axis))}</span><span>${esc(bottom)}</span></div><div class="array-image"${proportion}><div class="array-frame"><img src="${canvas.toDataURL()}" alt="${esc(String(down.axis))} × ${esc(String(across.axis))}"${proportion ? ` style="height:auto;aspect-ratio:${width / height}"` : ""}>${ridge(across, perRow)}</div><div class="array-axis"><span>${esc(String(across.axis))} ${esc(left)}</span><span>${esc(right)}</span></div></div></div><div class="array-scale"><small>${esc(quantity(s.min, unit))}</small><i></i><small>${esc(quantity(s.max, unit))}</small></div><small class="muted">${t("最小", "min")} ${esc(quantity(s.min, unit))} @ ${esc(place(s.min_index, s.min_at))} · ${t("最大", "max")} ${esc(quantity(s.max, unit))} @ ${esc(place(s.max_index, s.max_at))} · ${t("均值", "mean")} ${esc(quantity(s.mean, unit))}${s.nonfinite ? " · " + s.nonfinite + t(" 个非有限值", " not finite") : ""}${
     view.at
       ? " · " +
         esc(
@@ -360,10 +360,33 @@ function chartX(view, n, width, x) {
     return n === 1 ? width / 2 : (i * width) / (n - 1);
   };
 }
+// The line read in each row of a map, drawn through each row where it lies across: from its center on an
+// evenly spaced axis or one without coordinates, otherwise at its highest or lowest sample.
+function ridge(across, rows) {
+  const lines = rows?.peak || [],
+    n = across.stop - across.start,
+    position = (line) =>
+      across.step !== undefined
+        ? (line.center - (across.step > 0 ? across.low : across.high)) /
+          across.step
+        : across.low === undefined
+          ? line.center - across.start
+          : line.index - across.start,
+    points = lines
+      .map((line, r) =>
+        line && Number.isFinite(line.center)
+          ? `${((position(line) + 0.5) * 100) / n},${((r + 0.5) * 100) / lines.length}`
+          : null,
+      )
+      .filter(Boolean);
+  return points.length
+    ? `<svg class="array-ridge" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><polyline points="${points.join(" ")}"/></svg>`
+    : "";
+}
 // One chart per array: a map along two axes, otherwise a line with the band between bucket minima and
 // maxima and the mean or exact values.
-function chart(view) {
-  if (Array.isArray(view.along)) return map(view);
+function chart(view, perRow) {
+  if (Array.isArray(view.along)) return map(view, perRow);
   const s = view.summary,
     width = 600,
     height = 150;
@@ -443,27 +466,29 @@ export function arrayFigure({
   name,
 }) {
   const peak =
-    (line && lines.get([source, field, at && JSON.stringify(at)].join("|"))) ||
+    ((line || map) &&
+      lines.get([source, field, at && JSON.stringify(at)].join("|"))) ||
     "";
-  const toggles = line
-    ? [
-        [
-          "max",
-          t("峰", "Peak"),
-          t("读出峰的中心和半高宽", "Read the peak's center and width"),
-        ],
-        [
-          "min",
-          t("谷", "Dip"),
-          t("读出谷的中心和半高宽", "Read the dip's center and width"),
-        ],
-      ]
-        .map(
-          ([kind, label, title]) =>
-            `<button class="array-tool" data-array-line="${kind}" aria-pressed="${peak === kind}" title="${title}">${label}</button>`,
-        )
-        .join("")
-    : "";
+  const toggles =
+    line || map
+      ? [
+          [
+            "max",
+            t("峰", "Peak"),
+            t("读出峰的中心和半高宽", "Read the peak's center and width"),
+          ],
+          [
+            "min",
+            t("谷", "Dip"),
+            t("读出谷的中心和半高宽", "Read the dip's center and width"),
+          ],
+        ]
+          .map(
+            ([kind, label, title]) =>
+              `<button class="array-tool" data-array-line="${kind}" aria-pressed="${peak === kind}" title="${title}">${label}</button>`,
+          )
+          .join("")
+      : "";
   return `<figure class="array-plot" data-array-source="${esc(source)}" data-array-field="${esc(field)}" data-array-name="${esc(name || field || "array")}"${at ? ` data-array-at="${esc(JSON.stringify(at))}"` : ""}${map ? ` data-array-map="${esc(JSON.stringify(map))}"` : ""}${peak ? ` data-array-peak="${peak}"` : ""}${keep ? ' data-array-keep="1"' : ""}><figcaption><span>${caption}</span><span class="array-tools">${toggles}<button class="array-tool" data-array-save title="${t("保存整个数组，NumPy 可直接读取", "Save the whole array for NumPy")}">${icon("download")}.npy</button></span></figcaption><div class="array-chart"><small class="muted">${t("正在读取…", "Reading…")}</small></div></figure>`;
 }
 // Save a file the service sends, such as an artifact or an array as .npy, where the person chooses.
@@ -583,8 +608,26 @@ function readChart(figure) {
     );
   if (figure.dataset.arrayField) query.set("field", figure.dataset.arrayField);
   if (figure.dataset.arrayAt) query.set("at", figure.dataset.arrayAt);
-  if (figure.dataset.arrayPeak) query.set("peak", figure.dataset.arrayPeak);
-  return api(figure.dataset.arraySource + "?" + query).then(chart);
+  const kind = figure.dataset.arrayPeak,
+    view = api(
+      figure.dataset.arraySource +
+        "?" +
+        query +
+        (kind && !figure.dataset.arrayMap ? "&peak=" + kind : ""),
+    );
+  if (!kind || !figure.dataset.arrayMap) return view.then((v) => chart(v));
+  // On a map, the line in each row: read along the axis across, the rows left free.
+  const rows = new URLSearchParams({
+    along: String(JSON.parse(figure.dataset.arrayMap)[1]),
+    peak: kind,
+    points: "1",
+  });
+  for (const key of ["field", "at"])
+    if (query.has(key)) rows.set(key, query.get(key));
+  return Promise.all([
+    view,
+    api(figure.dataset.arraySource + "?" + rows).catch(() => null),
+  ]).then(([v, found]) => chart(v, found?.rows));
 }
 function show(html, target) {
   html.then(

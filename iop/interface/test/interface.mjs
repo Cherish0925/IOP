@@ -573,6 +573,21 @@ sys.stdout.buffer.write(b.getvalue())`,
       fullPage: true,
       style: "#toast{visibility:hidden}",
     });
+  // Peak on a map draws the line found in each row: the beam's center across, at 80 µm in each of 48 rows.
+  await page.click('#detail-operation-list [data-array-line="max"]');
+  // A straight line down the map has no width, so it is waited for as attached rather than visible.
+  await page.waitForSelector("#detail-operation-list .array-ridge polyline", {
+    state: "attached",
+  });
+  const ridge = (
+    await page
+      .locator("#detail-operation-list .array-ridge polyline")
+      .getAttribute("points")
+  )
+    .split(" ")
+    .map((point) => point.split(",").map(Number));
+  assert.equal(ridge.length, 48);
+  for (const [x] of ridge) assert.ok(Math.abs(x - 63.28125) < 0.01, String(x));
   // The whole array is saved as a NumPy file.
   const saving = page.waitForEvent("download");
   await page.click("#detail-operation-list [data-array-save]");
