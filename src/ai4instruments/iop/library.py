@@ -96,6 +96,8 @@ def check(definition, lookup):
             raise ValueError(f"Step {step['id']}: device must be a name")
         if not isinstance(step.get('arguments', {}), dict):
             raise ValueError(f"Step {step['id']}: arguments must be an object")
+        if 'retry' in step:
+            retried(step['retry'], f"Step {step['id']}")
         if 'sweep' in step or 'repeat' in step:
             swept(step)
         elif 'until' in step or 'retake' in step:
@@ -142,6 +144,16 @@ def check(definition, lookup):
         if 'view' in source:
             views.check(source['view'], f'Result {key}')
     return definition
+
+
+def retried(value, what):
+    """How a step tries again an instrument call that failed: how many more times, and how long it waits first."""
+    after = value.get('after_s', 1) if isinstance(value, dict) else None
+    if (not isinstance(value, dict) or value.keys() - {'times', 'after_s'} or type(value.get('times')) is not int
+            or not 1 <= value['times'] <= 10 or isinstance(after, bool) or not isinstance(after, (int, float))
+            or not 0 <= after <= 3600):
+        raise ValueError(f'{what}: retry is {{"times": 1 to 10, "after_s": the seconds to wait first, default 1}}')
+    return value
 
 
 def swept(step):
@@ -336,7 +348,7 @@ def expand(steps, lookup, describe=None):
                     if placeholders(item[key]) - arguments.keys():
                         raise ValueError(f'Step {call}: {key} in {item_id} takes its values from arguments')
                     item[key] = fill(item[key], arguments)
-            for key in ('resources', 'requirements'):
+            for key in ('resources', 'requirements', 'retry'):
                 if key in step and key not in item:
                     item[key] = copy.deepcopy(step[key])
             replaced.append((item, enclosing + [call], swept_by))

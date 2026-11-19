@@ -93,6 +93,9 @@
           "retake": {
             "const": true,
             "description": "With sweep or repeat on a device operation, in a step graph: points a lost condition put in doubt are taken again, with the arguments they were given, once a pass restored the condition and before the next operation; what the sweep gathers holds what the retakes read. Not with adapt"
+          },
+          "retry": {
+            "$ref": "#/$defs/retry"
           }
         }
       }
@@ -425,6 +428,29 @@
           "$ref": "#/$defs/source"
         }
       ]
+    },
+    "retry": {
+      "type": "object",
+      "required": [
+        "times"
+      ],
+      "additionalProperties": false,
+      "description": "When the instrument call fails, make it again after after_s seconds, up to times more times; each failed attempt stays in the operation record under attempts, and what it wrote is discarded. A call whose outcome is unknown, a refusal before the call and a cancellation are not made again. For operations safe to repeat, such as a reading or a move to a position",
+      "properties": {
+        "times": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "description": "How many more times the call may be made"
+        },
+        "after_s": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 3600,
+          "default": 1,
+          "description": "Seconds to wait before each further call"
+        }
+      }
     }
   }
 }

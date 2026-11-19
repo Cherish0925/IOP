@@ -104,6 +104,21 @@ class Noisy(Driver):
         return {'power': 1 / (1 + ((arguments['hz'] - 1.0613e9) / 1.5e6) ** 2) + 0.04 * noise, 'unit': 'W'}
 
 
+class Flaky(Driver):
+    """A meter whose every other reading gets no reply."""
+    calls = 0
+
+    def describe(self):
+        return {'operations': {'read': {'parameters': {'x': {'type': 'number', 'default': 0}}, 'effect': 'observe'}}}
+
+    def invoke(self, operation, arguments, context):
+        Flaky.calls += 1
+        if Flaky.calls % 2:
+            context.file('partial.txt').write_text('cut off')
+            raise TimeoutError('no reply within 5 s')
+        return {'value': arguments['x']}
+
+
 class GatherCase(unittest.TestCase):
     """What a sweep returns, from what its points returned."""
 
@@ -505,6 +520,29 @@ class SweepCase(unittest.TestCase):
         preview = self.client.preview(steps)
         self.assertEqual(preview['by_operation']['stage.move_to']['from'], 5)
         self.assertAlmostEqual(preview['estimated_s'], 1.0, delta=0.5)
+
+    def test_a_step_tries_again_an_instrument_call_that_failed(self):
+        self.client.register({'id': 'flaky', 'driver': Flaky.__module__ + ':Flaky'})
+        Flaky.calls = 0
+        # Every other reading gets no reply: each point is read again 0.05 s later, and the sweep completes.
+        run = self.submit([{'id': 'scan', 'device': 'flaky', 'operation': 'read', 'sweep': {'x': [1, 2, 3]},
+                            'retry': {'times': 1, 'after_s': 0.05}}])
+        self.assertEqual(run.result(10)['scan']['value']['values'], [1, 2, 3])
+        operations = run.info()['operation_records']
+        self.assertEqual([len(op['attempts']) for op in operations], [1, 1, 1])
+        self.assertEqual(operations[0]['attempts'][0]['error'], 'TimeoutError: no reply within 5 s')
+        self.assertNotIn('files', operations[0])
+        self.assertNotIn('retry_at', operations[0])
+        waited = [datetime.fromisoformat(op['started']) - datetime.fromisoformat(op['attempts'][0]['ended']) for op in operations]
+        self.assertTrue(all(w.total_seconds() >= 0.05 for w in waited))
+        events = self.client.request(f'/v1/events?run_id={run.id}&limit=1000')['events']
+        self.assertEqual(sum(e['kind'] == 'operation.retrying' for e in events), 3)
+        # Without retry the first missing reply ends the experiment.
+        Flaky.calls = 0
+        self.assertEqual(self.submit([{'id': 'scan', 'device': 'flaky', 'operation': 'read', 'sweep': {'x': [1, 2]}}])
+                         .wait(10, details=False)['state'], 'failed')
+        with self.assertRaisesRegex(IOPError, 'retry is'):
+            self.submit([{'id': 'scan', 'device': 'flaky', 'operation': 'read', 'retry': {'times': 0}}])
 
     def test_a_device_record_limits_what_its_setup_tolerates(self):
         from .test_conditions import Part

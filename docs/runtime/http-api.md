@@ -178,6 +178,8 @@ A step's `bindings` maps parameter names to `{ "step": "source-step", "path": ["
 
 `operation.progress` events contain `operation_id` and `progress` with `fraction`, `message` and optional driver fields. Progress is also available on the operation record. Completed package operations remain in SQLite; `operation_count` counts all submitted calls while a running package's `operations` list contains only its unfinished calls. Detailed run responses include up to 10,000 recent operation records; use the cursor endpoint for full history.
 
+A step with `retry` makes a failed instrument call again: the operation stays `queued` until the time its `retry_at` gives, its record lists the failed calls under `attempts`, and each gives an `operation.retrying` event with `operation_id`, `attempt` and `error`. See [operations](operations.md#when-a-call-fails--调用失败时).
+
 HTTP 503 indicates that the configured active-work capacity has been reached and includes `retry_after` in seconds. Submission retries should retain their request identifier. Queued work and accepted experiments continue while new work waits at the caller.
 
 The command adapter's operation context and HTTP asynchronous job descriptions are documented in [software extensions](../../iop/software.md). The schemas for [platforms](../../iop/schema/platform.schema.json) and [workflows](../../iop/schema/workflow.schema.json) are shipped with the source and installation archives.

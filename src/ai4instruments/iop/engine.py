@@ -16,6 +16,7 @@ import zipfile
 import queue
 import hashlib
 import re
+import shutil
 from collections import OrderedDict, deque
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, CancelledError
@@ -78,6 +79,8 @@ class Engine:
         self.ranges = {}
         # Points of sweeps that retake them which a lost condition put in doubt, and their retakes in progress.
         self.doubted, self.retaking = {}, {}
+        # Operations refused before their instrument was called, and how many calls of each were made again.
+        self.refused, self.tries = set(), {}
         self.completed = queue.SimpleQueue()
         self.progress_lock = threading.Lock()
         self.progress_updates = {}
@@ -399,6 +402,35 @@ class Engine:
             for key, count in self._amounts(op).items():
                 self.minimum_capacities[run['id']][key] = max(self.minimum_capacities[run['id']].get(key, 0), count)
 
+    def _release(self, op_id):
+        """What an operation held while its instrument was called, given back once the call returned."""
+        self.allocation.release(op_id)
+        del self.futures[op_id]
+        self.waiting_steps.discard(op_id)
+        self.cancellations.pop(op_id, None)
+        self.progress_times.pop(op_id, None)
+        self.refused.discard(op_id)
+
+    def _again(self, op, error):
+        """An instrument call that failed cleanly is queued again, as its step allows, after the wait it gives; the
+        failed attempt stays in the record, and what it wrote is discarded."""
+        attempt = {'state': 'failed', 'error': f'{type(error).__name__}: {error}', 'started': op['started'], 'ended': now()}
+        op.setdefault('attempts', []).append(attempt)
+        self.tries[op['id']] = self.tries.get(op['id'], 0) + 1
+        op.update(state='queued', retry_at=datetime.fromtimestamp(time.time() + op['retry'].get('after_s', 1),
+                                                                  timezone.utc).isoformat(timespec='microseconds'))
+        for key in ('started', 'progress'):
+            op.pop(key, None)
+        shutil.rmtree(self.home / 'runs' / op['run_id'] / 'output' / 'operations' / op['id'], ignore_errors=True)
+        self.communication[op['device']] = {'time': attempt['ended'], 'operation_id': op['id'], 'state': 'failed',
+                                            'error': attempt['error']}
+        self._release(op['id'])
+        self.ready[op['run_id']][op['id']] = None
+        with self.store.transaction():
+            self.store.put('operations', op)
+            self.store.event('operation.retrying', op['run_id'], operation_id=op['id'], attempt=len(op['attempts']),
+                             error=attempt['error'])
+
     def _retaken(self, op):
         """A point taken again: what its sweep gathers holds what it read in place of the point in doubt."""
         sweep = op['swept_by'][-1]
@@ -480,6 +512,7 @@ class Engine:
 
     def _operation_ended(self, op):
         self._calls_ended(op)
+        self.tries.pop(op['id'], None)
         if op.get('retakes'):
             self.retaking.get(op['run_id'], set()).discard(op['id'])
             if op['state'] == 'completed':
@@ -935,6 +968,8 @@ class Engine:
         for source in (self.descriptions[device_id], specs[name], step):
             for key, count in quantities(source.get('requirements', {}), self.capacities).items():
                 requirements[key] = max(requirements.get(key, 0), count)
+        if 'retry' in step:
+            library.retried(step['retry'], f"Step {step.get('id')}")
         calibration = self.descriptions[device_id].get('calibration')
         recorded = operation_fields(calibration, name)
         if recorded.get('calibration_expired') and calibration.get('enforce'):
@@ -947,7 +982,7 @@ class Engine:
                 "resources":sorted(set(self._resources([device_id], name) + self._resources(step.get("resources", [])))),
                 "request_id":step.get("request_id"),
                 "device_revision":self.descriptions[device_id].get('revision'), **recorded,
-                **{key: step[key] for key in ('derive', 'gathers', 'swept_by', 'continues', 'retake') if step.get(key)}}
+                **{key: step[key] for key in ('derive', 'gathers', 'swept_by', 'continues', 'retake', 'retry') if step.get(key)}}
 
     def _described(self, device, operation):
         """A registered device operation's description, or None."""
@@ -1581,9 +1616,13 @@ class Engine:
                     run.update(state='cancelling', end_state='cancelled')
                     self._stop_pending(run)
             except BaseException as error:
-                op.update(state='failed', error=f'{type(error).__name__}: {error}')
                 from .process_driver import DriverUnavailable
                 from .drivers import UnconfirmedChange
+                if (op.get('retry') and self.tries.get(op_id, 0) < op['retry']['times'] and run['state'] == 'running'
+                        and op_id not in self.refused and not isinstance(error, (DriverUnavailable, UnconfirmedChange))):
+                    self._again(op, error)
+                    continue
+                op.update(state='failed', error=f'{type(error).__name__}: {error}')
                 if isinstance(error, (DriverUnavailable, UnconfirmedChange)):
                     op['outcome_unknown'] = True
                     if isinstance(error, DriverUnavailable):
@@ -1613,11 +1652,7 @@ class Engine:
                 self.store.event('operation.' + op['state'], run['id'], operation_id=op_id,
                                  result=op.get('result'), error=op.get('error'))
             self._operation_ended(op)
-            self.allocation.release(op_id)
-            del self.futures[op_id]
-            self.waiting_steps.discard(op_id)
-            self.cancellations.pop(op_id, None)
-            self.progress_times.pop(op_id, None)
+            self._release(op_id)
             if run['kind'] in {'package', 'external'}:
                 # Long-lived programs keep only in-flight calls in memory. All
                 # completed operations remain in the indexed SQLite history.
@@ -1721,6 +1756,8 @@ class Engine:
             op = self.operations[op_id]
             if rid in maintaining and not op.get('maintenance') or self.retaking.get(rid) and not op.get('retakes'):
                 continue
+            if 'retry_at' in op and stamp(op['retry_at']) > time.time():
+                continue
             stop = self._stopping(op) if op.get('continues') else None
             if stop:
                 stops.setdefault((rid, stop[0]['sweep']), stop)
@@ -1731,6 +1768,7 @@ class Engine:
                 continue
             self.last_scheduled_run = rid
             op.update(state='running', started=now())
+            op.pop('retry_at', None)
             self.allocation.claim(op_id, rid, amounts)
             output = self.home / 'runs' / rid / 'output' / 'operations' / op_id
             context = Context(rid, op_id, output, lambda value, oid=op_id: self._progress(oid, value))
@@ -1774,8 +1812,10 @@ class Engine:
             op_id = op['id']
             self.ready[op['run_id']].pop(op_id)
             if error is not None:
+                # Refused before its instrument was called, it is not tried again.
                 from concurrent.futures import Future
                 future = Future(); future.set_exception(error)
+                self.refused.add(op_id)
             elif getattr(self.devices[op['device']], 'dedicated_thread', False):
                 future = self._own_thread(self._call, self.devices[op['device']], op, context)
                 self.waiting_steps.add(op_id)
