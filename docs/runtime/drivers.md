@@ -130,6 +130,12 @@ With `prominence`, `peaks` lists every line that stands out by at least that muc
 {"fit": {"slope": 0.401, "intercept": -0.01, "zero": 0.024938, "residual": 0.0, "count": 31}}
 ```
 
+`fit: "lorentzian"` and `fit: "gaussian"` fit a line of that shape over a base by least squares (Levenberg–Marquardt), starting from the value farthest from the median: its `center`, its `width`, full at half its height, its `height` above the base (negative for a dip), the `base`, the `residual` and the `count`. Through noise these use every point of the line, where `peak` uses the few around its half height: on a resonance of Q 2120 under noise of up to 0.02 on a dip 0.8 deep, the Lorentzian gives Q within 0.5% and the width at half height is 2% off. A Gaussian gives the width of a beam profile or of an inhomogeneously broadened line. Each step of the fit visits every value, so it takes at most 1,000,000 over all rows; select a window around the line. / `fit: "lorentzian"`、`fit: "gaussian"` 用最小二乘（Levenberg–Marquardt）在基线上拟合该形状的谱线，从离中位数最远的数值出发：给出 `center` 中心、半高全宽 `width`、高出基线的 `height`（凹陷为负）、`base` 基线、`residual` 和 `count`。有噪声时它们用到谱线上的每个点，而 `peak` 只用半高附近的几个点：Q 为 2120 的谐振，凹陷深 0.8、噪声至多 0.02 时，洛伦兹拟合的 Q 误差在 0.5% 以内，半高宽读法偏 2%。高斯拟合给出光束截面或非均匀展宽谱线的宽度。拟合的每一步都要遍历所有数值，因此所有行合计最多 1,000,000 个；请选出谱线附近的范围。
+
+```json
+{"fit": {"center": 1.060001e9, "width": 499518.1, "height": -0.795, "base": 0.999, "residual": 0.0117, "count": 201}}
+```
+
 `peak`, `level` and `fit` read along one axis with the others fixed. With one other axis left free, they are read at each of its positions, at most 1000: `rows` gives that axis's coordinates or labels and, for each position, the line, crossings and fit of the trace there. A map of spectra against a bias thus gives the line's center at each bias in one view, and a sweep gathered from its points' files is read from them. / `peak`、`level`、`fit` 沿一个轴读取，其余的轴固定；留下另一个轴不固定时，在它的每个位置各读一次（最多 1000 个）：`rows` 给出该轴的坐标或标签，以及每个位置上那条迹线的谱线、穿越位置和直线。随偏压变化的光谱二维图因此一次视图就给出各偏压下谱线的中心；由扫描各点文件汇集的数组直接从这些文件读取。
 
 ```json

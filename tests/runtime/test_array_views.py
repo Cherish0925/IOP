@@ -336,6 +336,31 @@ class ViewCase(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'A fit is read along one axis, at each position of at most one other'):
             self.view([0] * 12, {'dtype': 'float64', 'shape': [2, 3, 2]}, fit='line')
 
+    def test_lines_of_lorentzian_and_gaussian_shape_through_noise(self):
+        # A resonance at 1.06 GHz, 0.5 MHz wide (Q 2120), under noise of up to 0.02 from a fixed sequence: the
+        # Lorentzian through its 201 points gives Q within 0.5%, where the width at half height is 2% off.
+        seed = [12345]
+
+        def noise():
+            seed[0] = (seed[0] * 6364136223846793005 + 1442695040888963407) % 2 ** 64
+            return ((seed[0] >> 11) / 2 ** 53 - 0.5) * 0.04
+        frequency = {'name': 'frequency', 'unit': 'Hz', 'start': 1.0575e9, 'step': 25e3}
+        dip = [1 - 0.8 / (1 + ((1.0575e9 + 25e3 * i - 1.06e9) / 0.25e6) ** 2) + noise() for i in range(201)]
+        seen = self.view(dip, {'dtype': 'float64', 'axes': [frequency]}, peak='min', fit='lorentzian')
+        fit, line = seen['fit'], seen['peak']
+        self.assertAlmostEqual(fit['center'] / fit['width'], 2120, delta=0.005 * 2120)
+        self.assertGreater(abs(line['center'] / line['width'] - 2120), 0.01 * 2120)
+        self.assertEqual((round(fit['height'], 1), round(fit['base'], 2), fit['count']), (-0.8, 1.0, 201))
+        # A Gaussian beam profile 10 um wide at half height, sampled every 0.5 um.
+        x = {'name': 'x', 'unit': 'um', 'start': 0, 'step': 0.5}
+        profile = [0.1 + 2 * math.exp(-math.log(2) * ((0.5 * i - 64.5) / 5) ** 2) for i in range(200)]
+        beam = self.view(profile, {'dtype': 'float64', 'axes': [x]}, fit='gaussian')['fit']
+        self.assertEqual((round(beam['center'], 9), round(beam['width'], 9), round(beam['height'], 9)), (64.5, 10, 2))
+        with self.assertRaisesRegex(ValueError, 'fit is line, lorentzian or gaussian'):
+            self.view(profile, {'dtype': 'float64'}, fit='voigt')
+        with self.assertRaisesRegex(ValueError, 'fitted to at most 1000000 values'):
+            views.plan({'dtype': 'float64', 'shape': [1000, 2000]}, along=1, fit='gaussian')
+
     def test_lines_crossings_and_fits_at_each_position_of_another_axis(self):
         # A line that moves 10 nm per volt, read along wavelength at each bias: its center tunes with the bias.
         volts = {'name': 'volts', 'unit': 'V', 'start': 0, 'step': 1}
@@ -398,6 +423,12 @@ class ViewCase(unittest.TestCase):
              {'along': 'c', 'at': {'a': 4}, 'peak': 'max', 'level': 70, 'fit': 'line'}),
             (nan_trace[:20000], {'dtype': 'float32', 'byte_order': 'big', 'shape': [100, 200]},
              {'along': 0, 'start': 3, 'stop': 97, 'peak': 'min', 'level': 3.2e9}),
+            (DIP, {'dtype': 'float64', 'axes': [FREQUENCY]}, {'low': 1.05e9, 'high': 1.07e9, 'fit': 'lorentzian'}),
+            (nan_trace, {'dtype': 'float32', 'byte_order': 'big'}, {'start': 101, 'stop': 400, 'fit': 'gaussian'}),
+            ([0, 1, 3, 1, 0, 0.5], {'dtype': 'float64', 'axes': [{'name': 'x', 'coordinates': [0, 1, 2, 3, 5, 8]}]},
+             {'fit': 'lorentzian'}),
+            (cube, {'dtype': 'float64', 'shape': [6, 7, 50], 'axes': [{'name': 'a'}, {'name': 'b'}, {'name': 'c'}]},
+             {'along': 'c', 'at': {'a': 4}, 'fit': 'gaussian'}),
         ]
         compared = 0
         for values, description, options in cases:
@@ -472,6 +503,9 @@ class ServiceViewCase(unittest.TestCase):
                          [600])
         self.assertEqual([(c['at'], c['rising']) for c in self.client.read_array(sweep['id'], level=0.6)['crossings']],
                          [(1.058e9, False), (1.062e9, True)])
+        fit = self.client.read_array(sweep['id'], fit='lorentzian')['fit']
+        self.assertAlmostEqual(fit['center'], 1.06e9, delta=1)
+        self.assertAlmostEqual(fit['width'], 4e6, delta=1)
         printed = subprocess.check_output([sys.executable, '-m', 'ai4instruments.iop', '--endpoint', self.client.endpoint,
                                            'array', sweep['id'], '--low', '1.0598e9', '--high', '1.0602e9', '--peak', 'min',
                                            '--level', '0.201', '--fit', 'line'],

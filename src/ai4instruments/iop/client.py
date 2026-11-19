@@ -260,7 +260,7 @@ class Client:
         line that stands out by that much, each with its width at half its prominence. ``level`` adds
         ``crossings``: each place the trace crosses that value, between samples, rising or falling. ``fit``
         "line" adds the straight line through the trace: its slope, intercept, where it reaches zero and the
-        residual. ``field`` names the array when a result holds several.
+        residual; "lorentzian" or "gaussian" a line of that shape: its center, width, height, base and residual. ``field`` names the array when a result holds several.
         """
         return self.request('/v1/operations/' + quote(operation_id, safe='') + '/array' +
                             view_query(field=field, along=along, at=at, start=start, stop=stop, low=low, high=high,

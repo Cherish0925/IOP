@@ -10,6 +10,7 @@
 //! The bytes of the array are one file or, as for a data stream or the points of a sweep, several
 //! files in order; only the range that holds the selected positions of the first axis is read.
 use serde_json::{json, Value};
+use std::f64::consts::LN_2;
 use std::{
     error::Error,
     fs::File,
@@ -96,6 +97,14 @@ enum Peak {
     Min,
 }
 
+/// What a fit draws through a trace: a straight line, or a line of Lorentzian or Gaussian shape.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Fit {
+    Line,
+    Lorentzian,
+    Gaussian,
+}
+
 /// An axis followed: the positions selected, start to stop, in a number of buckets.
 #[derive(Clone, Copy, Debug)]
 struct Followed {
@@ -121,8 +130,8 @@ struct Request {
     prominence: Option<f64>,
     /// Read where the trace crosses this level, rising or falling.
     level: Option<f64>,
-    /// Fit a straight line through the trace.
-    fit: bool,
+    /// Fit a straight line, or a line of Lorentzian or Gaussian shape, through the trace.
+    fit: Option<Fit>,
     /// The one other axis not fixed, if any: lines, crossings and fits are read at each of its positions.
     rows: Option<usize>,
     /// Listed coordinates for the selected trace; uniform axes can use positions.
@@ -135,6 +144,8 @@ const CELLS: usize = 4_000_000;
 const TRACE: usize = 20_000_000;
 /// Lines, or crossings of a level, one view reads at most.
 const LINES: usize = 1000;
+/// Values a Lorentzian or Gaussian is fitted to, at most, over all rows: each step of the fit visits them all.
+const SHAPED: usize = 1_000_000;
 
 fn invalid(message: impl Into<String>) -> Box<dyn Error> {
     Box::new(io::Error::new(io::ErrorKind::InvalidInput, message.into()))
@@ -262,11 +273,13 @@ fn parse(request: &Value) -> Result<Request, Box<dyn Error>> {
         },
     };
     let fit = match request["fit"].as_str() {
-        None if request["fit"].is_null() => false,
-        Some("line") => true,
-        _ => return Err(invalid("fit is line, a straight line through the trace")),
+        None if request["fit"].is_null() => None,
+        Some("line") => Some(Fit::Line),
+        Some("lorentzian") => Some(Fit::Lorentzian),
+        Some("gaussian") => Some(Fit::Gaussian),
+        _ => return Err(invalid("fit is line, lorentzian or gaussian")),
     };
-    let traced = peak.is_some() || level.is_some() || fit;
+    let traced = peak.is_some() || level.is_some() || fit.is_some();
     let mut rows = None;
     if traced {
         let free: Vec<usize> = (0..shape.len())
@@ -287,6 +300,13 @@ fn parse(request: &Value) -> Result<Request, Box<dyn Error>> {
         if (along[0].stop - along[0].start) * count > TRACE {
             return Err(invalid(format!(
                 "A peak, a level or a fit is read over at most {TRACE} positions; select fewer with start and stop"
+            )));
+        }
+        if matches!(fit, Some(Fit::Lorentzian | Fit::Gaussian))
+            && (along[0].stop - along[0].start) * count > SHAPED
+        {
+            return Err(invalid(format!(
+                "A Lorentzian or Gaussian is fitted to at most {SHAPED} values; select fewer around the line"
             )));
         }
     }
@@ -479,7 +499,7 @@ fn view(r: &Request) -> Result<Value, Box<dyn Error>> {
     };
     // Along one axis, positions are read in order: the trace a line is found in, one for each position of the
     // other axis not fixed when there is one.
-    let traced = r.peak.is_some() || r.level.is_some() || r.fit;
+    let traced = r.peak.is_some() || r.level.is_some() || r.fit.is_some();
     let length = if traced {
         r.along[0].stop - r.along[0].start
     } else {
@@ -638,10 +658,186 @@ fn read_trace(
             crossings(trace, first, level, coordinates)?,
         );
     }
-    if r.fit {
-        found.insert("fit".into(), line_through(trace, first, coordinates));
+    match r.fit {
+        Some(Fit::Line) => {
+            found.insert("fit".into(), line_through(trace, first, coordinates));
+        }
+        Some(shape) => {
+            found.insert("fit".into(), shaped(trace, first, coordinates, shape));
+        }
+        None => {}
     }
     Ok(found)
+}
+
+/// The line of Lorentzian or Gaussian shape through the finite values of a trace that starts at position
+/// `first`, by least squares (Levenberg-Marquardt) in its positions or listed coordinates: its center, its full
+/// width at half its height, its height above its base (below for a dip), the base, the root mean square of
+/// what it leaves and the number of values. It starts from the value farthest from the median, with the median
+/// as base and the half width where the trace first comes halfway back on either side. Null for fewer than
+/// five places or a flat trace.
+fn shaped(trace: &[f64], first: usize, coordinates: Option<&[f64]>, shape: Fit) -> Value {
+    let place = |index: usize| coordinates.map_or((first + index) as f64, |values| values[index]);
+    let points: Vec<(f64, f64)> = trace
+        .iter()
+        .enumerate()
+        .filter(|(_, y)| y.is_finite())
+        .map(|(i, &y)| (place(i), y))
+        .collect();
+    let n = points.len();
+    if n < 5 {
+        return Value::Null;
+    }
+    // Places measured from their middle in half spans keep coordinates such as frequencies well conditioned.
+    let (low, high) = points
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &(x, _)| {
+            (lo.min(x), hi.max(x))
+        });
+    let (middle, half) = ((low + high) / 2.0, (high - low) / 2.0);
+    let t: Vec<f64> = points.iter().map(|&(x, _)| (x - middle) / half).collect();
+    let y: Vec<f64> = points.iter().map(|&(_, y)| y).collect();
+    let mut sorted = y.clone();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let base = sorted[n / 2];
+    let (mut top, mut bottom) = (0, 0);
+    for k in 1..n {
+        if y[k] > y[top] {
+            top = k;
+        }
+        if y[k] < y[bottom] {
+            bottom = k;
+        }
+    }
+    let k = if y[top] - base >= base - y[bottom] {
+        top
+    } else {
+        bottom
+    };
+    let height = y[k] - base;
+    if half == 0.0 || height == 0.0 {
+        return Value::Null;
+    }
+    let back = |mut order: Box<dyn Iterator<Item = usize>>| {
+        order
+            .find(|&j| (y[j] - base) / height <= 0.5)
+            .map(|j| (t[j] - t[k]).abs())
+    };
+    let width = match (back(Box::new((0..k).rev())), back(Box::new(k + 1..n))) {
+        (Some(a), Some(b)) => (a + b) / 2.0,
+        (Some(a), None) | (None, Some(a)) => a,
+        (None, None) => 0.05,
+    };
+    let mut p = [base, height, t[k], if width > 0.0 { width } else { 0.05 }];
+    // The shape at u = (x - center) / half width, and the derivatives of the line by base, height, center and
+    // half width there.
+    let model = |p: &[f64; 4], t: f64| -> (f64, [f64; 4]) {
+        let u = (t - p[2]) / p[3];
+        let (s, g) = match shape {
+            Fit::Lorentzian => {
+                let s = 1.0 / (1.0 + u * u);
+                (s, 2.0 * s * s)
+            }
+            _ => {
+                let s = (-LN_2 * u * u).exp();
+                (s, 2.0 * LN_2 * s)
+            }
+        };
+        let q = p[1] * g / p[3];
+        (p[0] + p[1] * s, [1.0, s, q * u, q * u * u])
+    };
+    let squares = |p: &[f64; 4]| {
+        t.iter().zip(&y).fold(0.0, |sum, (&t, &y)| {
+            let left = y - model(p, t).0;
+            sum + left * left
+        })
+    };
+    let (mut cost, mut lambda) = (squares(&p), 1e-3);
+    'fit: for _ in 0..200 {
+        let (mut a, mut g) = ([[0.0; 4]; 4], [0.0; 4]);
+        for (&t, &y) in t.iter().zip(&y) {
+            let (value, d) = model(&p, t);
+            for j in 0..4 {
+                g[j] += d[j] * (y - value);
+                for k in 0..4 {
+                    a[j][k] += d[j] * d[k];
+                }
+            }
+        }
+        let (trial, next) = loop {
+            let mut m = a;
+            for j in 0..4 {
+                m[j][j] += lambda * a[j][j];
+            }
+            if let Some(step) = solve(m, g) {
+                let trial = [
+                    p[0] + step[0],
+                    p[1] + step[1],
+                    p[2] + step[2],
+                    p[3] + step[3],
+                ];
+                let next = squares(&trial);
+                if next < cost {
+                    break (trial, next);
+                }
+            }
+            lambda *= 10.0;
+            if lambda > 1e16 {
+                break 'fit;
+            }
+        };
+        let improved = cost - next;
+        (p, cost, lambda) = (trial, next, lambda / 10.0);
+        if improved <= 1e-12 * cost {
+            break;
+        }
+    }
+    let mut found = json!({
+        "center": number(middle + p[2] * half),
+        "width": number(2.0 * p[3].abs() * half),
+        "height": number(p[1]),
+        "base": number(p[0]),
+        "residual": number((cost / n as f64).sqrt()),
+        "count": n,
+    });
+    if coordinates.is_some() {
+        found["coordinates"] = json!(true);
+    }
+    found
+}
+
+/// The solution of four linear equations, by elimination with partial pivoting; None when they are singular.
+fn solve(mut m: [[f64; 4]; 4], mut b: [f64; 4]) -> Option<[f64; 4]> {
+    for col in 0..4 {
+        let mut pivot = col;
+        for row in col + 1..4 {
+            if m[row][col].abs() > m[pivot][col].abs() {
+                pivot = row;
+            }
+        }
+        if m[pivot][col] == 0.0 {
+            return None;
+        }
+        m.swap(col, pivot);
+        b.swap(col, pivot);
+        let (above, f0) = (m[col], b[col]);
+        for row in col + 1..4 {
+            let f = m[row][col] / above[col];
+            for (value, top) in m[row].iter_mut().zip(above).skip(col) {
+                *value -= f * top;
+            }
+            b[row] -= f * f0;
+        }
+    }
+    let mut x = [0.0; 4];
+    for row in (0..4).rev() {
+        let mut s = b[row];
+        for k in row + 1..4 {
+            s -= m[row][k] * x[k];
+        }
+        x[row] = s / m[row][row];
+    }
+    Some(x)
 }
 
 /// The straight line through the finite values of a trace that starts at position `first`, by least squares
@@ -1360,6 +1556,66 @@ mod tests {
             &name,
             &[3, 100],
             json!({"along": 1, "stop": 100, "peak": "max", "prominence": 0.1})
+        ))
+        .is_err());
+    }
+
+    #[test]
+    fn lorentzian_and_gaussian_lines_are_fitted_through_noise() {
+        let fit_of = |values: &[f64], extra: Value| {
+            let (_keep, name) = file(values);
+            view(&parse(&request(&name, &[values.len()], extra)).unwrap()).unwrap()["fit"].clone()
+        };
+        // A dip 0.8 deep and 6 wide at 41.3 on a base of 1, with noise of 0.01 from a fixed sequence.
+        let mut seed = 12345u64;
+        let mut noise = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((seed >> 11) as f64 / (1u64 << 53) as f64 - 0.5) * 0.02
+        };
+        let dip: Vec<f64> = (0..120)
+            .map(|x| 1.0 - 0.8 / (1.0 + ((x as f64 - 41.3) / 3.0).powi(2)) + noise())
+            .collect();
+        let found = fit_of(&dip, json!({"stop": 120, "fit": "lorentzian"}));
+        let at = |key: &str| found[key].as_f64().unwrap();
+        assert!((at("center") - 41.3).abs() < 0.05, "{found}");
+        assert!((at("width") - 6.0).abs() < 0.1, "{found}");
+        assert!((at("height") + 0.8).abs() < 0.02 && (at("base") - 1.0).abs() < 0.005);
+        assert!(at("residual") < 0.007 && found["count"] == json!(120));
+        // A Gaussian beam profile 10 wide at 64.5, read in listed coordinates that are half a unit apart.
+        let profile: Vec<f64> = (0..200)
+            .map(|x| 0.1 + 2.0 * (-LN_2 * ((x as f64 * 0.5 - 64.5) / 5.0).powi(2)).exp())
+            .collect();
+        let places: Vec<f64> = (0..200).map(|x| x as f64 * 0.5).collect();
+        let beam = fit_of(
+            &profile,
+            json!({"stop": 200, "fit": "gaussian", "coordinates": places}),
+        );
+        let at = |key: &str| beam[key].as_f64().unwrap();
+        assert!(
+            (at("center") - 64.5).abs() < 1e-6 && (at("width") - 10.0).abs() < 1e-6,
+            "{beam}"
+        );
+        assert_eq!(beam["coordinates"], json!(true));
+        // Too few places, or a flat trace, give no line; an unknown shape is refused.
+        assert_eq!(
+            fit_of(
+                &[1.0, 2.0, 1.0, 1.0],
+                json!({"stop": 4, "fit": "lorentzian"})
+            ),
+            Value::Null
+        );
+        assert_eq!(
+            fit_of(&[1.0; 8], json!({"stop": 8, "fit": "gaussian"})),
+            Value::Null
+        );
+        let (_keep, name) = file(&dip);
+        assert!(parse(&request(&name, &[120], json!({"fit": "voigt"}))).is_err());
+        assert!(parse(&request(
+            &name,
+            &[2000, 1000],
+            json!({"stop": 2000, "fit": "gaussian"})
         ))
         .is_err());
     }

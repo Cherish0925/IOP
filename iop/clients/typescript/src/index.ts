@@ -59,8 +59,9 @@ export type ArrayView = {
   peaks?: { center: number; width?: number; low?: number; high?: number; value: number; base: number; prominence: number; index: number }[];
   /** With level: each place the trace crosses it, between samples, in order; index is the sample before. */
   crossings?: { at: number; rising: boolean; index: number }[];
-  /** With fit "line": the straight line through the selection, its value at coordinate zero, where it reaches zero, and the root mean square it leaves. */
-  fit?: { slope: number; intercept: number; zero: number | null; residual: number; count: number } | null;
+  /** With fit "line": the straight line through the selection, its value at coordinate zero, where it reaches zero, and the root mean square it leaves; with "lorentzian" or "gaussian", a line of that shape, its full width at half height. */
+  fit?: { slope: number; intercept: number; zero: number | null; residual: number; count: number }
+    | { center: number; width: number; height: number; base: number; residual: number; count: number } | null;
   /** With one other axis left free: its coordinates or labels, and at each of its positions the peak, crossings and fit of the trace there. */
   rows?: { axis: string | number; unit?: string; coordinates?: number[]; labels?: string[]; peak?: (ArrayView['peak'])[];
     crossings?: NonNullable<ArrayView['crossings']>[]; fit?: (ArrayView['fit'])[] };
@@ -73,7 +74,7 @@ function viewQuery(options: ArrayViewOptions) {
 }
 type PerAxis<T> = T | (T | null)[];
 export type ArrayViewOptions = { field?: string; along?: string | number | (string | number)[]; at?: Record<string, string | number>;
-  start?: PerAxis<number>; stop?: PerAxis<number>; low?: PerAxis<number>; high?: PerAxis<number>; points?: number | number[]; peak?: 'max' | 'min'; prominence?: number; level?: number; fit?: 'line' };
+  start?: PerAxis<number>; stop?: PerAxis<number>; low?: PerAxis<number>; high?: PerAxis<number>; points?: number | number[]; peak?: 'max' | 'min'; prominence?: number; level?: number; fit?: 'line' | 'lorentzian' | 'gaussian' };
 export type Submission = { name?: string; project?: string; experiment?: string; platform?: string; resources?: string[]; requirements?: Record<string, number>; parameters?: Record<string, unknown>; request_id?: string; requires?: string[]; upkeep?: boolean | Omit<Upkeep, 'conditions'> };
 export class IOPError extends Error {
   constructor(message: string, readonly status: number, readonly details: Record<string, unknown> = {}) { super(message); this.name = 'IOPError'; }

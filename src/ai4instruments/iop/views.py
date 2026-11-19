@@ -23,6 +23,11 @@ from .arrays import DTYPES, _typecode
 POINTS = 64
 MAX_POINTS = 2000
 LINES = 1000
+# What a fit draws through a trace: a straight line, or a line of Lorentzian or Gaussian shape. Each step of a
+# Lorentzian or Gaussian fit visits every value, so it takes at most SHAPED of them over all rows.
+FITS = ('line', 'lorentzian', 'gaussian')
+SHAPED = 1_000_000
+LN2 = math.log(2)
 MAX_CELLS = 250_000
 PYTHON_LIMIT = 4_000_000
 COMPONENTS = ['re', 'im']
@@ -197,8 +202,8 @@ def plan(data, along=None, at=None, start=None, stop=None, low=None, high=None, 
         raise ValueError('level is a finite number')
     if peak is not None and peak not in ('max', 'min'):
         raise ValueError('peak is max, or min for a dip')
-    if fit not in (None, 'line'):
-        raise ValueError('fit is line, a straight line through the trace')
+    if fit not in (None, *FITS):
+        raise ValueError('fit is line, lorentzian or gaussian')
     traced = peak is not None or level is not None or fit is not None
     if traced:
         # An axis of one position is read at it.
@@ -246,6 +251,9 @@ def plan(data, along=None, at=None, start=None, stop=None, low=None, high=None, 
                 raise ValueError(f'A {what} is read at most at {LINES} positions of another axis; fix '
                                  f'{summarized[0]} with at')
             request['rows'] = free[0]
+        if fit in ('lorentzian', 'gaussian') and (stops[0] - starts[0]) * (shape[free[0]] if free else 1) > SHAPED:
+            raise ValueError(f'A Lorentzian or Gaussian is fitted to at most {SHAPED} values; select fewer around the '
+                             'line with low and high')
         if peak is not None:
             request['peak'] = peak
         if prominence is not None:
@@ -449,8 +457,129 @@ def _traced(seq, first, request):
     if 'level' in request:
         found['crossings'] = _crossings(seq, first, request['level'], request.get('coordinates'))
     if 'fit' in request:
-        found['fit'] = _fit(seq, first, request.get('coordinates'))
+        found['fit'] = (_fit(seq, first, request.get('coordinates')) if request['fit'] == 'line'
+                        else _shaped(seq, first, request.get('coordinates'), request['fit']))
     return found
+
+
+def _shaped(seq, first, coordinates, shape):
+    """The line of Lorentzian or Gaussian shape through the finite values of a trace that starts at position
+    ``first``, as iop-execd fits it: by least squares (Levenberg-Marquardt) in its positions or listed coordinates;
+    its center, its full width at half its height, its height above its base (below for a dip), the base, the root
+    mean square of what it leaves and the number of values. It starts from the value farthest from the median,
+    with the median as base and the half width where the trace first comes halfway back on either side. None for
+    fewer than five places or a flat trace."""
+    place = (lambda index: float(first + index)) if coordinates is None else coordinates.__getitem__
+    points = [(place(i), y) for i, y in enumerate(seq) if math.isfinite(y)]
+    n = len(points)
+    if n < 5:
+        return None
+    # Places measured from their middle in half spans keep coordinates such as frequencies well conditioned.
+    low, high = math.inf, -math.inf
+    for x, _ in points:
+        low, high = min(low, x), max(high, x)
+    middle, half = (low + high) / 2.0, (high - low) / 2.0
+    y = [value for _, value in points]
+    base = sorted(y)[n // 2]
+    top = bottom = 0
+    for k in range(1, n):
+        if y[k] > y[top]:
+            top = k
+        if y[k] < y[bottom]:
+            bottom = k
+    k = top if y[top] - base >= base - y[bottom] else bottom
+    height = y[k] - base
+    if half == 0.0 or height == 0.0:
+        return None
+    t = [(x - middle) / half for x, _ in points]
+
+    def back(order):
+        return next((abs(t[j] - t[k]) for j in order if (y[j] - base) / height <= 0.5), None)
+    left, right = back(range(k - 1, -1, -1)), back(range(k + 1, n))
+    width = ((left + right) / 2.0 if left is not None and right is not None
+             else left if left is not None else right if right is not None else 0.05)
+    p = [base, height, t[k], width if width > 0.0 else 0.05]
+
+    def model(p, at):
+        # The shape at u = (x - center) / half width, and the derivatives of the line by base, height, center and
+        # half width there.
+        u = (at - p[2]) / p[3]
+        if shape == 'lorentzian':
+            s = 1.0 / (1.0 + u * u)
+            g = 2.0 * s * s
+        else:
+            s = math.exp(-LN2 * u * u)
+            g = 2.0 * LN2 * s
+        q = p[1] * g / p[3]
+        return p[0] + p[1] * s, (1.0, s, q * u, q * u * u)
+
+    def squares(p):
+        total = 0.0
+        for at, value in zip(t, y):
+            off = value - model(p, at)[0]
+            total += off * off
+        return total
+    cost, damping = squares(p), 1e-3
+    for _ in range(200):
+        a, g = [[0.0] * 4 for _ in range(4)], [0.0] * 4
+        for at, value in zip(t, y):
+            fitted, d = model(p, at)
+            for j in range(4):
+                g[j] += d[j] * (value - fitted)
+                for i in range(4):
+                    a[j][i] += d[j] * d[i]
+        settled = False
+        while True:
+            m = [row[:] for row in a]
+            for j in range(4):
+                m[j][j] += damping * a[j][j]
+            step = _solve(m, g)
+            if step is not None:
+                trial = [p[j] + step[j] for j in range(4)]
+                nxt = squares(trial)
+                if nxt < cost:
+                    break
+            damping *= 10.0
+            if damping > 1e16:
+                settled = True
+                break
+        if settled:
+            break
+        improved = cost - nxt
+        p, cost, damping = trial, nxt, damping / 10.0
+        if improved <= 1e-12 * cost:
+            break
+    return {'center': _finite(middle + p[2] * half), 'width': _finite(2.0 * abs(p[3]) * half), 'height': _finite(p[1]),
+            'base': _finite(p[0]), 'residual': _finite(math.sqrt(cost / n)), 'count': n,
+            **({'coordinates': True} if coordinates is not None else {})}
+
+
+def _solve(m, b):
+    """The solution of four linear equations, by elimination with partial pivoting, as iop-execd solves them;
+    None when they are singular."""
+    m, b = [row[:] for row in m], list(b)
+    for col in range(4):
+        pivot = col
+        for row in range(col + 1, 4):
+            if abs(m[row][col]) > abs(m[pivot][col]):
+                pivot = row
+        if m[pivot][col] == 0.0:
+            return None
+        m[col], m[pivot] = m[pivot], m[col]
+        b[col], b[pivot] = b[pivot], b[col]
+        above, top = m[col][:], b[col]
+        for row in range(col + 1, 4):
+            f = m[row][col] / above[col]
+            for k in range(col, 4):
+                m[row][k] -= f * above[k]
+            b[row] -= f * top
+    x = [0.0] * 4
+    for row in range(3, -1, -1):
+        s = b[row]
+        for k in range(row + 1, 4):
+            s -= m[row][k] * x[k]
+        x[row] = s / m[row][row]
+    return x
 
 
 def _finite(value):
@@ -637,10 +766,18 @@ def _crossing(found, coordinates):
 
 
 def _fitted(found, coordinates):
-    """A straight line fitted in positions, given in the coordinates of its axis when it has them: its slope per
-    unit of the axis, its value at coordinate zero, the coordinate where it reaches zero, and what it leaves."""
+    """A fit made in positions, given in the coordinates of its axis when it has them: a straight line's slope per
+    unit of the axis, its value at coordinate zero, the coordinate where it reaches zero and what it leaves; or the
+    center, width, height and base of a line of Lorentzian or Gaussian shape and what it leaves."""
     if found is None:
         return None
+    if 'center' in found:
+        line = {key: found[key] for key in ('center', 'width', 'height', 'base', 'residual', 'count')}
+        if isinstance(coordinates, tuple) and not found.get('coordinates') and found['center'] is not None:
+            start, step = coordinates
+            line.update(center=start + found['center'] * step,
+                        width=None if found['width'] is None else found['width'] * abs(step))
+        return line
     line = {key: found[key] for key in ('slope', 'intercept', 'zero', 'residual', 'count')}
     if isinstance(coordinates, tuple) and not found.get('coordinates') and found['slope'] is not None:
         start, step = coordinates
@@ -965,8 +1102,8 @@ def check(value, what):
              'level': (int, float), 'fit': (str,)}
     if value.get('peak', 'max') not in ('max', 'min'):
         raise ValueError(f'{what}: view peak is max, or min for a dip')
-    if value.get('fit', 'line') != 'line':
-        raise ValueError(f'{what}: view fit is line, a straight line through the trace')
+    if value.get('fit', 'line') not in FITS:
+        raise ValueError(f'{what}: view fit is line, lorentzian or gaussian')
     if 'prominence' in value and 'peak' not in value:
         raise ValueError(f'{what}: view prominence reads the lines of a peak or a dip; give peak')
     for key, item in value.items():
