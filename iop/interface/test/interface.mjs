@@ -530,15 +530,16 @@ sys.stdout.buffer.write(b.getvalue())`,
     await page.locator("#detail-operation-list .array-plot").innerText(),
     /frequency 1 GHz[\s\S]*1\.1 GHz[\s\S]*0\.2 @ 1\.06 GHz/,
   );
-  // The dip of the trace: its center and its width at half height, marked on the chart.
+  // The dip of the trace: the Lorentzian that fits it best, drawn over it, with its center and its width at
+  // half height marked on the chart.
   await page.click('#detail-operation-list [data-array-line="min"]');
   await page.waitForSelector(
-    "#detail-operation-list .array-plot line.line-mark",
+    "#detail-operation-list .array-plot polyline.fit",
     { state: "attached" },
   );
   assert.match(
     await page.locator("#detail-operation-list .array-plot").innerText(),
-    /(谷|dip) 1\.06 GHz · (半高宽|width) 3\.99\d* MHz/,
+    /(洛伦兹|Lorentzian) 1\.06 GHz[^·]*· (半高宽|width) 4 MHz/,
   );
   assert.equal(
     await page

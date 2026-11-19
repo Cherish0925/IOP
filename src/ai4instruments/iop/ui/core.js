@@ -201,7 +201,7 @@ const SI = [
   "Pa",
   "g",
 ];
-export function quantity(value, unit = "") {
+export function quantity(value, unit = "", digits = 5) {
   if (value === null || value === undefined) return "—";
   const size = Math.abs(value);
   if (SI.includes(unit) && value !== 0 && (size >= 1e3 || size < 1)) {
@@ -217,9 +217,9 @@ export function quantity(value, unit = "") {
       [1e-12, "p"],
     ])
       if (size >= scale)
-        return `${Number((value / scale).toPrecision(5))} ${prefix}${unit}`;
+        return `${Number((value / scale).toPrecision(digits))} ${prefix}${unit}`;
   }
-  return `${Number(value.toPrecision(5))}${unit ? " " + unit : ""}`;
+  return `${Number(value.toPrecision(digits))}${unit ? " " + unit : ""}`;
 }
 // Viridis, a perceptually uniform scale that stays readable in grey and for colour-blind readers.
 const SCALE = [
@@ -383,9 +383,26 @@ function ridge(across, rows) {
     ? `<svg class="array-ridge" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><polyline points="${points.join(" ")}"/></svg>`
     : "";
 }
+// The shape fitted to a peak or a dip: of a Lorentzian and a Gaussian, rising for a peak and falling for a dip,
+// the one that leaves less, with its values at any coordinate.
+function shape(kind, lorentzian, gaussian) {
+  const fits = [
+    [t("洛伦兹", "Lorentzian"), lorentzian, (u) => 1 / (1 + u * u)],
+    [t("高斯", "Gaussian"), gaussian, (u) => Math.exp(-Math.LN2 * u * u)],
+  ].filter(([, fit]) => fit?.width > 0 && (kind === "max") === fit.height > 0);
+  if (!fits.length) return null;
+  const [name, fit, s] = fits.reduce((a, b) =>
+    b[1].residual < a[1].residual ? b : a,
+  );
+  return {
+    ...fit,
+    name,
+    at: (c) => fit.base + fit.height * s((c - fit.center) / (fit.width / 2)),
+  };
+}
 // One chart per array: a map along two axes, otherwise a line with the band between bucket minima and
 // maxima and the mean or exact values.
-function chart(view, perRow) {
+function chart(view, perRow, fitted) {
   if (Array.isArray(view.along)) return map(view, perRow);
   const s = view.summary,
     width = 600,
@@ -432,16 +449,49 @@ function chart(view, perRow) {
     along.coordinates || view.envelope?.coordinate,
   );
   // A line read at a peak or a dip: its center, and its width at half height, where the axis places them.
-  const line = view.peak,
+  // A fitted shape gives them instead, with their standard errors, and is drawn across the selection.
+  const read = view.peak,
+    line = fitted
+      ? {
+          ...fitted,
+          value: fitted.base + fitted.height,
+          low: fitted.center - fitted.width / 2,
+          high: fitted.center + fitted.width / 2,
+        }
+      : read,
     lineX = line && chartX(view, n, width, x),
     half = line && y((line.value + line.base) / 2),
+    [low, high] =
+      along.low !== undefined
+        ? [along.low, along.high]
+        : [along.start, along.stop - 1],
+    curve = fitted
+      ? `<polyline class="fit" points="${Array.from(
+          { length: 200 },
+          (_, i) => low + ((high - low) * i) / 199,
+        )
+          .map((c) => lineX(c) + "," + y(fitted.at(c)))
+          .join(" ")}"/>`
+      : "",
     marks = lineX
       ? `<line class="line-mark" x1="${lineX(line.center)}" x2="${lineX(line.center)}" y1="0" y2="${height}"/>${line.width !== undefined ? `<line class="line-mark" x1="${lineX(line.low)}" x2="${lineX(line.high)}" y1="${half}" y2="${half}"/>` : ""}`
       : "",
+    // A fitted value to the digits its standard error allows, and the error to two.
+    measured = (key) => {
+      const value = line[key],
+        error = fitted?.errors?.[key],
+        unit = along.unit || "";
+      if (!(error > 0)) return esc(quantity(value, unit));
+      const digits =
+        Math.floor(Math.log10(Math.abs(value) || error)) -
+        Math.floor(Math.log10(error)) +
+        2;
+      return `${esc(quantity(value, unit, Math.max(2, Math.min(15, digits))))} ± ${esc(quantity(error, unit, 2))}`;
+    },
     lineText = line
-      ? ` · ${line.value >= line.base ? t("峰", "peak") : t("谷", "dip")} ${esc(quantity(line.center, along.unit || ""))}${line.width !== undefined ? ` · ${t("半高宽", "width")} ${esc(quantity(line.width, along.unit || ""))}` : ""}`
+      ? ` · ${fitted ? fitted.name : line.value >= line.base ? t("峰", "peak") : t("谷", "dip")} ${measured("center")}${line.width !== undefined ? ` · ${t("半高宽", "width")} ${measured("width")}` : ""}`
       : "";
-  return `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${esc(String(along.axis))}">${shapes}${marks}</svg><div class="array-axis"><span>${esc(String(along.axis))} ${esc(first)}</span><span>${esc(last)}</span></div><small class="muted">${t("最小", "min")} ${esc(quantity(s.min, unit))} @ ${esc(place(s.min_index, s.min_at))} · ${t("最大", "max")} ${esc(quantity(s.max, unit))} @ ${esc(place(s.max_index, s.max_at))} · ${t("均值", "mean")} ${esc(quantity(s.mean, unit))} · σ ${esc(quantity(s.std, unit))}${s.nonfinite ? " · " + s.nonfinite + t(" 个非有限值", " not finite") : ""}${lineText}${
+  return `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="${esc(String(along.axis))}">${curve}${shapes}${marks}</svg><div class="array-axis"><span>${esc(String(along.axis))} ${esc(first)}</span><span>${esc(last)}</span></div><small class="muted">${t("最小", "min")} ${esc(quantity(s.min, unit))} @ ${esc(place(s.min_index, s.min_at))} · ${t("最大", "max")} ${esc(quantity(s.max, unit))} @ ${esc(place(s.max_index, s.max_at))} · ${t("均值", "mean")} ${esc(quantity(s.mean, unit))} · σ ${esc(quantity(s.std, unit))}${s.nonfinite ? " · " + s.nonfinite + t(" 个非有限值", " not finite") : ""}${lineText}${
     view.at
       ? " · " +
         esc(
@@ -609,13 +659,18 @@ function readChart(figure) {
   if (figure.dataset.arrayField) query.set("field", figure.dataset.arrayField);
   if (figure.dataset.arrayAt) query.set("at", figure.dataset.arrayAt);
   const kind = figure.dataset.arrayPeak,
-    view = api(
-      figure.dataset.arraySource +
-        "?" +
-        query +
-        (kind && !figure.dataset.arrayMap ? "&peak=" + kind : ""),
+    source = figure.dataset.arraySource + "?" + query;
+  if (!kind) return api(source).then((v) => chart(v));
+  if (!figure.dataset.arrayMap)
+    // The line and its shape: Lorentzian or Gaussian, whichever leaves less.
+    return Promise.all([
+      api(source + "&peak=" + kind),
+      api(source + "&fit=lorentzian").catch(() => null),
+      api(source + "&fit=gaussian").catch(() => null),
+    ]).then(([v, lorentzian, gaussian]) =>
+      chart(v, null, shape(kind, lorentzian?.fit, gaussian?.fit)),
     );
-  if (!kind || !figure.dataset.arrayMap) return view.then((v) => chart(v));
+  const view = api(source);
   // On a map, the line in each row: read along the axis across, the rows left free.
   const rows = new URLSearchParams({
     along: String(JSON.parse(figure.dataset.arrayMap)[1]),

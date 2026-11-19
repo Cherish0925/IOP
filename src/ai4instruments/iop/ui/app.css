@@ -1925,6 +1925,11 @@ input::file-selector-button {
   fill: var(--accent);
   opacity: 0.22;
 }
+.array-plot polyline.fit {
+  stroke: var(--gold);
+  stroke-width: 5;
+  opacity: 0.55;
+}
 .array-plot line.line-mark {
   stroke: var(--text);
   stroke-width: 1;
