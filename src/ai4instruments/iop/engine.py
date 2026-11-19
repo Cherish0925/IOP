@@ -1671,9 +1671,9 @@ class Engine:
 
     def _stopping(self, op):
         """A sweep this operation continues that the point before it stopped, and where; or None."""
-        output = self.home / 'runs' / op['run_id'] / 'output'
+        output, known = self.home / 'runs' / op['run_id'] / 'output', self.ranges.setdefault(op['run_id'], {})
         for marker in op['continues']:
-            found = library.stopped(marker, self._recorded, output)
+            found = library.stopped(marker, self._recorded, output, known)
             if found:
                 return marker, found
         return None

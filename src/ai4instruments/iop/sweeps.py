@@ -6,17 +6,17 @@ center over a span; its ends may be read from earlier results, as bindings are, 
 reads its value when it runs. An adaptive range places each point from what the earlier ones read:
 where the reading changes most, points come closer together. A step that repeats runs that many times
 at each point, over a last axis named repeat, or that many times in turn without a sweep. A sweep with
-``until`` stops after a point whose reading is beyond a limit, before the next point runs. What the
-points return is gathered:
-numbers in the same place become an array over the sweep, with one axis for each swept name; arrays of
-one shape in the same place combine into one array with the sweep's axes in front, from the values the
-records hold or from the files the points saved, read in order; other values are kept when they are the
-same at every point that has one. Everything else stays in the record of each point.
+``until`` stops after a point whose reading is beyond a limit, before the next point runs, or once a view
+of what it has gathered is, such as the error of a mean or of a fitted center. What the points return is
+gathered: numbers in the same place become an array over the sweep, with one axis for each swept name;
+arrays of one shape in the same place combine into one array with the sweep's axes in front, from the
+values the records hold or from the files the points saved, read in order; other values are kept when
+they are the same at every point that has one. Everything else stays in the record of each point.
 """
 import copy
 import itertools
 import math
-from . import arrays
+from . import arrays, views
 
 MAX_POINTS = 10_000
 ADAPTIVE_POINTS = 1000
@@ -163,15 +163,20 @@ def adapted(spec, readings, known=()):
 
 
 def limits(until):
-    """Check what stops a sweep: the path to the number each point reads, and the limits it stays within."""
-    if (not isinstance(until, dict) or until.keys() - {'path', 'above', 'below'} or not until.keys() & {'above', 'below'}
-            or not isinstance(until.get('path'), list) or not until['path']
+    """Check what stops a sweep: the path to the number each point reads, or with view to a number in that view
+    of what the sweep has gathered so far; the limits it stays within; and from how many points it is read."""
+    if (not isinstance(until, dict) or until.keys() - {'path', 'above', 'below', 'view', 'points'}
+            or not until.keys() & {'above', 'below'} or not isinstance(until.get('path'), list) or not until['path']
             or any(type(part) not in (str, int) for part in until['path'])
             or not all(_number(until[key]) for key in until.keys() & {'above', 'below'})):
-        raise ValueError('until gives the path to the number each point reads, such as ["current"], and the number '
-                         'it stops above, below, or both')
+        raise ValueError('until gives the path to the number each point reads, such as ["current"], or with view to '
+                         'one in a view of what the sweep gathered, and the number it stops above, below, or both')
     if until.get('below', -math.inf) >= until.get('above', math.inf):
         raise ValueError('until stops a sweep outside the band from below to above, so below is less than above')
+    if 'view' in until:
+        views.check(until['view'], 'until')
+    if 'points' in until and (type(until['points']) is not int or not 1 <= until['points'] <= MAX_POINTS):
+        raise ValueError(f'until points is how many points run before it is read, from 1 to {MAX_POINTS}')
     return until
 
 

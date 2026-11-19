@@ -813,7 +813,7 @@
       ],
       "minProperties": 2,
       "additionalProperties": false,
-      "description": "Stop a sweep or repetition after a point whose reading is above or below a limit, or is not a number: the later points are skipped without reaching an instrument, and the steps after the sweep run. The first point always runs",
+      "description": "Stop a sweep or repetition after a point whose reading is above or below a limit, or is not a number, or once a view of what it has gathered is: the later points are skipped without reaching an instrument, and the steps after the sweep run. The first point always runs",
       "properties": {
         "path": {
           "type": "array",
@@ -824,7 +824,7 @@
               "integer"
             ]
           },
-          "description": "The number each point reads, in what its operation returns or in the named result of its use, such as [\"current\"]"
+          "description": "The number each point reads, in what its operation returns or in the named result of its use, such as [\"current\"]; with view, the number in that view, such as [\"summary\", \"error\"]"
         },
         "above": {
           "type": "number",
@@ -833,6 +833,17 @@
         "below": {
           "type": "number",
           "description": "Stop after a point that reads less than this; with above, the sweep goes on while the reading stays between them"
+        },
+        "view": {
+          "$ref": "#/$defs/view",
+          "description": "Read path in this view of what the sweep has gathered so far, before each point, such as {\"field\": \"power\"}, or {\"field\": \"s21\", \"fit\": \"lorentzian\"} with path [\"fit\", \"errors\", \"center\"]; while it gives no number, the sweep goes on. Such a sweep has at most 1000 points"
+        },
+        "points": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000,
+          "default": 1,
+          "description": "How many points run before until is read, so that an error from a few points does not stop the sweep"
         }
       }
     },

@@ -5,8 +5,8 @@ export type Source = { step: string; path?: (string | number)[]; view?: ArrayVie
 export type End = number | Source;
 /** Parameters a step runs over, one point after another: a list of values, or numbers from start to stop or around a center, evenly spaced or, with adapt (the path to the number each point reads), placed closer together where that reading changes most. */
 export type Sweep = Record<string, (number | string)[] | ({ start: End; stop: End } | { center: End; span: End }) & { points: number; adapt?: (string | number)[] }>;
-/** Stop a sweep after a point whose reading at path is above or below a limit, or is not a number; the later points are skipped and the steps after the sweep run. */
-export type Until = { path: (string | number)[]; above?: number; below?: number };
+/** Stop a sweep after a point whose reading at path is above or below a limit, or is not a number, or with view once path in that view of what the sweep gathered is, read after `points` points; the later points are skipped and the steps after the sweep run. */
+export type Until = { path: (string | number)[]; above?: number; below?: number; view?: ArrayViewOptions; points?: number };
 export type Endpoint = { device: string; port: string };
 export type Procedure = { steps: Step[]; resources?: string[] };
 export type ConditionStep = { device?: string; operation: string; arguments?: Record<string, unknown> };
@@ -50,7 +50,7 @@ export type ArrayView = {
   field: string; dtype: string; shape: number[]; unit?: string;
   along: ArrayAxis | ArrayAxis[];
   at?: Record<string, string | number>; summarized?: (string | number)[];
-  summary: { count: number; nonfinite?: number; min: number | null; max: number | null; mean: number | null; std: number | null;
+  summary: { count: number; nonfinite?: number; min: number | null; max: number | null; mean: number | null; std: number | null; error?: number | null;
     min_index?: number[]; max_index?: number[]; min_at?: number | (number | null)[]; max_at?: number | (number | null)[] };
   values?: (number | null)[] | (number | null)[][];
   envelope?: { position: number[] | number[][]; coordinate?: number[] | (number[] | null)[]; min: (number | null)[] | (number | null)[][];

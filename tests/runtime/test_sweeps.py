@@ -4,6 +4,7 @@ import asyncio
 import importlib.util
 import json
 import math
+import statistics
 import struct
 import time
 import unittest
@@ -81,6 +82,23 @@ class Counter(Driver):
         return {'count': Counter.count}
 
 
+class Noisy(Driver):
+    """A power of 1 mW, and a line 3 MHz wide at 1.0613 GHz, read with noise spread evenly over ±50 µW and ±0.02
+    from a fixed sequence."""
+    seed = 12345
+
+    def describe(self):
+        return {'operations': {'read': {'parameters': {}, 'effect': 'observe'},
+                               'probe': {'parameters': {'hz': {'type': 'number', 'unit': 'Hz'}}, 'effect': 'observe'}}}
+
+    def invoke(self, operation, arguments, context):
+        Noisy.seed = (Noisy.seed * 6364136223846793005 + 1442695040888963407) % 2 ** 64
+        noise = (Noisy.seed >> 11) / 2 ** 53 - 0.5
+        if operation == 'read':
+            return {'power': 1e-3 + 1e-4 * noise, 'unit': 'W'}
+        return {'power': 1 / (1 + ((arguments['hz'] - 1.0613e9) / 1.5e6) ** 2) + 0.04 * noise, 'unit': 'W'}
+
+
 class GatherCase(unittest.TestCase):
     """What a sweep returns, from what its points returned."""
 
@@ -102,9 +120,17 @@ class GatherCase(unittest.TestCase):
                          [False, False, True, True, True, True])
         for until, message in (({'path': ['current']}, 'above, below, or both'), ({'path': 'current', 'above': 1}, 'path'),
                                ({'path': ['current'], 'above': '1'}, 'number'), ({'path': ['i'], 'above': 1, 'over': 2}, 'path'),
-                               ({'path': ['current'], 'above': 1, 'below': 1}, 'below is less than above')):
+                               ({'path': ['current'], 'above': 1, 'below': 1}, 'below is less than above'),
+                               ({'path': ['fit', 'center'], 'below': 1, 'view': {'fit': 'voigt'}}, 'fit is line'),
+                               ({'path': ['current'], 'above': 1, 'points': 0}, 'points is how many')):
             with self.subTest(until=until), self.assertRaisesRegex(ValueError, message):
                 sweeps.limits(until)
+        # A view of what the sweep gathered is read before each point, of at most 1000.
+        step = {'id': 'mean', 'operation': 'read', 'repeat': 1001,
+                'until': {'view': {'field': 'power'}, 'path': ['summary', 'error'], 'below': 1e-6, 'points': 10}}
+        with self.assertRaisesRegex(ValueError, 'at most 1000 points'):
+            library.swept(step)
+        self.assertEqual(library.swept({**step, 'repeat': 1000})[1], [1000])
 
     def test_an_adaptive_range_places_each_point_from_the_readings_before_it(self):
         spec = {'start': 0, 'stop': 8, 'points': 5, 'adapt': ['power']}
@@ -463,6 +489,35 @@ class SweepCase(unittest.TestCase):
                             'until': {'path': ['count'], 'above': 4}}])
         self.assertEqual(run.result(10)['poll']['count']['values'][:6], [1, 2, 3, 4, 5, None])
         self.assertEqual(run.info(details=False)['operation_states'], {'completed': 5, 'skipped': 95})
+
+    def test_a_sweep_stops_once_what_it_gathered_is_known_well_enough(self):
+        self.client.register({'id': 'noisy', 'driver': Noisy.__module__ + ':Noisy'})
+        Noisy.seed = 12345
+        # A power read with a spread of 29 µW, until its mean is known to 5 µW, from five readings on.
+        run = self.submit([{'id': 'mean', 'device': 'noisy', 'operation': 'read', 'repeat': 1000,
+                            'until': {'view': {'field': 'power'}, 'path': ['summary', 'error'], 'below': 5e-6, 'points': 5}}])
+        values = [value for value in run.result(20)['mean']['power']['values'] if value is not None]
+        # It stops at the first reading whose error of the mean is below 5 µW, here the 37th of the 1000 allowed.
+        error = [statistics.stdev(values[:n]) / math.sqrt(n) for n in (len(values) - 1, len(values))]
+        self.assertTrue(error[1] < 5e-6 <= error[0] and len(values) < 100)
+        summary = run.read_array('mean.power')['summary']
+        self.assertAlmostEqual(summary['error'], error[1], delta=1e-12)
+        self.assertAlmostEqual(summary['mean'], 1e-3, delta=3 * summary['error'])
+        stopped = next(op['gathers']['mean']['stopped'] for op in run.info()['operation_records'] if 'gathers' in op)
+        self.assertEqual(stopped['point'], len(values) - 1)
+        self.assertAlmostEqual(stopped['reading'], error[1], delta=1e-12)
+        # An adaptive sweep over 100 MHz, until a Lorentzian through what it gathered gives the line's center to
+        # 20 kHz: here after 22 of the 200 points it may take.
+        run = self.submit([{'id': 'find', 'device': 'noisy', 'operation': 'probe',
+                            'sweep': {'hz': {'start': 1.0e9, 'stop': 1.1e9, 'points': 200, 'adapt': ['power']}},
+                            'until': {'view': {'field': 'power', 'fit': 'lorentzian'}, 'path': ['fit', 'errors', 'center'],
+                                      'below': 20e3, 'points': 10}}])
+        run.result(60)
+        fit = run.read_array('find.power', fit='lorentzian')['fit']
+        self.assertLess(run.info(details=False)['operation_states']['completed'], 50)
+        self.assertLess(fit['errors']['center'], 20e3)
+        self.assertAlmostEqual(fit['center'], 1.0613e9, delta=3 * fit['errors']['center'])
+        self.assertAlmostEqual(fit['width'], 3e6, delta=3 * fit['errors']['width'])
 
     def test_two_parameters_give_a_map_and_a_sweep_inside_a_saved_operation_combines(self):
         run = self.submit([{'id': 'map', 'operation': 'axis.measure',

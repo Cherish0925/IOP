@@ -898,6 +898,9 @@ def view(holder, source=None, along=None, at=None, start=None, stop=None, low=No
         summary['nonfinite'] = computed['count'] - computed['finite']
     for key in ('min', 'max', 'mean', 'std'):
         summary[key] = computed[key]
+    if computed['finite'] > 1:
+        # The standard error of the mean: std, taken over the n finite values, divided by the square root of n - 1.
+        summary['error'] = _finite(computed['std'] / math.sqrt(computed['finite'] - 1))
     for key in ('min', 'max'):
         position = computed[key + '_index']
         if position is not None:

@@ -11,6 +11,7 @@ parameters: it then runs at each of their values and what it returns is gathered
 """
 import copy
 import json
+import math
 import re
 from collections import deque
 from . import arrays, sweeps as sweeping, views
@@ -158,9 +159,13 @@ def swept(step):
     if placeholders(sweep) or placeholders(step.get('repeat')):
         return None
     try:
-        return sweeping.grid(sweep, step.get('repeat'))
+        found = sweeping.grid(sweep, step.get('repeat'))
     except ValueError as error:
         raise ValueError(f"Step {step['id']}: {error}") from None
+    if 'view' in step.get('until', {}) and len(found[0]) > sweeping.ADAPTIVE_POINTS:
+        raise ValueError(f"Step {step['id']}: until with view reads what the sweep gathered before each point; "
+                         f"such a sweep has at most {sweeping.ADAPTIVE_POINTS} points")
+    return found
 
 
 def expand(steps, lookup, describe=None):
@@ -536,10 +541,11 @@ def ends(spec, record, output=None):
     return {key: read(end, record, output) if isinstance(end, dict) else end for key, end in spec.items()}
 
 
-def gathered(sweep, record, output=None):
+def gathered(sweep, record, output=None, known=None):
     """What a sweep returns: the results of its points gathered into arrays over its axes. The axis of a range
     read from earlier results has its coordinates once those results exist. The points of an adaptive range
-    that have finished are gathered in the order of their values, which are the coordinates of its axis."""
+    that have finished are gathered in the order of their values, which are the coordinates of its axis;
+    ``known`` keeps those values for the next time."""
     found = []
     for point in sweep['points']:
         if 'named' in point:
@@ -559,7 +565,10 @@ def gathered(sweep, record, output=None):
                     while done < len(sweep['points']) and _finished(sweep['points'][done], record):
                         done += 1
                     readings = [_reading(point, spec['adapt'], record, output) for point in sweep['points'][:done]]
-                    values = sweeping.adapted(spec, readings[:done - 1])[:done] if done else []
+                    key = 'gathered ' + json.dumps(sweep['points'][0], sort_keys=True)
+                    values = sweeping.adapted(spec, readings[:done - 1], (known or {}).get(key, ()))[:done] if done else []
+                    if known is not None:
+                        known[key] = values
                     order = sorted(range(done), key=values.__getitem__)
                     found, shape = [found[index] for index in order], [done]
                     shown.update(arrays.coordinates([values[index] for index in order]))
@@ -577,13 +586,27 @@ def _finished(point, record):
     return all((record(step) or {}).get('state') == 'completed' for step in steps)
 
 
-def stopped(marker, record, output=None):
+def stopped(marker, record, output=None, known=None):
     """Where a sweep with until stops before the point an operation continues it at: the point before and what
-    it read, when that is beyond a limit or not a number; None while the sweep goes on."""
+    it read, when that is beyond a limit or not a number; None while the sweep goes on. With view, what is read
+    is in that view of what the sweep has gathered so far, and while it is not a number, from too few points or
+    a fit that finds no line, the sweep goes on. With points, it is read once that many points have run."""
     sweep = record(marker['step'])['gathers'][marker['sweep']]
-    point = marker['index'] - 1
-    reading = _reading(sweep['points'][point], sweep['until']['path'], record, output)
-    return {'point': point, 'reading': reading} if sweeping.beyond(sweep['until'], reading) else None
+    until, point = sweep['until'], marker['index'] - 1
+    if marker['index'] < until.get('points', 1):
+        return None
+    if 'view' not in until:
+        reading = _reading(sweep['points'][point], until['path'], record, output)
+    else:
+        try:
+            reading = views.read(gathered(sweep, record, output, known), None, output=output, **until['view'])
+            for part in until['path']:
+                reading = reading[part]
+        except (KeyError, IndexError, TypeError, ValueError):
+            return None
+        if not isinstance(reading, (int, float)) or isinstance(reading, bool) or not math.isfinite(reading):
+            return None
+    return {'point': point, 'reading': reading} if sweeping.beyond(until, reading) else None
 
 
 def _reading(point, path, record, output=None):

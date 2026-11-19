@@ -149,6 +149,18 @@ A sweep or a repetition stops early with `until` beside it. `path` names the num
 
 On a diode, the ramp stops after 0.54 V, the first point above 1 mA; the source is given none of the 46 higher voltages and then returns to 0 V. / 在二极管上，斜坡在第一个超过 1 mA 的点 0.54 V 之后停止；更高的 46 个电压都没有发给电源，随后回到 0 V。
 
+With `view`, `path` is read in that [view](drivers.md) of what the sweep has gathered so far, before each point, and the sweep stops once it gives a number beyond a limit; while it gives none, from too few points or a fit that finds no line its samples resolve, the sweep goes on. A sweep then stops when its answer is known well enough: a repeated reading once the `error` of its mean is small enough, an adaptive sweep once a line's fitted center is. `points` sets how many points run before `until` is read, since an error from a few values can come out small by chance. Such a sweep has at most 1000 points. / 带 `view` 时，在每个点之前于扫描至此汇集结果的该[视图](drivers.md)中读取 `path`，给出越过界限的数值即停止；还给不出数值时（点太少，或拟合找不到采样能分辨的谱线），扫描继续。扫描因此在答案足够确定时停止：重复读取在均值的 `error` 足够小时停止，自适应扫描在拟合出的谱线中心足够确定时停止。`points` 设定读取 `until` 之前先运行的点数，因为只有几个数值时误差可能偶然偏小。这样的扫描最多 1000 个点。
+
+```json
+[{"id": "mean", "device": "meter", "operation": "read", "repeat": 1000,
+  "until": {"view": {"field": "power"}, "path": ["summary", "error"], "below": 5e-6, "points": 5}},
+ {"id": "find", "device": "vna", "operation": "probe",
+  "sweep": {"hz": {"start": 1.0e9, "stop": 1.1e9, "points": 200, "adapt": ["power"]}},
+  "until": {"view": {"field": "power", "fit": "lorentzian"}, "path": ["fit", "errors", "center"], "below": 2e4, "points": 10}}]
+```
+
+A power read with a spread of 29 µW is known to 5 µW after 37 of the 1000 readings allowed; a line 3 MHz wide under noise of 0.02 is found and its center known to 16 kHz after 22 of the 200 points, within one error of where it lies. / 离散 29 µW 的功率读到第 37 次（允许 1000 次）时均值已确定到 5 µW；噪声 0.02 下 3 MHz 宽的谱线在 200 个允许点中的第 22 个点时被找到，中心确定到 16 kHz，与真实位置相差不到一个误差。
+
 ## Record of use / 使用记录
 
 Every use is recorded when its last step ends: `uses` counts `calls`, `completed` and `failed`, and `last` names the experiment, state, time and revision. Each Basic Operation run for a use carries `calls`, the chain of uses it belongs to, so the evidence of a method is the set of experiments in which it ran. A failed or cancelled step ends the use as failed or cancelled; operations already executed are not undone. A use whose steps were all skipped, because the sweep it is a point of stopped, is not recorded. / 每次使用在其最后一步结束时记录：次数、完成数、失败数，以及最近一次的实验、状态、时间和版本。为某次使用执行的每个基础操作都带有所属的调用链，方法的证据就是它运行过的那些实验。所在扫描已停止、步骤全部跳过的使用不记录。
