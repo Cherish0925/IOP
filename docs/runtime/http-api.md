@@ -31,7 +31,7 @@ Base URL: `http://127.0.0.1:8765`. API bodies are JSON objects. Requests to `/v1
 | POST | `/v1/runs` | Workflow below, or `kind: "external"` with `request_id` and optional name/resources/platform; a workflow with `preview: true` is not run | Accepted run record; with `preview`, `operations`, `by_operation` (count, and the median seconds each kind took over the most recent 5000 completed operations, `from` how many), `estimated_s` one after another (null while a kind has no history) and the state of each condition in `requires` |
 | POST | `/v1/packages` | Package below | Accepted run record |
 | GET | `/v1/runs` | `limit=100&details=false` for compact summaries | Most recent runs first |
-| GET | `/v1/runs/{run_id}` | `details=false` for a compact state | Run; detailed response includes recent `operation_records`; a running step graph gives `estimated_end` at its pace so far |
+| GET | `/v1/runs/{run_id}` | `details=false` for a compact state; `wait=0..25` answers once the state is no longer `state`, or once the run ends | Run; detailed response includes recent `operation_records`; a running step graph gives `estimated_end` at its pace so far |
 | GET | `/v1/runs/{run_id}/operations` | `after=0&limit=200`, `in_doubt=true` | `{"operations":[...],"cursor":N}`; ordered operation history; with `in_doubt`, only the operations marked in doubt |
 | POST | `/v1/runs/{run_id}/operations` | Operation below; optional `wait=0..25` query | Operation in an external experiment or running package; identical request IDs return existing operations |
 | GET | `/v1/operations/{operation_id}` | `wait=0..25` | State, times, result or error |

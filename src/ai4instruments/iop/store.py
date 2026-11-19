@@ -193,6 +193,23 @@ class Store:
                     return record
                 self.changed.wait(remaining)
 
+    def wait_run(self, run_id, wait=0, state=None):
+        """Wait until an experiment's state is no longer the one given or, without one, until it ends."""
+        wait = float(wait)
+        if not 0 <= wait <= 25:
+            raise ValueError('Experiment wait must be between 0 and 25 seconds')
+        deadline = time.monotonic() + wait
+        with self.changed:
+            while True:
+                row = self.db.execute('SELECT state FROM runs WHERE id=?', (run_id,)).fetchone()
+                if row is None:
+                    raise KeyError(run_id)
+                remaining = deadline - time.monotonic()
+                if (row[0] != state if state else row[0] in {'completed', 'failed', 'cancelled', 'interrupted'}) \
+                        or remaining <= 0:
+                    return
+                self.changed.wait(remaining)
+
     def artifact_named(self, run_id, name):
         with self.lock:
             row = self.db.execute('SELECT body FROM artifacts WHERE run_id=? AND name=?', (run_id, name)).fetchone()

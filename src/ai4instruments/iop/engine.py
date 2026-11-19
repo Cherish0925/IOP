@@ -1538,21 +1538,24 @@ class Engine:
         """When a running step graph would end at its pace so far: the time it has run, scaled by what is left over
         what it has done since it started or continued, each operation counting as long as those of its kind took
         in it. None until each kind left has ended once."""
-        took, left, done, start = {}, [], 0, stamp(run['started'])
+        took, left, done, start = {}, {}, 0, stamp(run['started'])
         for oid in run['operations']:
             op = self.operations[oid]
             if op.get('maintenance'):
                 continue
             kind = (op['device'], op['operation'])
             if op['state'] == 'completed' and op.get('started') and op.get('ended'):
-                took.setdefault(kind, []).append(stamp(op['ended']) - stamp(op['started']))
-                if stamp(op['started']) >= start:
-                    done += took[kind][-1]
+                began = stamp(op['started'])
+                seconds = stamp(op['ended']) - began
+                total, count = took.get(kind, (0, 0))
+                took[kind] = (total + seconds, count + 1)
+                if began >= start:
+                    done += seconds
             elif op['state'] in ('queued', 'running'):
-                left.append(kind)
-        if not left or not done or any(kind not in took for kind in left):
+                left[kind] = left.get(kind, 0) + 1
+        if not left or not done or left.keys() - took.keys():
             return None
-        rest = sum(sum(took[kind]) / len(took[kind]) for kind in left)
+        rest = sum(count * took[kind][0] / took[kind][1] for kind, count in left.items())
         clock = time.time()
         return datetime.fromtimestamp(clock + (clock - start) * rest / done, timezone.utc).isoformat()
 

@@ -254,14 +254,15 @@ export class Run {
     return stream;
   }
   async wait(options: { signal?: AbortSignal; interval?: number; details?: boolean } = {}): Promise<RunRecord> {
-    let cursor = 0;
-    for (;;) {
+    let record = await this.info(false);
+    while (!terminal.has(record.state)) {
       options.signal?.throwIfAborted();
-      const record = await this.info(false);
-      if (terminal.has(record.state)) return options.details === false ? record : this.info();
-      const page = await this.client.events(cursor, this.id, Math.min(25, Math.max(0, this.client.timeout / 1000 - 1)), options.signal);
-      cursor = page.cursor;
+      // The Runtime answers when the experiment's state changes, however many operations it runs meanwhile.
+      const seconds = Math.min(25, Math.max(0, this.client.timeout / 1000 - 1));
+      record = await this.client.request<RunRecord>(`/v1/runs/${encodeURIComponent(this.id)}?` + new URLSearchParams({ details: 'false', wait: String(seconds), state: record.state }), undefined, options.signal);
+      if (!seconds) await new Promise((resolve) => setTimeout(resolve, options.interval ?? 100));
     }
+    return options.details === false ? record : this.info();
   }
   async result(options: { signal?: AbortSignal; interval?: number } = {}): Promise<unknown> {
     const record = await this.wait({ ...options, details: false });

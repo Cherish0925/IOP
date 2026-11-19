@@ -392,18 +392,17 @@ class Run:
 
     def wait(self, timeout=None, interval=0.1, details=True):
         deadline = time.monotonic() + timeout if timeout is not None else None
-        cursor = 0
-        while True:
-            info = self.info(details=False)
-            if info['state'] in TERMINAL:
-                return self.info() if details else info
+        info = self.info(details=False)
+        while info['state'] not in TERMINAL:
             if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError('Experiment is still running: '+self.id)
             remaining = max(0, deadline - time.monotonic()) if deadline is not None else 25
-            page = self.client.events(cursor, self.id, wait=min(25, max(0, self.client.timeout - 1), remaining))
-            cursor = page['cursor']
-            if self.client.timeout <= 1 and not page['events']:
+            # The Runtime answers when the experiment's state changes, however many operations it runs meanwhile.
+            seconds = min(25, max(0, self.client.timeout - 1), remaining)
+            info = self.client.request(f'/v1/runs/{self.id}?' + urlencode({'details': 'false', 'wait': seconds, 'state': info['state']}))
+            if not seconds:
                 time.sleep(min(interval, remaining))
+        return self.info() if details else info
 
     def result(self, timeout=None):
         info = self.wait(timeout, details=False)

@@ -276,6 +276,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_pieces(*views.operation_npy(engine, parts[2], query.get('field')),
                                          (query.get('field') or 'array') + '.npy')
             elif len(parts) == 3 and parts[:2] == ['v1','runs'] and method == 'GET':
+                if query.get('wait'):
+                    engine.store.wait_run(parts[2], query['wait'], query.get('state'))
                 result = engine.run_info(parts[2], details=query.get('details', 'true') != 'false')
             elif len(parts) in (4, 5, 6) and parts[:2] == ['v1', 'runs'] and parts[3] == 'episodes':
                 from . import episodes
