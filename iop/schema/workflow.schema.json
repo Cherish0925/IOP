@@ -80,6 +80,9 @@
           },
           "sweep": {
             "$ref": "#/$defs/sweep"
+          },
+          "until": {
+            "$ref": "#/$defs/until"
           }
         }
       }
@@ -317,6 +320,36 @@
             }
           }
         ]
+      }
+    },
+    "until": {
+      "type": "object",
+      "required": [
+        "path"
+      ],
+      "minProperties": 2,
+      "additionalProperties": false,
+      "description": "Stop the sweep after a point whose reading is above or below a limit, or is not a number: the later points are skipped without reaching an instrument, and the steps after the sweep run. The first point always runs",
+      "properties": {
+        "path": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": [
+              "string",
+              "integer"
+            ]
+          },
+          "description": "The number each point reads, in what its operation returns or in the named result of its use, such as [\"current\"]"
+        },
+        "above": {
+          "type": "number",
+          "description": "Stop after a point that reads more than this"
+        },
+        "below": {
+          "type": "number",
+          "description": "Stop after a point that reads less than this; with above, the sweep goes on while the reading stays between them"
+        }
       }
     },
     "end": {

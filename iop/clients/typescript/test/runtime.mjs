@@ -141,6 +141,9 @@ serve(p)
     assert.deepEqual(gathered.turn.angle_actual.values,[0,10,20,30]);
     const along = await turned.readArray({field:'turn.angle_actual'});
     assert.deepEqual([along.summary.max_at,along.along.unit,along.unit],[30,'deg','deg']);
+    const stopped = await client.submit([{id:'turn',device:'stage',operation:'move_to',arguments:{duration:0},
+      sweep:{angle_deg:{start:0,stop:30,points:4}},until:{path:['angle_actual'],above:15}}]);
+    assert.deepEqual((await stopped.result()).turn.angle_actual.values,[0,10,20,null]);
     await client.register({id:'bench',driver:'manual',config:{operations:{mount:{instruction:'Mount {sample}',
       parameters:{sample:{type:'string'}},readings:{mass_g:{type:'number',minimum:0}}}}}});
     const mounting = await client.submit([{id:'mount',device:'bench',operation:'mount',arguments:{sample:'S-1'}}]);

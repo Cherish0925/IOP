@@ -57,8 +57,30 @@ class Resonance(Driver):
         return {'power': 1 / (1 + ((arguments['hz'] - 1.0613e9) / 1.5e6) ** 2), 'unit': 'W'}
 
 
+class Diode(Driver):
+    """A source across a diode, which keeps the voltages it was given."""
+    given = []
+
+    def describe(self):
+        return {'operations': {'source': {'parameters': {'volts': {'type': 'number', 'unit': 'V'}}}}}
+
+    def invoke(self, operation, arguments, context):
+        Diode.given.append(arguments['volts'])
+        return {'current': 1e-12 * math.expm1(arguments['volts'] / 0.02585), 'unit': 'A'}
+
+
 class GatherCase(unittest.TestCase):
     """What a sweep returns, from what its points returned."""
+
+    def test_until_stops_a_sweep_beyond_its_limits_or_without_a_number(self):
+        until = sweeps.limits({'path': ['current'], 'above': 1e-3, 'below': -1e-3})
+        self.assertEqual([sweeps.beyond(until, value) for value in (0, 1e-3, 2e-3, -2e-3, None, math.nan)],
+                         [False, False, True, True, True, True])
+        for until, message in (({'path': ['current']}, 'above, below, or both'), ({'path': 'current', 'above': 1}, 'path'),
+                               ({'path': ['current'], 'above': '1'}, 'number'), ({'path': ['i'], 'above': 1, 'over': 2}, 'path'),
+                               ({'path': ['current'], 'above': 1, 'below': 1}, 'below is less than above')):
+            with self.subTest(until=until), self.assertRaisesRegex(ValueError, message):
+                sweeps.limits(until)
 
     def test_an_adaptive_range_places_each_point_from_the_readings_before_it(self):
         spec = {'start': 0, 'stop': 8, 'points': 5, 'adapt': ['power']}
@@ -335,6 +357,59 @@ class SweepCase(unittest.TestCase):
         for got, angle in zip(found['power']['values'], angles):
             self.assertAlmostEqual(got, power(angle))
 
+    def test_a_ramp_stops_at_compliance_and_the_steps_after_it_run(self):
+        self.client.register({'id': 'smu', 'driver': Diode.__module__ + ':Diode'})
+        Diode.given = []
+        run = self.submit([
+            {'id': 'ramp', 'device': 'smu', 'operation': 'source', 'sweep': {'volts': {'start': 0, 'stop': 1, 'points': 101}},
+             'until': {'path': ['current'], 'above': 1e-3}},
+            {'id': 'zero', 'device': 'smu', 'operation': 'source', 'arguments': {'volts': 0}, 'after': ['ramp']}])
+        current = run.result(20)['ramp']['current']
+        # The current first exceeds 1 mA at 0.54 V: the source is given no higher voltage, then returns to zero.
+        self.assertEqual((run.info(details=False)['state'], max(Diode.given), Diode.given[-1], len(Diode.given)),
+                         ('completed', 0.54, 0, 56))
+        self.assertEqual((current['data']['shape'], current['data']['unit'], current['values'][55:]), ([101], 'A', [None] * 46))
+        self.assertAlmostEqual(current['values'][54], 1.18e-3, delta=1e-5)
+        ops = {op['step']: op for op in run.info()['operation_records']}
+        self.assertEqual([ops[f'ramp.{i}']['state'] for i in (54, 55, 100)], ['completed', 'skipped', 'skipped'])
+        self.assertNotIn('started', ops['ramp.55'])
+        stopped = {'point': 54, 'reading': current['values'][54]}
+        self.assertEqual(ops['ramp.100']['gathers']['ramp']['stopped'], stopped)
+        events = self.client.request(f'/v1/events?run_id={run.id}&limit=1000')['events']
+        self.assertEqual([{key: e[key] for key in ('sweep', 'point', 'reading', 'skipped')} for e in events
+                          if e['kind'] == 'sweep.stopped'], [{'sweep': 'ramp', 'skipped': 46, **stopped}])
+        # A reading that is not a number does not show that the limit holds: the sweep stops after its first point.
+        run = self.submit([{'id': 'ramp', 'device': 'smu', 'operation': 'source', 'sweep': {'volts': [0, 0.1, 0.2]},
+                            'until': {'path': ['curent'], 'above': 1e-3}}])
+        self.assertEqual(run.result(10)['ramp']['current']['values'], [0, None, None])
+
+    def test_saved_operations_stop_their_sweeps_at_the_limits_they_are_given(self):
+        self.client.register({'id': 'smu', 'driver': Diode.__module__ + ':Diode'})
+        self.client.save_operation({
+            'id': 'diode.iv', 'layer': 'standard', 'description': 'Ramp the forward bias up to a compliance, then to zero',
+            'parameters': {'compliance': {'type': 'number', 'unit': 'A'}},
+            'steps': [{'id': 'ramp', 'device': 'smu', 'operation': 'source',
+                       'sweep': {'volts': {'start': 0, 'stop': 1, 'points': 101}},
+                       'until': {'path': ['current'], 'above': '${compliance}'}},
+                      {'id': 'zero', 'device': 'smu', 'operation': 'source', 'arguments': {'volts': 0}}],
+            'result': {'current': {'step': 'ramp', 'path': ['current']}}})
+        # Each use stops at its own compliance and returns to zero; the next use then runs.
+        found = self.submit([{'id': 'rows', 'operation': 'diode.iv', 'sweep': {'compliance': [1e-4, 1e-3]}}]).result(20)
+        current = found['rows']['current']
+        self.assertEqual((current['data']['shape'], [row.index(None) for row in current['values']]), ([2, 101], [49, 55]))
+        self.assertEqual(self.client.saved_operation('diode.iv')['uses']['completed'], 2)
+        # A use swept in a continuous experiment stops on its named result; uses that never ran are not counted.
+        self.client.save_operation({
+            'id': 'diode.point', 'layer': 'standard', 'description': 'Source a forward bias and read the current',
+            'parameters': {'volts': {'type': 'number', 'unit': 'V'}},
+            'steps': [{'id': 'source', 'device': 'smu', 'operation': 'source', 'arguments': {'volts': '${volts}'}}],
+            'result': {'current': {'step': 'source', 'path': ['current']}}})
+        with self.client.start_experiment(resources=['smu']) as run:
+            found = run.call('diode.point', sweep={'volts': {'start': 0, 'stop': 1, 'points': 101}},
+                             until={'path': ['current'], 'above': 1e-3})
+        self.assertEqual(found['current']['values'].index(None), 55)
+        self.assertEqual(self.client.saved_operation('diode.point')['uses']['calls'], 55)
+
     def test_two_parameters_give_a_map_and_a_sweep_inside_a_saved_operation_combines(self):
         run = self.submit([{'id': 'map', 'operation': 'axis.measure',
                             'sweep': {'axis': ['stage', 'aux'], 'angle': [0, 45]}}])
@@ -430,6 +505,12 @@ class SweepCase(unittest.TestCase):
             self.assertEqual(reply['results']['scan']['power']['values_omitted'], 91)
             seen = call('read_array', {'run_id': run.id, 'request_id': 'scan', 'field': 'scan.power', 'points': 4})
             self.assertEqual((seen['summary']['max_at'], len(seen['envelope']['max'])), (0.0, 4))
+            # A search that stops once the power exceeds 0.9: at -9 degrees, where cos²(18°) is 0.905.
+            reply = call('submit_operations', {**submission, 'request_id': 'search', 'steps': [
+                {**submission['steps'][0], 'until': {'path': ['power'], 'above': 0.9}}]})
+            self.assertEqual(reply['sweeps']['scan']['points'], {'completed': 74, 'skipped': 108})
+            self.assertEqual(reply['sweeps']['scan']['stopped']['point'], 36)
+            self.assertAlmostEqual(reply['sweeps']['scan']['stopped']['reading'], power(-9))
 
     def test_sweeps_are_checked_before_anything_runs(self):
         for step, message in (
@@ -442,7 +523,13 @@ class SweepCase(unittest.TestCase):
                 ({'id': 's', 'device': 'stage', 'operation': 'move_to',
                   'sweep': {'angle_deg': {'center': 0, 'span': 1, 'points': {'step': 'x'}}}}, 'positive integer'),
                 ({'id': 's', 'device': 'stage', 'operation': 'move_to',
-                  'sweep': {'angle_deg': {'center': {'step': 'nowhere'}, 'span': 1, 'points': 3}}}, 'unknown step')):
+                  'sweep': {'angle_deg': {'center': {'step': 'nowhere'}, 'span': 1, 'points': 3}}}, 'unknown step'),
+                ({'id': 's', 'device': 'stage', 'operation': 'move_to', 'until': {'path': ['angle_actual'], 'above': 1}},
+                 'until stops a sweep'),
+                ({'id': 's', 'device': 'stage', 'operation': 'move_to', 'sweep': {'angle_deg': [1, 2]},
+                  'until': {'path': ['angle_actual'], 'above': 2, 'below': 3}}, 'below is less than above'),
+                ({'id': 's', 'device': 'stage', 'operation': 'move_to', 'sweep': {'angle_deg': [1, 2]},
+                  'until': {'path': ['angle_actual'], 'above': '${limit}'}}, 'limits of until')):
             with self.assertRaisesRegex(IOPError, message):
                 self.submit([step])
         # An end read from an earlier result is a number only once it is read: the first point fails if it is not.
@@ -458,3 +545,9 @@ class SweepCase(unittest.TestCase):
         with self.assertRaisesRegex(IOPError, 'start, stop'):
             self.client.save_operation({**PEAK, 'parameters': {}, 'steps': [
                 {**PEAK['steps'][0], 'sweep': {'angle': {'start': 0, 'stop': 1}}}, PEAK['steps'][1]]})
+        with self.assertRaisesRegex(IOPError, 'describe parameter limit'):
+            self.client.save_operation({**PEAK, 'steps': [
+                {**PEAK['steps'][0], 'until': {'path': ['power'], 'above': '${limit}'}}, PEAK['steps'][1]]})
+        with self.assertRaisesRegex(IOPError, 'until stops a sweep'):
+            self.client.save_operation({**PEAK, 'steps': [
+                PEAK['steps'][0], {**PEAK['steps'][1], 'until': {'path': ['angle_actual'], 'above': 1}}]})

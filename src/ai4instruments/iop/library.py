@@ -97,7 +97,10 @@ def check(definition, lookup):
             raise ValueError(f"Step {step['id']}: arguments must be an object")
         if 'sweep' in step:
             swept(step)
-        used = placeholders(step.get('arguments', {})) | placeholders(step.get('device', '')) | placeholders(step.get('sweep', {}))
+        elif 'until' in step:
+            raise ValueError(f"Step {step['id']}: until stops a sweep; give the step one")
+        used = (placeholders(step.get('arguments', {})) | placeholders(step.get('device', ''))
+                | placeholders(step.get('sweep', {})) | placeholders(step.get('until', {})))
         if used - declared.keys():
             raise ValueError(f"Step {step['id']}: describe parameter " + ', '.join(sorted(used - declared.keys())))
         if 'device' not in step:
@@ -147,6 +150,11 @@ def swept(step):
         raise ValueError(f"Step {step['id']}: sweep maps parameters to the values they take")
     if set(sweep) & (set(step.get('arguments', {})) | set(step.get('bindings', {}))):
         raise ValueError(f"Step {step['id']}: a swept parameter is not also given in arguments or bindings")
+    if 'until' in step and not placeholders(step['until']):
+        try:
+            sweeping.limits(step['until'])
+        except ValueError as error:
+            raise ValueError(f"Step {step['id']}: {error}") from None
     if placeholders(sweep):
         return None
     try:
@@ -162,12 +170,16 @@ def expand(steps, lookup, describe=None):
     Returns the flat steps; for each use, a record with the operation, its revision, the arguments and
     where its named results are found; and, for each sweep that is not a point of another, the source
     that reads what it gathered. Dependencies on a replaced step become dependencies on the steps that
-    finish it. The step that finishes a sweep holds how to gather it, under ``gathers``.
+    finish it. The step that finishes a sweep holds how to gather it, under ``gathers``; the steps that start
+    each later point of a sweep with ``until`` name it under ``continues``, to read first whether it stopped.
     ``describe(device, operation)`` gives a device operation's description, for the units of its
     swept parameters.
     """
     if not isinstance(steps, list) or any(not isinstance(step, dict) for step in steps):
         raise ValueError('Each step must be an object')
+    for step in steps:
+        if 'until' in step and 'sweep' not in step:
+            raise ValueError(f"Step {step.get('id')}: until stops a sweep; give the step one")
     if all('device' in step and 'sweep' not in step for step in steps):
         return derived(steps, {}), {}, {}
     queue = deque((copy.deepcopy(step), [], []) for step in steps)
@@ -183,9 +195,9 @@ def expand(steps, lookup, describe=None):
             if not isinstance(sweep_id, str) or not sweep_id or not isinstance(step.get('operation'), str):
                 raise ValueError('Each step needs id and operation')
             found = swept(step)
-            if found is None:
-                raise ValueError(f'Step {sweep_id}: give the values of the sweep; "${{name}}" takes them from the '
-                                 'parameters of a saved operation')
+            if found is None or placeholders(step.get('until', {})):
+                raise ValueError(f'Step {sweep_id}: give the values of the sweep and the limits of until; "${{name}}" '
+                                 'takes them from the parameters of a saved operation')
             points, shape, axes = found
             if len(flat) + len(queue) + len(points) > 10000:
                 raise ValueError('An expanded workflow has at most 10000 steps')
@@ -195,7 +207,7 @@ def expand(steps, lookup, describe=None):
                 unit = ((spec or {}).get('parameters') or {}).get(axis['name'], {}).get('unit')
                 if isinstance(unit, str) and unit:
                     axis['unit'] = unit
-            base = {key: value for key, value in step.items() if key != 'sweep'}
+            base = {key: value for key, value in step.items() if key not in ('sweep', 'until', 'continues')}
             previous, copies = list(step.get('after', [])), []
             for index, values in enumerate(points):
                 point = copy.deepcopy(base)
@@ -207,11 +219,17 @@ def expand(steps, lookup, describe=None):
                     **base.get('arguments', {}), **{key: item for key, item in values.items() if key not in reads}})
                 if reads:
                     point['bindings'] = {**base.get('bindings', {}), **reads}
+                # Each later point of a sweep with until first reads whether the point before stopped it; the first
+                # point is where the step itself would have read whether an enclosing sweep stopped.
+                if index and 'until' in step:
+                    point['continues'] = [{'sweep': sweep_id, 'index': index}]
+                elif not index and 'continues' in step:
+                    point['continues'] = step['continues']
                 previous = [point['id']]
                 copies.append((point, enclosing, swept_by + [sweep_id]))
             queue.extendleft(reversed(copies))
             sweeps[sweep_id] = {'points': [point['id'] for point, _, _ in copies], 'shape': shape, 'axes': axes,
-                                'swept_by': swept_by}
+                                'swept_by': swept_by, **({'until': step['until']} if 'until' in step else {})}
             finishes[sweep_id] = [previous[0]]
             continue
         if 'device' in step:
@@ -269,6 +287,9 @@ def expand(steps, lookup, describe=None):
             item['id'] = f'{call}.{item_id}'
             after = [f'{call}.{parent}' for parent in item.get('after', [])]
             item['after'] = after if after else list(outer)
+            if not after and 'continues' in step:
+                # The steps that start a use read first whether the sweep it is a point of has stopped.
+                item['continues'] = step['continues']
             bindings = {key: {**binding, 'step': f'{call}.{binding["step"]}'} for key, binding in item.get('bindings', {}).items()}
             values = {}
             for key, value in item.get('arguments', {}).items():
@@ -296,6 +317,10 @@ def expand(steps, lookup, describe=None):
                     raise ValueError(f'Step {call}: the sweep of {item_id} takes its values from arguments; a bound '
                                      'parameter gives only the start, stop, center or span of a range')
                 item['sweep'] = fill(item['sweep'], arguments)
+            if 'until' in item:
+                if placeholders(item['until']) - arguments.keys():
+                    raise ValueError(f'Step {call}: until in {item_id} takes its limits from arguments')
+                item['until'] = fill(item['until'], arguments)
             for key in ('resources', 'requirements'):
                 if key in step and key not in item:
                     item[key] = copy.deepcopy(step[key])
@@ -358,7 +383,8 @@ def expand(steps, lookup, describe=None):
                       else {'step': point} for point in record['points']]
             axes = [{**axis, 'range': source({'range': axis['range']})['range']} if 'range' in axis else axis
                     for axis in record['axes']]
-            holding[sweep_id] = {'shape': record['shape'], 'axes': axes, 'points': points}
+            holding[sweep_id] = {'shape': record['shape'], 'axes': axes, 'points': points,
+                                 **({'until': record['until']} if 'until' in record else {})}
         return final
 
     for step in flat:
@@ -369,6 +395,8 @@ def expand(steps, lookup, describe=None):
                 for found in sources(binding):
                     if 'sweep' in found:
                         step['after'] = list(dict.fromkeys(step['after'] + finished(found['sweep'])))
+        if 'continues' in step:
+            step['continues'] = [{**marker, 'step': held(marker['sweep'])} for marker in step['continues']]
     for call, record in calls.items():
         record['result'] = {key: source(item) for key, item in record['result'].items()}
         record['steps'] = [step['id'] for step in flat if call in step.get('calls', [])]
@@ -548,9 +576,18 @@ def _finished(point, record):
     return all((record(step) or {}).get('state') == 'completed' for step in steps)
 
 
+def stopped(marker, record, output=None):
+    """Where a sweep with until stops before the point an operation continues it at: the point before and what
+    it read, when that is beyond a limit or not a number; None while the sweep goes on."""
+    sweep = record(marker['step'])['gathers'][marker['sweep']]
+    point = marker['index'] - 1
+    reading = _reading(sweep['points'][point], sweep['until']['path'], record, output)
+    return {'point': point, 'reading': reading} if sweeping.beyond(sweep['until'], reading) else None
+
+
 def _reading(point, path, record, output=None):
-    """The number a point of an adaptive range read: at path in what its operation returned, or in the named
-    results of its use; None when it read none."""
+    """The number a point of a sweep read, which an adaptive range or until reads: at path in what its operation
+    returned, or in the named results of its use; None when it read none."""
     try:
         if 'named' in point:
             found, path = read(point['named'][path[0]], record, output), path[1:]

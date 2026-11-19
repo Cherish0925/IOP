@@ -42,7 +42,7 @@ A Workflow Operation that decides from results is a saved program and runs as it
 | `description`, `conditions` | What it achieves, and when the result has that meaning / 作用，以及结果成立的条件 |
 | `requires` | Names of [conditions](conditions.md) that must hold when the operation is used, a platform's or an instrument's (`<device>.<id>`); an experiment using it is accepted while they hold / 使用该操作时必须成立的[条件](conditions.md)名称，平台的或仪器的（`<device>.<id>`）；条件成立时使用它的实验才被受理 |
 | `parameters` | Described like operation parameters; arguments are checked before anything runs / 与操作参数格式相同，执行前校验 |
-| `steps` | Run in the order written; `after: []` starts a parallel branch and `after: [ids]` joins branches. `"${name}"` in `arguments`, `device` or `sweep` inserts a parameter with its type; `sweep` runs a step at each value of some of its parameters (see [Sweeps](#sweeps--扫描)) / 按书写顺序执行；`after: []` 开始并行分支，`after: [ids]` 汇合。`"${name}"` 在 `arguments`、`device` 或 `sweep` 中按类型代入参数；`sweep` 让一步按参数的各个取值依次运行（见[扫描](#sweeps--扫描)） |
+| `steps` | Run in the order written; `after: []` starts a parallel branch and `after: [ids]` joins branches. `"${name}"` in `arguments`, `device`, `sweep` or `until` inserts a parameter with its type; `sweep` runs a step at each value of some of its parameters (see [Sweeps](#sweeps--扫描)) / 按书写顺序执行；`after: []` 开始并行分支，`after: [ids]` 汇合。`"${name}"` 在 `arguments`、`device`、`sweep` 或 `until` 中按类型代入参数；`sweep` 让一步按参数的各个取值依次运行（见[扫描](#sweeps--扫描)） |
 | `result` | Names the values returned: a step and an optional path into its result, or into a `view` of an array it returned / 为返回值命名：取自某一步结果中的路径，或该步所返回数组的 `view` 中的路径 |
 
 Save with `POST /v1/library` `{"definition": {...}}`, Python `save_operation`, MCP `saved_operations(definition)`, or `iop operations --save file.json`. Saving the same name creates a new revision; earlier revisions stay readable at `/v1/library/{id}/history`, and each experiment records the revision it used. [operations.json](../../examples/iop/operations.json) holds the three operations of this page for the demonstration devices. / 同名保存产生新版本，旧版本仍可读取，每次实验记录所用版本。
@@ -136,9 +136,20 @@ A range with `adapt` places its points from what the earlier ones read. `adapt` 
 
 On a line 3 MHz wide in this 100 MHz span, half of the 40 points fall within its width; through `peak` they give its center within 1.5 kHz and its width within 1%, where 40 evenly spaced points place 3 on the line and give a width 16% too large. / 在 100 MHz 范围内一条 3 MHz 宽的谱线上，40 个点中有一半落在线宽以内；经 `peak` 读出的中心误差在 1.5 kHz 以内、线宽误差在 1% 以内；均匀的 40 个点只有 3 个落在线上，线宽大 16%。
 
+A sweep stops early with `until` beside it. `path` names the number each point reads, as `adapt` does, and `above`, `below` or both give the limits it stays within. After a point that reads beyond a limit, or reads no number, so that the limit is not known to hold, the later points are skipped: they never reach an instrument and end as `skipped`, and the steps after the sweep run as when it completes. A bias ramp thus stops at compliance and still returns to zero, and a search stops once the signal is found. The first point always runs. What the sweep gathers keeps its planned shape, the skipped points empty. Where it stopped, the point's index and its reading, is recorded with the sweep as `stopped` and in the experiment's events as `sweep.stopped`; MCP replies for a batch show it beside the sweep's points. In a saved operation a limit can be `"${name}"`, given by the caller. / 扫描旁加 `until` 可以提前停止。`path` 指各点读取的数值（与 `adapt` 相同），`above`、`below` 或两者给出读数应保持的界限。某一点的读数越过界限，或读不到数值（无法确认界限仍成立）时，其后的点全部跳过：不会到达仪器，状态为 `skipped`；扫描之后的步骤照常运行，与扫描完成时一样。偏压斜坡因此在达到限流时停止，随后仍回到零；搜索在找到信号后停止。第一个点总会运行。汇集结果保持原定形状，跳过的点为空。停在哪一点（序号）、读数多少，随扫描记为 `stopped`，并作为 `sweep.stopped` 记入实验事件；MCP 对批次的回复在扫描的点数旁给出。已保存的操作中，界限可以写作 `"${name}"`，由调用方给出。
+
+```json
+[{"id": "ramp", "device": "smu", "operation": "source",
+  "sweep": {"volts": {"start": 0, "stop": 1, "points": 101}},
+  "until": {"path": ["current"], "above": 0.001}},
+ {"id": "zero", "device": "smu", "operation": "source", "arguments": {"volts": 0}, "after": ["ramp"]}]
+```
+
+On a diode, the ramp stops after 0.54 V, the first point above 1 mA; the source is given none of the 46 higher voltages and then returns to 0 V. / 在二极管上，斜坡在第一个超过 1 mA 的点 0.54 V 之后停止；更高的 46 个电压都没有发给电源，随后回到 0 V。
+
 ## Record of use / 使用记录
 
-Every use is recorded when its last step ends: `uses` counts `calls`, `completed` and `failed`, and `last` names the experiment, state, time and revision. Each Basic Operation run for a use carries `calls`, the chain of uses it belongs to, so the evidence of a method is the set of experiments in which it ran. A failed or cancelled step ends the use as failed or cancelled; operations already executed are not undone. / 每次使用在其最后一步结束时记录：次数、完成数、失败数，以及最近一次的实验、状态、时间和版本。为某次使用执行的每个基础操作都带有所属的调用链，方法的证据就是它运行过的那些实验。
+Every use is recorded when its last step ends: `uses` counts `calls`, `completed` and `failed`, and `last` names the experiment, state, time and revision. Each Basic Operation run for a use carries `calls`, the chain of uses it belongs to, so the evidence of a method is the set of experiments in which it ran. A failed or cancelled step ends the use as failed or cancelled; operations already executed are not undone. A use whose steps were all skipped, because the sweep it is a point of stopped, is not recorded. / 每次使用在其最后一步结束时记录：次数、完成数、失败数，以及最近一次的实验、状态、时间和版本。为某次使用执行的每个基础操作都带有所属的调用链，方法的证据就是它运行过的那些实验。所在扫描已停止、步骤全部跳过的使用不记录。
 
 ## When the laboratory changes / 实验室变化之后
 

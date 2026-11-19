@@ -30,7 +30,9 @@ from .resources import Allocator, QueueFull, capacities, quantities
 from .execution import Context
 from .monitors import Monitors, check as check_monitors
 
-TERMINAL = {"completed", "failed", "cancelled", "interrupted"}
+TERMINAL = {"completed", "skipped", "failed", "cancelled", "interrupted"}
+# An operation in these states lets the steps after it run: it completed, or its sweep stopped before it.
+SATISFIED = {"completed", "skipped"}
 
 
 def identifier(prefix):
@@ -359,8 +361,8 @@ class Engine:
         for op in ops:
             if op['state'] != 'queued':
                 continue
-            parents = ([self.operations[oid] for oid in op['after_ids'] if self.operations[oid]['state'] != 'completed']
-                       if 'after_ids' in op else [by_step[step] for step in op['after'] if by_step[step]['state'] != 'completed'])
+            parents = ([self.operations[oid] for oid in op['after_ids'] if self.operations[oid]['state'] not in SATISFIED]
+                       if 'after_ids' in op else [by_step[step] for step in op['after'] if by_step[step]['state'] not in SATISFIED])
             self.remaining_dependencies[op['id']] = len(parents)
             for parent in parents:
                 self.dependents.setdefault(parent['id'], []).append(op['id'])
@@ -373,11 +375,18 @@ class Engine:
             if call not in calls:
                 continue
             progress = self.call_progress.setdefault(op['run_id'], {}).setdefault((op.get('batch'), call), {
-                'remaining': 0, 'state': 'completed', 'operation': calls[call]['operation'], 'revision': calls[call]['revision']})
+                'remaining': 0, 'state': 'skipped', 'operation': calls[call]['operation'], 'revision': calls[call]['revision']})
             if op['state'] not in TERMINAL:
                 progress['remaining'] += 1
-            elif op['state'] != 'completed' and progress['state'] != 'failed':
-                progress['state'] = 'failed' if op['state'] == 'failed' else 'cancelled'
+            else:
+                self._use_step_ended(progress, op['state'])
+
+    @staticmethod
+    def _use_step_ended(progress, state):
+        """A use ends failed when a step failed, else cancelled when one stopped, else completed when one completed;
+        one whose steps were all skipped, as a point after its sweep stopped, was not made."""
+        order = ('skipped', 'completed', 'cancelled', 'failed')
+        progress['state'] = max(progress['state'], state if state in order else 'cancelled', key=order.index)
 
     def _calls_ended(self, op):
         """Record a use of a saved operation when its last step ends: this is its evidence."""
@@ -385,13 +394,13 @@ class Engine:
             progress = self.call_progress.get(op['run_id'], {}).get((op.get('batch'), call))
             if progress is None:
                 continue
-            if op['state'] != 'completed' and progress['state'] != 'failed':
-                progress['state'] = 'failed' if op['state'] == 'failed' else 'cancelled'
+            self._use_step_ended(progress, op['state'])
             progress['remaining'] -= 1
             if progress['remaining'] > 0:
                 continue
             del self.call_progress[op['run_id']][(op.get('batch'), call)]
-            self._record_use(progress['operation'], progress['revision'], op['run_id'], call, progress['state'])
+            if progress['state'] != 'skipped':
+                self._record_use(progress['operation'], progress['revision'], op['run_id'], call, progress['state'])
 
     def _record_use(self, operation, revision, run_id, call, state):
         uses = self.uses.setdefault(operation, {'calls': 0, 'completed': 0, 'failed': 0})
@@ -407,7 +416,7 @@ class Engine:
         self.remaining_dependencies.pop(op['id'], None)
         self.remaining[op['run_id']] -= 1
         children = self.dependents.pop(op['id'], [])
-        if op['state'] == 'completed':
+        if op['state'] in SATISFIED:
             for child in children:
                 if self.operations[child]['state'] != 'queued':
                     continue
@@ -864,7 +873,7 @@ class Engine:
                 "resources":sorted(set(self._resources([device_id], name) + self._resources(step.get("resources", [])))),
                 "request_id":step.get("request_id"),
                 "device_revision":self.descriptions[device_id].get('revision'), **recorded,
-                **{key: step[key] for key in ('derive', 'gathers', 'swept_by') if step.get(key)}}
+                **{key: step[key] for key in ('derive', 'gathers', 'swept_by', 'continues') if step.get(key)}}
 
     def _described(self, device, operation):
         """A registered device operation's description, or None."""
@@ -872,7 +881,8 @@ class Engine:
 
     @staticmethod
     def _locate(operations):
-        """What operations read from sweeps and ranges, and how to gather a sweep, name operations by ID."""
+        """What operations read from sweeps and ranges, how to gather a sweep and where to read whether it stopped
+        name operations by ID."""
         ids = {op['step']: op['id'] for op in operations}
         for op in operations:
             if any(map(library.by_id, op['bindings'].values())):
@@ -880,6 +890,8 @@ class Engine:
                                   for key, binding in op['bindings'].items()}
             if 'gathers' in op:
                 op['gathers'] = {sweep: library.locate_gathering(found, ids) for sweep, found in op['gathers'].items()}
+            if 'continues' in op:
+                op['continues'] = [library.locate(marker, ids) for marker in op['continues']]
 
     def _recorded(self, operation_id):
         return self.operations.get(operation_id) or self.store.get('operations', operation_id)
@@ -1549,7 +1561,7 @@ class Engine:
         candidates = deque((rid, iter(self.ready[rid])) for rid in run_ids)
         maintaining = {job['run_id'] for job in self.conditions.jobs.values() if job['state'] == 'running'}
         blocked = set()
-        dispatch = []
+        dispatch, stops = [], {}
         pooled = len(self.futures) - len(self.waiting_steps)
         while candidates and pooled < self.worker_count:
             rid, items = candidates.popleft()
@@ -1560,6 +1572,10 @@ class Engine:
             candidates.append((rid, items))
             op = self.operations[op_id]
             if rid in maintaining and not op.get('maintenance'):
+                continue
+            stop = self._stopping(op) if op.get('continues') else None
+            if stop:
+                stops.setdefault((rid, stop[0]['sweep']), stop)
                 continue
             amounts = self._amounts(op)
             if not self.allocation.can_claim(rid, amounts, blocked | waiting):
@@ -1622,6 +1638,47 @@ class Engine:
                 self.completed.put(oid)
                 self.wake.set()
             future.add_done_callback(completed)
+        for (rid, _), (marker, found) in stops.items():
+            self._stop_sweep(self.runs[rid], marker, found)
+        if stops:
+            self.wake.set()
+
+    def _stopping(self, op):
+        """A sweep this operation continues that the point before it stopped, and where; or None."""
+        output = self.home / 'runs' / op['run_id'] / 'output'
+        for marker in op['continues']:
+            found = library.stopped(marker, self._recorded, output)
+            if found:
+                return marker, found
+        return None
+
+    def _stop_sweep(self, run, marker, found):
+        """Skip the points of a sweep after the one whose reading met its until: they never reach an instrument,
+        and the steps after the sweep run as when it completes. The operation that holds the sweep records where
+        it stopped."""
+        sweep, kept = marker['sweep'], run['kind'] in {'package', 'external'}
+        skipped = [self.operations[oid] for oid in run['operations']
+                   if self.operations[oid]['state'] == 'queued' and sweep in self.operations[oid].get('swept_by', ())]
+        ended = now()
+        for op in skipped:
+            op.update(state='skipped', ended=ended)
+        self.operations[marker['step']]['gathers'][sweep]['stopped'] = found
+        if kept:
+            # As completed ones, the operations of a long-lived program then stay only in the indexed history.
+            gone = {op['id'] for op in skipped}
+            run['operations'] = [oid for oid in run['operations'] if oid not in gone]
+        with self.store.transaction():
+            self.store.event('sweep.stopped', run['id'], sweep=sweep, skipped=len(skipped), **found)
+            for op in skipped:
+                self.store.put('operations', op)
+                self.store.event('operation.skipped', run['id'], operation_id=op['id'])
+            if kept:
+                self.store.put('runs', run)
+        for op in skipped:
+            self._operation_ended(op)
+        if kept:
+            for op in skipped:
+                del self.operations[op['id']]
 
     @staticmethod
     def _call(driver, op, context):

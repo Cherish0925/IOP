@@ -131,7 +131,7 @@ The response contains `id`, `run_id` and `state`; poll `/v1/operations/{id}`. Pr
 
 ## States and repeated requests
 
-Runs: `queued → running → completed`, or `failed`, `cancelled`, `interrupted`. `cancelling` means the service is ending pending/process work and waiting for active driver calls to return. Operations: `queued → running → completed`, or `failed`, `cancelled`, `interrupted`.
+Runs: `queued → running → completed`, or `failed`, `cancelled`, `interrupted`. `cancelling` means the service is ending pending/process work and waiting for active driver calls to return. Operations: `queued → running → completed`, or `failed`, `cancelled`, `interrupted`; `queued → skipped` for the points of a sweep after its `until` stopped it, which never reach an instrument and let the steps after the sweep run.
 
 A failed operation ends its run and cancels dependent work. Device calls already executing retain their resources until they return. Cancellation requests do not imply that a physical instrument has instantly stopped; the driver implements the instrument's stop/completion behavior.
 

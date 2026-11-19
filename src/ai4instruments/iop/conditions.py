@@ -23,6 +23,7 @@ import uuid
 from collections import deque
 from datetime import datetime, timezone
 from . import batches, library
+from .engine import SATISFIED
 from .drivers import parameters
 from .errors import RequestError
 from .platforms import name, strings
@@ -1246,7 +1247,7 @@ class Conditions:
             if not run or run['state'] not in {'queued', 'running'}:
                 raise Stopped() from None
             raise StepFailed(str(error)) from None
-        failed = [op for op in receipt['operations'] if op['state'] != 'completed']
+        failed = [op for op in receipt['operations'] if op['state'] not in SATISFIED]
         if failed:
             run = engine.runs.get(job['run_id'])
             if not run or run['state'] not in {'queued', 'running'}:

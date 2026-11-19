@@ -4,7 +4,8 @@ A step with ``sweep`` runs once for each combination of the values it gives, one
 the first name changing slowest. A range gives evenly spaced values from start to stop, or around a
 center over a span; its ends may be read from earlier results, as bindings are, and each point then
 reads its value when it runs. An adaptive range places each point from what the earlier ones read:
-where the reading changes most, points come closer together. What the points return is gathered:
+where the reading changes most, points come closer together. A sweep with ``until`` stops after a point
+whose reading is beyond a limit, before the next point runs. What the points return is gathered:
 numbers in the same place become an array over the sweep, with one axis for each swept name; arrays of
 one shape in the same place combine into one array with the sweep's axes in front, from the values the
 records hold or from the files the points saved, read in order; other values are kept when they are the
@@ -156,6 +157,25 @@ def adapted(spec, readings, known=()):
         low, spacing = chosen
         values.append(low + spacing // 2 if integer else low + spacing / 2)
     return values
+
+
+def limits(until):
+    """Check what stops a sweep: the path to the number each point reads, and the limits it stays within."""
+    if (not isinstance(until, dict) or until.keys() - {'path', 'above', 'below'} or not until.keys() & {'above', 'below'}
+            or not isinstance(until.get('path'), list) or not until['path']
+            or any(type(part) not in (str, int) for part in until['path'])
+            or not all(_number(until[key]) for key in until.keys() & {'above', 'below'})):
+        raise ValueError('until gives the path to the number each point reads, such as ["current"], and the number '
+                         'it stops above, below, or both')
+    if until.get('below', -math.inf) >= until.get('above', math.inf):
+        raise ValueError('until stops a sweep outside the band from below to above, so below is less than above')
+    return until
+
+
+def beyond(until, reading):
+    """Whether a point's reading stops its sweep: beyond a limit, or not a number, so the limit is not known to
+    hold."""
+    return not _number(reading) or reading > until.get('above', math.inf) or reading < until.get('below', -math.inf)
 
 
 def grid(sweep):

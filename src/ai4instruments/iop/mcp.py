@@ -275,7 +275,7 @@ def create_server(client, *, http=False, selection=None):
     def submit_experiment(steps: list[dict], request_id: str, name: str = 'Experiment',
                           platform: str | None = None, resources: list[str] | None = None,
                           requirements: dict[str, int] | None = None, requires: list[str] | None = None) -> dict:
-        """Submit instrument operations with after dependencies and optional result bindings. A step with sweep, e.g. {"angle": {"start": -10, "stop": 10, "points": 21}} or {"axis": ["x", "y"]}, runs at each point in turn and its numbers return as arrays over the sweep; read them with read_array(run_id, field). A range may also be a center and span, and its ends may be read from an earlier step as a binding is, e.g. {"angle": {"center": {"step": "coarse", "view": {"field": "power"}, "path": ["summary", "max_at"]}, "span": 2, "points": 21}} around where a coarse sweep found most power. With "adapt": ["power"] a range places each point from what the earlier points read, closer together where power changes most (one swept parameter, at most 1000 points), and gathers them in order of value. Returns immediately. Reuse request_id only for the identical submission. requires names conditions (operating_conditions lists them) that must hold for the experiment to be accepted."""
+        """Submit instrument operations with after dependencies and optional result bindings. A step with sweep, e.g. {"angle": {"start": -10, "stop": 10, "points": 21}} or {"axis": ["x", "y"]}, runs at each point in turn and its numbers return as arrays over the sweep; read them with read_array(run_id, field). A range may also be a center and span, and its ends may be read from an earlier step as a binding is, e.g. {"angle": {"center": {"step": "coarse", "view": {"field": "power"}, "path": ["summary", "max_at"]}, "span": 2, "points": 21}} around where a coarse sweep found most power. With "adapt": ["power"] a range places each point from what the earlier points read, closer together where power changes most (one swept parameter, at most 1000 points), and gathers them in order of value. With "until": {"path": ["current"], "above": 0.001} beside sweep, the sweep stops after a point that reads above (or below) a limit, or reads no number: later points are skipped without reaching the instrument, and the steps after the sweep run. Returns immediately. Reuse request_id only for the identical submission. requires names conditions (operating_conditions lists them) that must hold for the experiment to be accepted."""
         return client.submit(steps, name=name, platform=platform, resources=resources or [],
                              requirements=requirements, request_id=request_id, requires=requires or ()).info(details=False)
 
@@ -304,7 +304,7 @@ def create_server(client, *, http=False, selection=None):
 
     @tool()
     def submit_operations(run_id: str, steps: list[dict], request_id: str, wait: float = 0) -> dict:
-        """Submit a batch within an existing experiment. Steps run in order by default. after=[] starts an independent branch; after=[IDs] joins branches. A step with sweep runs at each point in turn, its ranges given or read from earlier steps as in submit_experiment; results then hold its numbers as arrays over the sweep (read_array with run_id, request_id and field) and the reply counts its points by state. All steps are accepted together. With wait up to 25 seconds, the reply includes results of steps that finish in that time; complete tells whether all did."""
+        """Submit a batch within an existing experiment. Steps run in order by default. after=[] starts an independent branch; after=[IDs] joins branches. A step with sweep runs at each point in turn, its ranges given or read from earlier steps as in submit_experiment; results then hold its numbers as arrays over the sweep (read_array with run_id, request_id and field) and the reply counts its points by state; with until, as in submit_experiment, stopped gives the point that stopped it and its reading. All steps are accepted together. With wait up to 25 seconds, the reply includes results of steps that finish in that time; complete tells whether all did."""
         batch = client.request('/v1/runs/' + quote(run_id, safe='') + '/batches' + waiting(wait),
                                {'steps':steps, 'request_id':request_id})
         batch = compact(batch)
@@ -316,7 +316,9 @@ def create_server(client, *, http=False, selection=None):
             shown['sweeps'] = {}
             for name, ops in points.items():
                 states, errors = [op['state'] for op in ops], [op['error'] for op in ops if op.get('error')]
+                stopped = [op['gathers'][name]['stopped'] for op in ops if 'stopped' in op.get('gathers', {}).get(name, {})]
                 shown['sweeps'][name] = {'points': {state: states.count(state) for state in dict.fromkeys(states)},
+                                         **({'stopped': stopped[0]} if stopped else {}),
                                          **({'error': errors[0]} if errors else {})}
         return shown
 

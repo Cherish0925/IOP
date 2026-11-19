@@ -1,10 +1,12 @@
-export type Step = { id: string; device?: string; operation: string; arguments?: Record<string, unknown>; after?: string[]; resources?: string[]; requirements?: Record<string, number>; bindings?: Record<string, Source>; sweep?: Sweep };
+export type Step = { id: string; device?: string; operation: string; arguments?: Record<string, unknown>; after?: string[]; resources?: string[]; requirements?: Record<string, number>; bindings?: Record<string, Source>; sweep?: Sweep; until?: Until };
 /** A value an earlier step returned: path selects inside its result or, with view, inside a view of an array it returned. */
 export type Source = { step: string; path?: (string | number)[]; view?: ArrayViewOptions };
 /** An end of a range: a number, or one read from an earlier step when the sweep runs. */
 export type End = number | Source;
 /** Parameters a step runs over, one point after another: a list of values, or numbers from start to stop or around a center, evenly spaced or, with adapt (the path to the number each point reads), placed closer together where that reading changes most. */
 export type Sweep = Record<string, (number | string)[] | ({ start: End; stop: End } | { center: End; span: End }) & { points: number; adapt?: (string | number)[] }>;
+/** Stop a sweep after a point whose reading at path is above or below a limit, or is not a number; the later points are skipped and the steps after the sweep run. */
+export type Until = { path: (string | number)[]; above?: number; below?: number };
 export type Endpoint = { device: string; port: string };
 export type Procedure = { steps: Step[]; resources?: string[] };
 export type ConditionStep = { device?: string; operation: string; arguments?: Record<string, unknown> };
@@ -70,7 +72,7 @@ export class IOPError extends Error {
   constructor(message: string, readonly status: number, readonly details: Record<string, unknown> = {}) { super(message); this.name = 'IOPError'; }
   get code() { return this.details.code as string | undefined; }
 }
-const terminal = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
+const terminal = new Set(['completed', 'skipped', 'failed', 'cancelled', 'interrupted']);
 const delay = (ms: number, signal?: AbortSignal): Promise<void> => new Promise((resolve, reject) => {
   if (signal?.aborted) { reject(signal.reason); return; }
   const abort = () => { clearTimeout(timer); reject(signal?.reason); };
@@ -275,7 +277,7 @@ export class Run {
     while (!batch.complete) {
       batch = await this.client.request<BatchRecord>(path + '?' + new URLSearchParams({request_id: requestId, wait: String(wait)}), undefined, options.signal);
     }
-    if (batch.operations.some(op => op.state !== 'completed')) throw new IOPError('Operation batch did not complete', 0, batch);
+    if (batch.operations.some(op => op.state !== 'completed' && op.state !== 'skipped')) throw new IOPError('Operation batch did not complete', 0, batch);
     return batch.operations;
   }
   /** Use a saved Standard or Workflow Operation in this experiment and return its named result. */
@@ -283,10 +285,10 @@ export class Run {
   maintain(conditions?: string[], options: { force?: boolean; signal?: AbortSignal } = {}) {
     return this.client.maintain({ conditions, runId: this.id, ...options });
   }
-  /** Use a saved operation and return its named result; with sweep, at each point, its named results gathered into arrays. */
-  async call(operation: string, args: Record<string, unknown> = {}, options: { requestId?: string; signal?: AbortSignal; sweep?: Sweep } = {}) {
+  /** Use a saved operation and return its named result; with sweep, at each point, its named results gathered into arrays, stopping early with until. */
+  async call(operation: string, args: Record<string, unknown> = {}, options: { requestId?: string; signal?: AbortSignal; sweep?: Sweep; until?: Until } = {}) {
     const requestId = options.requestId ?? crypto.randomUUID();
-    await this.batch([{ id: 'call', operation, arguments: args, ...(options.sweep ? { sweep: options.sweep } : {}) }], { requestId, signal: options.signal });
+    await this.batch([{ id: 'call', operation, arguments: args, ...(options.sweep ? { sweep: options.sweep } : {}), ...(options.until ? { until: options.until } : {}) }], { requestId, signal: options.signal });
     const batch = await this.client.request<{ results: Record<string, Record<string, unknown>> }>(
       `/v1/runs/${encodeURIComponent(this.id)}/batches?` + new URLSearchParams({ request_id: requestId }), undefined, options.signal);
     return batch.results.call;

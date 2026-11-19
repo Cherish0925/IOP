@@ -13,7 +13,7 @@ from urllib.request import Request, build_opener, ProxyHandler, HTTPRedirectHand
 from urllib.error import HTTPError
 from urllib.parse import quote, urlencode, urlparse, urljoin
 from .config import home_path
-from .engine import TERMINAL
+from .engine import SATISFIED, TERMINAL
 
 
 def archive(path):
@@ -488,16 +488,19 @@ class Run:
                 raise TimeoutError('Batch is still running: ' + request_id)
             result = self.client.request('/v1/runs/'+self.id+'/batches?' +
                 urlencode({'request_id':request_id, 'wait':min(wait, remaining)}))
-        if any(op['state'] != 'completed' for op in result['operations']):
+        if any(op['state'] not in SATISFIED for op in result['operations']):
             raise IOPError('Operation batch did not complete', details=result)
         return result['operations']
 
-    def call(self, operation, arguments=None, *, sweep=None, request_id=None, timeout=None, maintain=False):
+    def call(self, operation, arguments=None, *, sweep=None, until=None, request_id=None, timeout=None, maintain=False):
         """Use a saved Standard or Workflow Operation in this experiment and return its named result. With
         ``sweep``, such as {"angle": {"start": -10, "stop": 10, "points": 21}}, it is used at each point and
-        its named results return gathered into arrays over the sweep."""
+        its named results return gathered into arrays over the sweep; with ``until``, such as
+        {"path": ["current"], "above": 0.001}, the sweep stops after a point whose named result there is beyond
+        that limit."""
         request_id = request_id or uuid.uuid4().hex
-        step = {'id': 'call', 'operation': operation, 'arguments': arguments or {}, **({'sweep': sweep} if sweep else {})}
+        step = {'id': 'call', 'operation': operation, 'arguments': arguments or {},
+                **({'sweep': sweep} if sweep else {}), **({'until': until} if until else {})}
         self.batch([step], request_id=request_id, timeout=timeout, maintain=maintain)
         return self.client.request('/v1/runs/' + self.id + '/batches?' + urlencode({'request_id': request_id}))['results']['call']
 
