@@ -89,6 +89,10 @@
           },
           "until": {
             "$ref": "#/$defs/until"
+          },
+          "retake": {
+            "const": true,
+            "description": "With sweep or repeat on a device operation, in a step graph: points a lost condition put in doubt are taken again, with the arguments they were given, once a pass restored the condition and before the next operation; what the sweep gathers holds what the retakes read. Not with adapt"
           }
         }
       }

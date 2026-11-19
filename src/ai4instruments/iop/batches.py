@@ -45,6 +45,8 @@ def submit(engine, run_id, steps, request_id, maintenance=False):
             raise ValueError('An operation batch requires an active experiment program')
         if len(engine.operations) + len(steps) > int(engine.config.get('max_active_operations', 100000)):
             raise QueueFull('The service has reached its configured number of active operations')
+        if any(step.get('retake') for step in steps):
+            raise ValueError('retake takes again the points of a sweep in a step graph; a program decides itself what to take again')
         required = sorted(set([] if maintenance else run.get('requires', [])) | set(engine.conditions.required({}, calls)))
         operations = [engine._operation(run_id, step) for step in steps]
         for op, step in zip(operations, steps):

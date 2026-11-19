@@ -70,6 +70,8 @@ class Engine:
         self.step_ids, self.minimum_capacities = {}, {}
         # The ends of each range swept, read once for all of its points, by experiment.
         self.ranges = {}
+        # Points of sweeps that retake them which a lost condition put in doubt, and their retakes in progress.
+        self.doubted, self.retaking = {}, {}
         self.completed = queue.SimpleQueue()
         self.progress_lock = threading.Lock()
         self.progress_updates = {}
@@ -353,6 +355,55 @@ class Engine:
         for oid in self.store.doubt(run_id, condition_id, after, entry):
             if oid in self.operations:
                 self.operations[oid].setdefault('in_doubt', {}).setdefault(condition_id, entry)
+                self._doubted(self.operations[oid])
+
+    def _doubted(self, op):
+        """A point of a sweep that retakes its points, ended and now in doubt, is taken again."""
+        if op.get('retake') and op['state'] == 'completed' and op.get('in_doubt') and 'retaken_by' not in op:
+            self.doubted.setdefault(op['run_id'], {})[op['id']] = None
+
+    def _retake(self, run, originals):
+        """Take again points a lost condition put in doubt, before the experiment's other operations: the same
+        operation with the arguments it was given; what the sweep gathers then holds what the retakes read."""
+        ops = []
+        for oid in originals:
+            original = self.operations[oid]
+            op = self._operation(run['id'], {'id': original['step'] + '~1', 'device': original['device'],
+                                             'operation': original['operation'], 'arguments': original['arguments']})
+            op.update(after_ids=[], swept_by=original['swept_by'], retakes=oid,
+                      **({'requires': original['requires']} if original.get('requires') else {}))
+            ops.append((op, original))
+        for op, original in ops:
+            original['retaken_by'] = op['id']
+        run['operations'].extend(op['id'] for op, _ in ops)
+        run['operation_count'] = run.get('operation_count', 0) + len(ops)
+        with self.store.transaction():
+            self.store.put('runs', run)
+            for op, original in ops:
+                self.store.put('operations', original)
+                self.store.put('operations', op)
+                self.store.event('operation.queued', run['id'], operation_id=op['id'], device=op['device'],
+                                 operation=op['operation'], retakes=original['id'])
+        for op, _ in reversed(ops):
+            self.operations[op['id']] = op
+            self.ready[run['id']][op['id']] = None
+            self.ready[run['id']].move_to_end(op['id'], last=False)
+            self.remaining[run['id']] += 1
+            self.retaking.setdefault(run['id'], set()).add(op['id'])
+            for key, count in self._amounts(op).items():
+                self.minimum_capacities[run['id']][key] = max(self.minimum_capacities[run['id']].get(key, 0), count)
+
+    def _retaken(self, op):
+        """A point taken again: what its sweep gathers holds what it read in place of the point in doubt."""
+        sweep = op['swept_by'][-1]
+        for oid in self.runs[op['run_id']]['operations']:
+            holder = self.operations.get(oid)
+            if holder and sweep in holder.get('gathers', {}):
+                for point in holder['gathers'][sweep]['points']:
+                    if point.get('step') == op['retakes']:
+                        point['step'] = op['id']
+                self.store.put('operations', holder)
+                return
 
     def _index_run(self, run):
         self.ready[run['id']] = OrderedDict()
@@ -423,6 +474,12 @@ class Engine:
 
     def _operation_ended(self, op):
         self._calls_ended(op)
+        if op.get('retakes'):
+            self.retaking.get(op['run_id'], set()).discard(op['id'])
+            if op['state'] == 'completed':
+                self._retaken(op)
+        else:
+            self._doubted(op)
         self.ready[op['run_id']].pop(op['id'], None)
         self.remaining_dependencies.pop(op['id'], None)
         self.remaining[op['run_id']] -= 1
@@ -884,7 +941,7 @@ class Engine:
                 "resources":sorted(set(self._resources([device_id], name) + self._resources(step.get("resources", [])))),
                 "request_id":step.get("request_id"),
                 "device_revision":self.descriptions[device_id].get('revision'), **recorded,
-                **{key: step[key] for key in ('derive', 'gathers', 'swept_by', 'continues') if step.get(key)}}
+                **{key: step[key] for key in ('derive', 'gathers', 'swept_by', 'continues', 'retake') if step.get(key)}}
 
     def _described(self, device, operation):
         """A registered device operation's description, or None."""
@@ -1256,6 +1313,8 @@ class Engine:
         self.remaining.pop(run['id'], None)
         self.step_ids.pop(run['id'], None)
         self.ranges.pop(run['id'], None)
+        self.doubted.pop(run['id'], None)
+        self.retaking.pop(run['id'], None)
         self.call_progress.pop(run['id'], None)
         self.minimum_capacities.pop(run['id'], None)
         process = self.processes.get(run['id'])
@@ -1573,13 +1632,22 @@ class Engine:
                     package_slots -= 1
                 except Exception as error:
                     run.update(state='cancelling', end_state='failed', error=str(error))
+        maintaining = {job['run_id'] for job in self.conditions.jobs.values() if job['state'] == 'running'}
+        # Points in doubt are taken again once no pass runs in their experiment, before its other operations.
+        for rid in [rid for rid, doubted in self.doubted.items() if doubted and rid not in maintaining]:
+            doubted = list(self.doubted.pop(rid))
+            if self.runs.get(rid, {}).get('state') == 'running':
+                try:
+                    self._retake(self.runs[rid], doubted)
+                except ValueError as error:
+                    # The points stay in doubt, as without retake, such as when their instrument went offline.
+                    self.errors.append({'time': now(), 'error': f'Retaking points of {rid}: {error}'})
         # Round-robin between experiments; a large ready set cannot monopolize starts.
         run_ids = [rid for rid, ready in self.ready.items() if ready and self.runs[rid]['state'] == 'running']
         if self.last_scheduled_run in run_ids:
             index = run_ids.index(self.last_scheduled_run) + 1
             run_ids = run_ids[index:] + run_ids[:index]
         candidates = deque((rid, iter(self.ready[rid])) for rid in run_ids)
-        maintaining = {job['run_id'] for job in self.conditions.jobs.values() if job['state'] == 'running'}
         # An experiment that keeps its conditions starts no operation while a pass is due; the pass starts inside
         # it once none of its operations is running, and its operations continue after the pass.
         for rid in run_ids:
@@ -1597,7 +1665,7 @@ class Engine:
                 continue
             candidates.append((rid, items))
             op = self.operations[op_id]
-            if rid in maintaining and not op.get('maintenance'):
+            if rid in maintaining and not op.get('maintenance') or self.retaking.get(rid) and not op.get('retakes'):
                 continue
             stop = self._stopping(op) if op.get('continues') else None
             if stop:

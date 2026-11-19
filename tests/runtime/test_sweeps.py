@@ -682,7 +682,7 @@ class SweepCase(unittest.TestCase):
                 ({'id': 's', 'device': 'stage', 'operation': 'move_to',
                   'sweep': {'angle_deg': {'center': {'step': 'nowhere'}, 'span': 1, 'points': 3}}}, 'unknown step'),
                 ({'id': 's', 'device': 'stage', 'operation': 'move_to', 'until': {'path': ['angle_actual'], 'above': 1}},
-                 'until stops a sweep'),
+                 'until and retake belong to a sweep'),
                 ({'id': 's', 'device': 'stage', 'operation': 'move_to', 'repeat': 0}, 'from 1 to 10000'),
                 ({'id': 's', 'device': 'stage', 'operation': 'move_to', 'sweep': {'angle_deg': [1, 2]},
                   'until': {'path': ['angle_actual'], 'above': 2, 'below': 3}}, 'below is less than above'),
@@ -706,6 +706,6 @@ class SweepCase(unittest.TestCase):
         with self.assertRaisesRegex(IOPError, 'describe parameter limit'):
             self.client.save_operation({**PEAK, 'steps': [
                 {**PEAK['steps'][0], 'until': {'path': ['power'], 'above': '${limit}'}}, PEAK['steps'][1]]})
-        with self.assertRaisesRegex(IOPError, 'until stops a sweep'):
+        with self.assertRaisesRegex(IOPError, 'until and retake belong to a sweep'):
             self.client.save_operation({**PEAK, 'steps': [
                 PEAK['steps'][0], {**PEAK['steps'][1], 'until': {'path': ['angle_actual'], 'above': 1}}]})

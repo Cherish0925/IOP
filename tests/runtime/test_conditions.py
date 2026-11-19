@@ -43,7 +43,11 @@ class Part(Driver):
         elif operation == 'where':
             return {'x': WORLD['x'], 'y': WORLD['y']}
         elif operation == 'integrate':
-            # A longer reading, while the coupling fades by WORLD['fade'].
+            # A longer reading, while the coupling fades by WORLD['fade'], or drops to half during the reading
+            # numbered WORLD['bump'].
+            WORLD['integrations'] = WORLD.get('integrations', 0) + 1
+            if WORLD['integrations'] == WORLD.get('bump'):
+                WORLD['alignment'] = 0.5
             time.sleep(arguments['seconds'])
             signal = WORLD['level'] * WORLD['alignment']
             WORLD['alignment'] *= WORLD.get('fade', 1.0)

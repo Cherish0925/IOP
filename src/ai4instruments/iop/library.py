@@ -98,8 +98,8 @@ def check(definition, lookup):
             raise ValueError(f"Step {step['id']}: arguments must be an object")
         if 'sweep' in step or 'repeat' in step:
             swept(step)
-        elif 'until' in step:
-            raise ValueError(f"Step {step['id']}: until stops a sweep or a repetition; give the step one")
+        elif 'until' in step or 'retake' in step:
+            raise ValueError(f"Step {step['id']}: until and retake belong to a sweep or a repetition; give the step one")
         used = (placeholders(step.get('arguments', {})) | placeholders(step.get('device', ''))
                 | placeholders(step.get('sweep', {})) | placeholders(step.get('repeat')) | placeholders(step.get('until', {})))
         if used - declared.keys():
@@ -156,6 +156,15 @@ def swept(step):
             sweeping.limits(step['until'])
         except ValueError as error:
             raise ValueError(f"Step {step['id']}: {error}") from None
+    if 'retake' in step:
+        if step['retake'] is not True:
+            raise ValueError(f"Step {step['id']}: retake is true, to take again the points a lost condition put in doubt")
+        if 'device' not in step:
+            raise ValueError(f"Step {step['id']}: retake takes again the points of a device operation; a saved operation "
+                             "can retake the sweeps of its own steps")
+        if any(isinstance(spec, dict) and 'adapt' in spec for spec in sweep.values()):
+            raise ValueError(f"Step {step['id']}: an adaptive sweep placed its points from what they read, so its points "
+                             "are not taken again")
     if placeholders(sweep) or placeholders(step.get('repeat')):
         return None
     try:
@@ -183,8 +192,8 @@ def expand(steps, lookup, describe=None):
     if not isinstance(steps, list) or any(not isinstance(step, dict) for step in steps):
         raise ValueError('Each step must be an object')
     for step in steps:
-        if 'until' in step and 'sweep' not in step and 'repeat' not in step:
-            raise ValueError(f"Step {step.get('id')}: until stops a sweep or a repetition; give the step one")
+        if ('until' in step or 'retake' in step) and 'sweep' not in step and 'repeat' not in step:
+            raise ValueError(f"Step {step.get('id')}: until and retake belong to a sweep or a repetition; give the step one")
     if all('device' in step and 'sweep' not in step and 'repeat' not in step for step in steps):
         return derived(steps, {}), {}, {}
     queue = deque((copy.deepcopy(step), [], []) for step in steps)

@@ -2,6 +2,7 @@
 import time
 import unittest
 from datetime import datetime, timezone
+from ai4instruments.iop import IOPError
 from ai4instruments.iop.conditions import upkeep
 from . import test_service as fixture
 from .test_conditions import PATH, SOURCE, WORLD, Part
@@ -222,6 +223,36 @@ class UpkeepCase(unittest.TestCase):
                              [op['id'] for op in sorted(operations, key=lambda op: op['created']) if op.get('in_doubt')])
             self.assertEqual(list(info['result']), ['scan'])
             self.assertEqual({'device:coupler', 'device:source'} <= set(info['resources']), bool(resources))
+
+    def test_a_sweep_takes_again_the_points_a_drift_put_in_doubt(self):
+        self.engine.config['upkeep_interval_s'] = 3600
+        self.client.configure_platform(chain(SOURCE, {**PATH, 'valid_for': 0.3}, keep=False))
+        # The table is bumped during the third of six readings: the coupling halves until upkeep finds it.
+        WORLD.update(bump=3, integrations=0)
+        self.addCleanup(WORLD.pop, 'bump')
+        run = self.client.submit([{'id': 'scan', 'device': 'detector', 'operation': 'integrate', 'arguments': {'seconds': 0.15},
+                                   'repeat': 6, 'retake': True}], platform='chain', requires=['path.aligned'], upkeep=True)
+        info = run.wait(timeout=30)
+        self.assertEqual(info['state'], 'completed')
+        operations = {op['id']: op for op in info['operation_records']}
+        retakes = [op for op in operations.values() if op.get('retakes')]
+        # What the sweep gathered holds a full signal at each point: those read through the bump were taken again
+        # once the coupling was restored, before the next point, and their first readings stay in their records.
+        self.assertEqual(run.result(10)['scan']['signal']['values'], [1.0] * 6)
+        self.assertTrue(retakes)
+        for retake in retakes:
+            original = operations[retake['retakes']]
+            self.assertEqual((original['retaken_by'], retake['step'], retake['arguments']),
+                             (retake['id'], original['step'] + '~1', original['arguments']))
+            self.assertIn('path.aligned', original['in_doubt'])
+            self.assertNotIn('in_doubt', retake)
+        self.assertIn(0.5, [op['result']['signal'] for op in operations.values() if op.get('retaken_by')])
+        with self.assertRaisesRegex(IOPError, 'retake takes again the points of a device operation'):
+            self.client.submit([{'id': 'twice', 'operation': 'missing.saved', 'repeat': 2, 'retake': True}])
+        # A program decides itself what to take again.
+        with self.client.start_experiment(resources=['detector']) as experiment, \
+                self.assertRaisesRegex(IOPError, 'retake takes again the points of a sweep in a step graph'):
+            experiment.batch([{'id': 'scan', 'device': 'detector', 'operation': 'read', 'repeat': 2, 'retake': True}])
 
     def test_rejected_operations_do_not_start_instrument_maintenance(self):
         from ai4instruments.iop import batches
