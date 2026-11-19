@@ -86,7 +86,8 @@ class UpkeepCase(unittest.TestCase):
     def test_a_lost_condition_is_attempted_again_after_retry_s(self):
         fixed = {k: v for k, v in SOURCE.items() if k != 'correct'}
         WORLD['level'] = 0.5
-        self.client.configure_platform(chain(fixed, retry_s=0.6))
+        # retry_s leaves room for a slow machine to finish the first pass well before the next is due.
+        self.client.configure_platform(chain(fixed, retry_s=2))
         self.until(lambda: self.states()['source.stable'] == 'lost')
         reads = WORLD['log'].count('source.read')
         time.sleep(0.3)

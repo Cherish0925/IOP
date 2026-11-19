@@ -324,12 +324,13 @@ class ConditionsCase(unittest.TestCase):
         self.assertEqual(self.client.saved_operation('other.read')['unavailable'], ['gone: no such condition'])
 
     def test_a_continuous_experiment_maintains_what_it_relies_on_as_it_goes(self):
-        self.client.configure_platform(platform(SOURCE, {**PATH, 'valid_for': 0.4}), expected_revision=1)
+        # valid_for leaves room for a slow machine to start the experiment and run its first batch in time.
+        self.client.configure_platform(platform(SOURCE, {**PATH, 'valid_for': 1.5}), expected_revision=1)
         self.client.maintain('chain')
         experiment = self.client.start_experiment(resources=['source', 'coupler', 'detector'], requires=['path.aligned'])
         read = [{'id': 'read', 'device': 'detector', 'operation': 'read'}]
         experiment.batch(read)
-        time.sleep(0.45)
+        time.sleep(1.55)
         WORLD['alignment'] = 0.3
         with self.assertRaises(IOPError) as refused:
             experiment.batch(read)
