@@ -8,6 +8,7 @@ import statistics
 import struct
 import time
 import unittest
+from datetime import datetime
 from unittest.mock import patch
 from ai4instruments.iop import Driver, IOPError, arrays, library, sweeps
 from . import test_service as fixture
@@ -484,6 +485,26 @@ class SweepCase(unittest.TestCase):
                              until={'path': ['current'], 'above': 1e-3})
         self.assertEqual(found['current']['values'].index(None), 55)
         self.assertEqual(self.client.saved_operation('diode.point')['uses']['calls'], 55)
+
+    def test_a_graph_is_previewed_and_a_running_one_tells_when_it_ends(self):
+        steps = [{'id': 'turn', 'device': 'stage', 'operation': 'move_to', 'arguments': {'duration': 0.2},
+                  'sweep': {'angle_deg': [0, 10, 20, 30, 40]}}]
+        # Nothing has run on the stage yet: the preview counts the moves, and no time is estimated.
+        self.assertEqual(self.client.preview(steps), {'preview': True, 'operations': 5, 'estimated_s': None,
+                                                      'by_operation': {'stage.move_to': {'operations': 5}}, 'requires': {}})
+        run = self.submit(steps)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and run.info(details=False)['operation_states'].get('completed', 0) < 2:
+            time.sleep(0.02)
+        # Two moves done, three to go at the same pace.
+        ends = datetime.fromisoformat(run.info(details=False)['estimated_end']).timestamp() - time.time()
+        self.assertTrue(0 < ends < 3, ends)
+        run.result(10)
+        self.assertNotIn('estimated_end', run.info(details=False))
+        # Now each move is known to take about 0.2 s.
+        preview = self.client.preview(steps)
+        self.assertEqual(preview['by_operation']['stage.move_to']['from'], 5)
+        self.assertAlmostEqual(preview['estimated_s'], 1.0, delta=0.5)
 
     def test_a_device_record_limits_what_its_setup_tolerates(self):
         from .test_conditions import Part

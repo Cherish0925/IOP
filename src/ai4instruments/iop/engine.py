@@ -17,6 +17,7 @@ import queue
 import hashlib
 import re
 from collections import OrderedDict, deque
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, CancelledError
 from pathlib import Path, PurePosixPath
 from .calibration import operation_fields
@@ -37,6 +38,11 @@ SATISFIED = {"completed", "skipped"}
 
 def identifier(prefix):
     return prefix + "_" + uuid.uuid4().hex[:20]
+
+
+def stamp(text):
+    """Seconds since the epoch of a recorded time."""
+    return datetime.fromisoformat(text).timestamp()
 
 
 def relative_path(name):
@@ -991,6 +997,9 @@ class Engine:
             if self.stopping:
                 raise ValueError("Service is stopping")
             spec = json.loads(dumps(spec))
+            preview = spec.pop('preview', False)
+            if not isinstance(preview, bool):
+                raise ValueError('preview is true to see what a step graph would do without running it')
             program = None
             if package is None and spec.get('kind', 'workflow') == 'workflow':
                 # A saved Workflow Operation that is a program runs as this experiment.
@@ -1005,7 +1014,7 @@ class Engine:
                     raise ValueError('Submit external experiment operations through its run ID')
                 if not isinstance(spec.get('request_id'), str) or not spec['request_id'].strip():
                     raise ValueError('Provide request_id for the external experiment')
-            previous = self.store.request("runs", spec.get("request_id"))
+            previous = None if preview else self.store.request("runs", spec.get("request_id"))
             if previous:
                 if previous['kind'] != kind or previous["spec"] != spec or (package is not None and not program and (self.home / "runs" / previous["id"] / "package.zip").read_bytes() != package):
                     raise ValueError("request_id already names a different experiment")
@@ -1076,6 +1085,8 @@ class Engine:
                     for key, count in amounts.items():
                         if key.startswith('pool:'):
                             run['requirements'][key] = max(run['requirements'].get(key, 0), count)
+            if preview:
+                return self._preview(kind, operations, required)
             if required:
                 # The experiment is accepted only while what it relies on holds; the record keeps what that was.
                 # One that keeps its conditions is accepted, and keeps them before its first operation.
@@ -1478,8 +1489,51 @@ class Engine:
                 with self.lock:
                     self.reconnecting.difference_update(affected)
 
+    def _preview(self, kind, operations, required):
+        """What a step graph would do, without running it: how many operations of each instrument, the conditions
+        it relies on and their state, and how long its operations would take one after another, each at the
+        median its kind took over the most recent ones."""
+        if kind != 'workflow':
+            raise ValueError('preview shows what a step graph would do')
+        counts = {}
+        for op in operations:
+            key = op['device'] + '.' + op['operation']
+            counts[key] = counts.get(key, 0) + 1
+        took = self.store.durations()
+        return {'preview': True, 'operations': len(operations),
+                'by_operation': {key: {'operations': n, **({'median_s': took[key][0], 'from': took[key][1]} if key in took else {})}
+                                 for key, n in counts.items()},
+                'estimated_s': sum(took[key][0] * n for key, n in counts.items()) if counts.keys() <= took.keys() else None,
+                'requires': {c: self.conditions.state(c)['state'] for c in self.conditions.closure(required)}}
+
+    def _ends(self, run):
+        """When a running step graph would end at its pace so far: the time it has run, scaled by what is left over
+        what is done, each operation counting as long as those of its kind took in it. None until each kind left
+        has ended once."""
+        took, left = {}, []
+        for oid in run['operations']:
+            op = self.operations[oid]
+            if op.get('maintenance'):
+                continue
+            kind = (op['device'], op['operation'])
+            if op['state'] == 'completed' and op.get('started') and op.get('ended'):
+                took.setdefault(kind, []).append(stamp(op['ended']) - stamp(op['started']))
+            elif op['state'] in ('queued', 'running'):
+                left.append(kind)
+        done = sum(map(sum, took.values()))
+        if not left or not done or any(kind not in took for kind in left):
+            return None
+        rest = sum(sum(took[kind]) / len(took[kind]) for kind in left)
+        clock = time.time()
+        return datetime.fromtimestamp(clock + (clock - stamp(run['started'])) * rest / done, timezone.utc).isoformat()
+
     def run_info(self, run_id, details=True):
         result = self.store.get('runs', run_id, summary=not details)
+        with self.lock:
+            run = self.runs.get(run_id)
+            ends = self._ends(run) if run is not None and run['kind'] == 'workflow' and run['state'] == 'running' else None
+        if ends:
+            result['estimated_end'] = ends
         result['operation_states'] = self.store.operation_states(run_id)
         result['progress'] = {name: {k: v for k, v in record.items() if k != 'state'}
                               for name, record in self.store.checkpoints(run_id).items()}

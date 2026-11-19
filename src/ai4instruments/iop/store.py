@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+import statistics
 import threading
 import time
 from datetime import datetime, timezone
@@ -377,6 +378,20 @@ class Store:
                 self.db.execute('INSERT INTO condition_records(condition,body) VALUES(?,?)', (condition, dumps(record)))
             if event:
                 self.event(event, data.pop('run_id', None), condition=condition, **data)
+
+    def durations(self, limit=5000):
+        """How long each device operation took, the median over the most recent completed operations, and from how
+        many: {"device.operation": (seconds, count)}."""
+        with self.lock:
+            rows = self.db.execute("SELECT json_extract(body,'$.device'), json_extract(body,'$.operation'), "
+                                   "json_extract(body,'$.started'), json_extract(body,'$.ended') FROM operations "
+                                   "WHERE state='completed' ORDER BY rowid DESC LIMIT ?", (limit,)).fetchall()
+        taken = {}
+        for device, operation, started, ended in rows:
+            if started and ended:
+                taken.setdefault(f'{device}.{operation}', []).append(
+                    datetime.fromisoformat(ended).timestamp() - datetime.fromisoformat(started).timestamp())
+        return {key: (statistics.median(values), len(values)) for key, values in taken.items()}
 
     def doubt(self, run_id, condition, after, entry):
         """Mark the operations of an experiment that relied on a condition and were in progress after a moment,

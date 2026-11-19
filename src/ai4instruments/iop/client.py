@@ -322,6 +322,15 @@ class Client:
                    'requirements':requirements or {}, 'request_id':request_id or str(uuid.uuid4()),
                    **({'requires': list(requires)} if requires else {}), **({'upkeep': upkeep} if upkeep else {})})['id'])
 
+    def preview(self, steps, *, platform=None, resources=(), requirements=None, requires=(), upkeep=None, parameters=None):
+        """What a graph of steps would do, without running it: how many operations of each instrument, the conditions
+        it relies on and their state, and estimated_s, how long its operations would take one after another at the
+        median their kinds took recently. Refused as the submission itself would be."""
+        return self.request('/v1/runs', {'steps': steps, 'preview': True, 'platform': platform, 'resources': list(resources),
+                                         'requirements': requirements or {}, 'parameters': parameters or {},
+                                         **({'requires': list(requires)} if requires else {}),
+                                         **({'upkeep': upkeep} if upkeep else {})})
+
     def start_experiment(self, *, name='Experiment', project=None, experiment=None, resources=(),
                          request_id=None, parameters=None, platform=None, requirements=None, requires=(), upkeep=None):
         """Start one externally driven run; retain its ID and call finish after saving results.
