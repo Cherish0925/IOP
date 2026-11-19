@@ -48,6 +48,9 @@ class Part(Driver):
             WORLD['integrations'] = WORLD.get('integrations', 0) + 1
             if WORLD['integrations'] == WORLD.get('bump'):
                 WORLD['alignment'] = 0.5
+            if WORLD['integrations'] in WORLD.get('shaken', ()):
+                # Someone reports the table shook during this reading; the alignment itself holds.
+                WORLD['engine'].conditions.invalidate(['path.aligned'], 'the table shook')
             time.sleep(arguments['seconds'])
             signal = WORLD['level'] * WORLD['alignment']
             WORLD['alignment'] *= WORLD.get('fade', 1.0)

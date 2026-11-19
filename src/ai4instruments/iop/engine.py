@@ -1750,7 +1750,10 @@ class Engine:
                 continue
             candidates.append((rid, items))
             op = self.operations[op_id]
-            if rid in maintaining and not op.get('maintenance') or self.retaking.get(rid) and not op.get('retakes'):
+            # While a pass keeps its conditions, an experiment's operations wait for it; while points in doubt are
+            # taken again, its other operations wait for them, except the maintenance those retakes rely on.
+            if rid in maintaining and not op.get('maintenance') or \
+                    self.retaking.get(rid) and not (op.get('retakes') or op.get('maintenance')):
                 continue
             if 'retry_at' in op and stamp(op['retry_at']) > time.time():
                 continue
@@ -1761,6 +1764,11 @@ class Engine:
             amounts = self._amounts(op)
             if not self.allocation.can_claim(rid, amounts, blocked | waiting):
                 blocked.update(amounts)
+                continue
+            if (op.get('requires') and self.runs[rid].get('upkeep') and self.conditions.lapsed(op['requires'])
+                    and self.conditions.keep(self.runs[rid], op['requires'])):
+                # A condition came due since the experiment kept it: the operation waits for the pass that renews it.
+                maintaining.add(rid)
                 continue
             self.last_scheduled_run = rid
             op.update(state='running', started=now())

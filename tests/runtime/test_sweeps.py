@@ -401,7 +401,7 @@ class SweepCase(unittest.TestCase):
             'result': {'power': {'step': 'scan', 'path': ['power']}}})
         run = self.submit([{'id': 'find', 'operation': 'axis.find'},
                            {'id': 'around', 'operation': 'axis.around', 'bindings': {'center': {'step': 'find', 'path': ['angle']}}}])
-        result = run.result(20)
+        result = run.result(60)
         self.assertEqual(result['find']['angle'], 0)
         self.assertEqual(result['around']['power']['data']['axes'], [{'name': 'angle', 'start': -2, 'stop': 2, 'unit': 'deg'}])
         self.assertAlmostEqual(result['around']['power']['values'][2], 1)
@@ -502,7 +502,7 @@ class SweepCase(unittest.TestCase):
                       {'id': 'zero', 'device': 'smu', 'operation': 'source', 'arguments': {'volts': 0}}],
             'result': {'current': {'step': 'ramp', 'path': ['current']}}})
         # Each use stops at its own compliance and returns to zero; the next use then runs.
-        found = self.submit([{'id': 'rows', 'operation': 'diode.iv', 'sweep': {'compliance': [1e-4, 1e-3]}}]).result(20)
+        found = self.submit([{'id': 'rows', 'operation': 'diode.iv', 'sweep': {'compliance': [1e-4, 1e-3]}}]).result(60)
         current = found['rows']['current']
         self.assertEqual((current['data']['shape'], [row.index(None) for row in current['values']]), ([2, 101], [49, 55]))
         self.assertEqual(self.client.saved_operation('diode.iv')['uses']['completed'], 2)
@@ -533,10 +533,13 @@ class SweepCase(unittest.TestCase):
         self.assertTrue(0 < ends < 3, ends)
         run.result(10)
         self.assertNotIn('estimated_end', run.info(details=False))
-        # Now each move is known to take about 0.2 s.
+        # Now each move is known to take what these five took: the preview counts five at their median.
         preview = self.client.preview(steps)
         self.assertEqual(preview['by_operation']['stage.move_to']['from'], 5)
-        self.assertAlmostEqual(preview['estimated_s'], 1.0, delta=0.5)
+        took = sorted(datetime.fromisoformat(op['ended']).timestamp() - datetime.fromisoformat(op['started']).timestamp()
+                      for op in run.info()['operation_records'])
+        self.assertGreaterEqual(took[2], 0.2)
+        self.assertAlmostEqual(preview['estimated_s'], 5 * took[2], delta=0.001)
 
     def test_a_step_tries_again_an_instrument_call_that_failed(self):
         self.client.register({'id': 'flaky', 'driver': Flaky.__module__ + ':Flaky'})

@@ -79,10 +79,13 @@ class UpkeepCase(unittest.TestCase):
     def test_validity_is_renewed_before_it_ends(self):
         self.client.configure_platform(chain(SOURCE, {**PATH, 'valid_for': 1.0}, ahead_s=0.6))
         self.until(lambda: set(self.states().values()) == {'holds'})
-        first = self.client.condition('path.aligned')['accepted']
-        self.until(lambda: self.client.condition('path.aligned')['accepted'] != first)
-        renewal = self.client.request('/v1/maintenance/' + self.until(self.last)['id'])
-        self.assertEqual(renewal['reasons'], {'path.aligned': 'validity ends'})
+
+        def renewed():
+            # On a slow machine the pass that brought the platform up may still be the last one for a while.
+            job = self.last()
+            found = job and self.client.request('/v1/maintenance/' + job['id'])
+            return found if found and found['reasons'] == {'path.aligned': 'validity ends'} else None
+        self.assertTrue(self.until(renewed))
         self.assertEqual(self.states()['path.aligned'], 'holds')
 
     def test_a_lost_condition_is_attempted_again_after_retry_s(self):
@@ -253,6 +256,24 @@ class UpkeepCase(unittest.TestCase):
         with self.client.start_experiment(resources=['detector']) as experiment, \
                 self.assertRaisesRegex(IOPError, 'retake takes again the points of a sweep in a step graph'):
             experiment.batch([{'id': 'scan', 'device': 'detector', 'operation': 'read', 'repeat': 2, 'retake': True}])
+
+    def test_a_pass_runs_between_the_points_taken_again(self):
+        # The table is bumped during the third reading and shakes during the fourth, so the four readings since the
+        # alignment was verified are in doubt; it shakes again while the first of them is taken again. The pass that
+        # renews the alignment runs before the next retake, and the retakes wait for nothing else.
+        self.engine.config['upkeep_interval_s'] = 3600
+        self.client.configure_platform(chain(SOURCE, PATH, keep=False))
+        WORLD.update(bump=3, shaken=(4, 5), integrations=0, engine=self.engine)
+        self.addCleanup(lambda: [WORLD.pop(key) for key in ('bump', 'shaken', 'engine')])
+        run = self.client.submit([{'id': 'scan', 'device': 'detector', 'operation': 'integrate', 'arguments': {'seconds': 0.05},
+                                   'repeat': 6, 'retake': True}], platform='chain', requires=['path.aligned'], upkeep=True)
+        info = run.wait(timeout=60)
+        self.assertEqual(info['state'], 'completed', info.get('error'))
+        self.assertEqual(run.result(10)['scan']['signal']['values'], [1.0] * 6)
+        retakes = sorted((op for op in info['operation_records'] if op.get('retakes')), key=lambda op: op['started'])
+        self.assertEqual(len(retakes), 4)
+        passes = [op['started'] for op in info['operation_records'] if op.get('maintenance') and op['operation'] == 'read']
+        self.assertTrue(any(retakes[0]['ended'] < started < retakes[1]['started'] for started in passes))
 
     def test_rejected_operations_do_not_start_instrument_maintenance(self):
         from ai4instruments.iop import batches

@@ -626,6 +626,10 @@ class Conditions:
                                **({'run_id': run_id} if run_id else {}))
         return {c: {k: s[k] for k in ('accepted', 'value', 'reference') if k in s} for c, s in relied.items()}
 
+    def lapsed(self, names):
+        """Whether a condition these rest on has come due or is unknown: what a pass of upkeep renews."""
+        return any(self.state(condition_id)['state'] in ('due', 'unknown') for condition_id in self.closure(names))
+
     def rely(self, run_id, names):
         """Remember that this experiment's data depend on these conditions from now on."""
         for condition_id in self.closure(names):
