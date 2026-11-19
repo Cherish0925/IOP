@@ -121,6 +121,8 @@ def parser():
     p = sub.add_parser('resume', help='Continue a program from its saved progress, or a step graph from where it stopped')
     p.add_argument('run_id'); p.add_argument('--request-id'); p.add_argument('--wait', action='store_true')
     p = sub.add_parser('checkpoints', help='Read saved program progress'); p.add_argument('run_id')
+    p = sub.add_parser('archive', help='Save an experiment as one ZIP: records, files and an RO-Crate description')
+    p.add_argument('run_id'); p.add_argument('--output', help='File to write; RUN_ID.zip by default')
     p = sub.add_parser('identify', help='Read and save instrument identity'); p.add_argument('device'); p.add_argument('--wait', action='store_true')
     p = sub.add_parser('instrument-profile', help='List or save model-specific operations'); p.add_argument('file', nargs='?')
     p = sub.add_parser('instrument-catalog', help='Find installed model descriptions and their package versions')
@@ -244,6 +246,9 @@ def main():
             output(run.wait() if args.wait else {'run_id': run.id, 'attempt': record['attempt']})
         elif args.command == 'checkpoints':
             output(client.run(args.run_id).checkpoints())
+        elif args.command == 'archive':
+            path = client.run(args.run_id).archive(args.output)
+            output({'path': str(path.resolve()), 'size': path.stat().st_size})
         elif args.command == 'identify':
             run = client.identify(args.device)
             output(run.result() if args.wait else {'run_id': run.id})

@@ -325,6 +325,7 @@ export async function inspectRun(id) {
         ]);
         if ($("#modal").dataset.runDetail !== id || !body.isConnected) return;
         $("#detail-files").innerHTML =
+          `<div class="actions"><button class="button small" id="run-archive">${icon("download")}${t("整个实验 ZIP", "Whole experiment as ZIP")}</button><small>${t("记录、文件与 RO-Crate 说明，数据仓库可直接读取", "Records, files and an RO-Crate description that data repositories read")}</small></div>` +
           streamFigures(id, streams) +
           (files.length
             ? `<div class="table-wrap"><table><thead><tr><th>${t("文件", "File")}</th><th>${t("大小", "Size")}</th><th></th></tr></thead><tbody>${files.map((f, i) => `<tr><td>${icon("file")} <span class="mono">${esc(f.name)}</span></td><td class="nowrap">${size(f.size)}</td><td><button class="button small" data-download="${i}">${icon("download")}${t("下载", "Download")}</button></td></tr>`).join("")}</tbody></table></div>`
@@ -337,6 +338,10 @@ export async function inspectRun(id) {
                 ),
               ));
         drawArrays($("#detail-files"));
+        $("#run-archive").onclick = (e) =>
+          busy(e.currentTarget, () =>
+            save("runs/" + encodeURIComponent(id) + "/archive", id + ".zip"),
+          );
         $$("[data-download]", body).forEach(
           (b) =>
             (b.onclick = () =>

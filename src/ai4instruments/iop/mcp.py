@@ -23,7 +23,7 @@ TOOLSETS = {
     'experiments': ('saved_operations', 'operating_conditions', 'run_procedure', 'submit_experiment', 'start_experiment', 'invoke_operation',
                     'finish_experiment', 'submit_operations', 'save_acquisition', 'submit_program', 'continue_program',
                     'experiment', 'cancel_experiment', 'experiment_updates', 'experiment_files', 'operation_result', 'read_array',
-                    'save_experiment_file', 'download_file'),
+                    'save_experiment_file', 'download_file', 'save_experiment'),
     'attention': ('reconnect_instrument', 'release_instrument', 'resolve_resources', 'manual_tasks', 'report_manual_step'),
     'episodes': ('begin_episode', 'record_transition', 'research_episodes'),
 }
@@ -474,9 +474,18 @@ def create_server(client, *, http=False, selection=None):
         client.run('').download(artifact_id, path)
         return {'path': str(path), 'size': path.stat().st_size}
 
+    def save_experiment(run_id: str, destination: str) -> dict:
+        """Save a whole experiment as one ZIP on this MCP host: its records, files and an RO-Crate description that research data repositories read."""
+        path = Path(destination).expanduser().resolve()
+        if path.exists():
+            raise ValueError('Choose a new output filename: ' + str(path))
+        client.run(run_id).archive(path)
+        return {'path': str(path), 'size': path.stat().st_size}
+
     if not http:
         tool()(submit_program)
         tool()(download_file)
+        tool()(save_experiment)
 
     # Tool listings are read on every agent turn. Use the SDK's registered schemas when it exposes them.
     manager = getattr(server, '_tool_manager', None)

@@ -64,7 +64,7 @@ Traces, spectra, images, buffers and numeric data streams are saved with their t
 
 ## Research and learning
 
-Episode records retain the experiment trajectory alongside the three operation roles. Python, TypeScript and MCP clients can save versioned task/policy identities, observations, rewards and termination information. Each transition links to completed operations in that experiment. Identical retries return the saved record; reconnection preserves the sequence. JSON Lines export supports downstream data processing and learning.
+Episode records retain the experiment trajectory alongside the three operation roles. Python, TypeScript and MCP clients can save versioned task/policy identities, observations, rewards and termination information. Each transition links to completed operations in that experiment. Identical retries return the saved record; reconnection preserves the sequence. JSON Lines export supports downstream data processing and learning. A whole experiment saves as one ZIP of its records and files with an RO-Crate description that research data repositories read.
 
 An episode does not reset equipment. Use an explicit preparation procedure and measured initial state. Parallel physical episodes require independent available resources. IOP provides execution and data; the research program defines the scientific task and the learning algorithm.
 

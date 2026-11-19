@@ -63,6 +63,7 @@ An individual instrument can operate without a platform. A platform records rela
 | `manual_tasks` | Steps waiting for a person: instruction and readings to report |
 | `report_manual_step` | Report a step done with its readings, failed or unsure, as the person stated |
 | `download_file` | Save an experiment output on the MCP host |
+| `save_experiment` | Save a whole experiment as one ZIP on the MCP host: records, files and an RO-Crate description |
 
 `iop://laboratory` exposes the same context as an MCP resource. Submissions return immediately. `experiment` returns at most 100 operations per page; pass the returned cursor as `after`. Retrieve large data through output files.
 
@@ -73,11 +74,11 @@ Hosts that cap the number of tools, or carry every tool description in each requ
 | Toolset | Tools | For |
 | --- | --- | --- |
 | `setup` | 12 | Registering instruments, model descriptions, platforms and resources |
-| `experiments` | 18 | Saved operations, operating conditions, experiments, batches, acquisitions, programs, results and files |
+| `experiments` | 20 | Saved operations, operating conditions, experiments, batches, acquisitions, programs, results and files |
 | `attention` | 5 | Reconnecting and releasing instruments, held resources and manual steps |
 | `episodes` | 3 | Research episodes and transitions |
 
-All four (41 tools, about 22 kB of descriptions) are the default. `experiments,attention` offers 26 tools in about 15 kB for a laboratory that is already set up.
+All four (43 tools, about 29 kB of descriptions and parameters) are the default. `experiments,attention` offers 28 tools in about 23 kB for a laboratory that is already set up.
 
 ## Remote service
 

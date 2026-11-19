@@ -333,6 +333,14 @@ export class Run {
     if (!response.ok) throw new IOPError(value.error ?? response.statusText, response.status);
     return value as ArtifactRecord;
   }
+  /** The whole experiment as one ZIP: its records, its files and an RO-Crate description; read the response as a stream. */
+  async archive(signal?: AbortSignal): Promise<Response> {
+    const response = await fetch(this.client.endpoint + `/v1/runs/${encodeURIComponent(this.id)}/archive`, {
+      headers: { Authorization: 'Bearer ' + this.client.token }, signal
+    });
+    if (!response.ok) throw new IOPError(response.statusText, response.status);
+    return response;
+  }
   async download(artifactId: string, signal?: AbortSignal): Promise<Response> {
     const response = await fetch(this.client.endpoint + '/v1/artifacts/' + encodeURIComponent(artifactId), {
       headers: { Authorization: 'Bearer ' + this.client.token }, signal: signal ?? AbortSignal.timeout(this.client.timeout)

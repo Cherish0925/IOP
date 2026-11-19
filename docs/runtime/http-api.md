@@ -43,6 +43,7 @@ Base URL: `http://127.0.0.1:8765`. API bodies are JSON objects. Requests to `/v1
 | POST | `/v1/devices/{device_id}/release` | `{}` | Release idle connections; retain descriptions until explicit reconnection |
 | POST | `/v1/runs/{run_id}/cancel` | `{}` | Current run, cancellation requested |
 | POST | `/v1/runs/{run_id}/finish` | `{}` | Finish an external experiment with no pending operations; release its reservation |
+| GET | `/v1/runs/{run_id}/archive` | — | The whole experiment as one ZIP, sent in chunks: records, files and `ro-crate-metadata.json`. See [records and restart](README.md#records-and-restart) |
 | GET | `/v1/runs/{run_id}/result` | — | Saved result without operation history; while a step graph runs, what its completed operations give so far |
 | POST | `/v1/runs/{run_id}/result` | `{"result": ...}` | Saved result; run must be running |
 | POST | `/v1/runs/{run_id}/artifacts` | `{"name":"scan.csv","data":"<base64>","operation_ids":["op_..."]}` | Saved output file; optional links must name completed operations in this run |

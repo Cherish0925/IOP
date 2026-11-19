@@ -229,6 +229,12 @@ class Store:
             return [json.loads(row[0]) for row in
                     self.db.execute('SELECT body FROM operations WHERE run_id=? ORDER BY rowid', (run_id,))]
 
+    def batches(self, run_id):
+        """The operation batches an experiment accepted, in order."""
+        with self.lock:
+            return [json.loads(row[0]) for row in
+                    self.db.execute('SELECT body FROM operation_batches WHERE run_id=? ORDER BY rowid', (run_id,))]
+
     def forget_files(self, run_id, folder):
         """Drop the records of an experiment's files under a folder of its own, inside a transaction."""
         prefix = folder.rstrip('/') + '/'
@@ -397,6 +403,13 @@ class Store:
             rows = self.db.execute('SELECT body FROM condition_records WHERE condition=? ORDER BY sequence DESC LIMIT ?',
                                    (condition, min(max(int(limit), 1), 10000))).fetchall()
             return [json.loads(row[0]) for row in reversed(rows)]
+
+    def condition_history(self, condition, since, until):
+        """The records of one condition between two times, oldest first."""
+        with self.lock:
+            return [json.loads(row[0]) for row in self.db.execute(
+                "SELECT body FROM condition_records WHERE condition=? AND json_extract(body,'$.time') BETWEEN ? AND ? "
+                'ORDER BY sequence', (condition, since, until))]
 
     def record_condition(self, condition, state, record, event, **data):
         """Save what was observed or done for a condition together with its resulting state."""

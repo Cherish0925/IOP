@@ -568,6 +568,15 @@ class Run:
             with self.client._open(request, timeout=self.client.timeout) as response:
                 return json.loads(response.read())
 
+    def archive(self, destination=None):
+        """Save the whole experiment as one ZIP: its records, its files and an RO-Crate description."""
+        destination = Path(destination or self.id + '.zip')
+        request = Request(self.client.endpoint + '/v1/runs/' + self.id + '/archive',
+                          headers={'Authorization': 'Bearer ' + self.client.token})
+        with self.client._open(request, timeout=self.client.timeout) as response, destination.open('wb') as file:
+            shutil.copyfileobj(response, file, 256 * 1024)
+        return destination
+
     def download(self, artifact_id, destination):
         request = Request(self.client.endpoint+'/v1/artifacts/'+artifact_id, headers={'Authorization':'Bearer '+self.client.token})
         with self.client._open(request, timeout=self.client.timeout) as response, Path(destination).open('wb') as file:

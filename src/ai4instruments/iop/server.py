@@ -316,6 +316,21 @@ class Handler(BaseHTTPRequestHandler):
                     result = describe(engine, parts[2], parts[4], body['definition'] if method == 'POST' else None)
                 else:
                     raise KeyError(url.path)
+            elif len(parts) == 4 and parts[:2] == ['v1', 'runs'] and parts[3] == 'archive' and method == 'GET':
+                from .archive import write
+                engine.store.get('runs', parts[2], summary=True)
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/zip')
+                self.send_header('Content-Disposition', 'attachment; filename="%s.zip"' % parts[2].replace('"', ''))
+                self.send_header('Transfer-Encoding', 'chunked')
+                self.end_headers()
+                try:
+                    write(engine, parts[2], lambda data: self.wfile.write(b'%x\r\n%s\r\n' % (len(data), data)))
+                    self.wfile.write(b'0\r\n\r\n')
+                except Exception:
+                    # The response has begun: it ends without its last chunk, so the client knows it is incomplete.
+                    self.close_connection = True
+                return
             elif len(parts) == 4 and parts[:2] == ['v1','runs']:
                 run_id, action = parts[2:]
                 if action == 'operations' and method == 'POST':

@@ -8,6 +8,7 @@ import statistics
 import struct
 import time
 import unittest
+import zipfile
 from datetime import datetime
 from unittest.mock import patch
 from ai4instruments.iop import Driver, IOPError, arrays, library, sweeps
@@ -727,6 +728,33 @@ class SweepCase(unittest.TestCase):
             self.assertEqual(gathered['angle']['data']['axes'], [{'name': 'angle', 'start': 10.0, 'step': 10.0, 'unit': 'deg'}])
             seen = run.read_array('call.power', request_id='two-angles')
             self.assertEqual((seen['request_id'], seen['summary']['min_at']), ('two-angles', 20.0))
+
+    def test_an_experiment_is_saved_as_one_archive(self):
+        with self.client.start_experiment(name='Two angles', resources=['stage', 'meter']) as run:
+            run.call('axis.measure', {'axis': 'stage'}, sweep={'angle': [10, 20]}, request_id='two-angles')
+            run.save_file('notes.csv', 'angle,power\n10,1\n')
+        path = run.archive(self.temp.name + '/two-angles.zip')
+        with zipfile.ZipFile(path) as archive:
+            names = set(archive.namelist())
+            self.assertLessEqual({'experiment.json', 'operations.jsonl', 'events.jsonl', 'saved-operations.json'}, names)
+            self.assertEqual(json.loads(archive.read('experiment.json'))['id'], run.id)
+            operations = [json.loads(line) for line in archive.read('operations.jsonl').splitlines()]
+            self.assertEqual([(op['step'], op['state']) for op in operations][:2],
+                             [('call.0.turn', 'completed'), ('call.0.read', 'completed')])
+            self.assertEqual(len(operations), 4)
+            self.assertEqual([item['id'] for item in json.loads(archive.read('saved-operations.json'))], ['axis.measure'])
+            notes = [name for name in names if name.startswith('files/') and name.endswith('notes.csv')]
+            self.assertEqual(archive.read(notes[0]), b'angle,power\n10,1\n')
+            # The RO-Crate describes each entry with its size, and the experiment as an action using the devices.
+            graph = {entity['@id']: entity for entity in json.loads(archive.read('ro-crate-metadata.json'))['@graph']}
+            parts = graph['./']['hasPart']
+            self.assertEqual({part['@id'] for part in parts}, names - {'ro-crate-metadata.json'})
+            self.assertTrue(all(graph[name]['contentSize'] == str(archive.getinfo(name).file_size) for name in names
+                                if name != 'ro-crate-metadata.json'))
+            self.assertLessEqual({'#iop', '#device-stage', '#device-meter'},
+                                 {item['@id'] for item in graph['#experiment']['instrument']})
+            self.assertEqual(graph['#experiment']['actionStatus']['@id'], 'http://schema.org/CompletedActionStatus')
+            self.assertIn(graph['./']['license']['@id'], graph)
 
     @unittest.skipUnless(importlib.util.find_spec('mcp'), 'Install the agent extra to exercise MCP')
     def test_agents_sweep_in_a_batch_and_read_what_it_gathered(self):
