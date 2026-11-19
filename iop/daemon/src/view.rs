@@ -800,7 +800,15 @@ fn shaped(trace: &[f64], first: usize, coordinates: Option<&[f64]>, shape: Fit) 
         "residual": number((cost / n as f64).sqrt()),
         "count": n,
     });
-    if n > 4 {
+    if t.iter()
+        .filter(|&&t| (t - p[2]).abs() <= p[3].abs())
+        .count()
+        < 2
+    {
+        // Fewer than two values within its width at half height do not resolve the line, such as one drawn
+        // through a single noisy value: its errors would say nothing.
+        found["errors"] = Value::Null;
+    } else {
         // Standard errors from what the line leaves and the curvature of the fit at its end, the values taken
         // as independent: the diagonal of the inverse of the normal equations, scaled by the residual variance.
         let mut a = [[0.0; 4]; 4];
@@ -1637,6 +1645,16 @@ mod tests {
             (at("width") - 6.0).abs() < 3.0 * error("width") && error("width") < 0.1,
             "{found}"
         );
+        // One high value on flat noise is no line its samples resolve: its fit gives no errors.
+        let mut spike: Vec<f64> = (0..120).map(|_| 1.0 + noise()).collect();
+        spike[60] = 2.0;
+        for shape in ["lorentzian", "gaussian"] {
+            let found = fit_of(&spike, json!({"stop": 120, "fit": shape}));
+            assert!(
+                found["width"].as_f64().unwrap() < 1.0 && found["errors"].is_null(),
+                "{found}"
+            );
+        }
         // A Gaussian beam profile 10 wide at 64.5, read in listed coordinates that are half a unit apart.
         let profile: Vec<f64> = (0..200)
             .map(|x| 0.1 + 2.0 * (-LN_2 * ((x as f64 * 0.5 - 64.5) / 5.0).powi(2)).exp())

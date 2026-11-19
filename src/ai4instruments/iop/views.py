@@ -468,7 +468,8 @@ def _shaped(seq, first, coordinates, shape):
     its center, its full width at half its height, its height above its base (below for a dip), the base, the root
     mean square of what it leaves and the number of values. It starts from the value farthest from the median,
     with the median as base and the half width where the trace first comes halfway back on either side. None for
-    fewer than five places or a flat trace."""
+    fewer than five places or a flat trace. Its standard errors come with it when at least two values lie within
+    its width at half height."""
     place = (lambda index: float(first + index)) if coordinates is None else coordinates.__getitem__
     points = [(place(i), y) for i, y in enumerate(seq) if math.isfinite(y)]
     n = len(points)
@@ -551,7 +552,11 @@ def _shaped(seq, first, coordinates, shape):
             break
     found = {'center': _finite(middle + p[2] * half), 'width': _finite(2.0 * abs(p[3]) * half), 'height': _finite(p[1]),
              'base': _finite(p[0]), 'residual': _finite(math.sqrt(cost / n)), 'count': n}
-    if n > 4:
+    if sum(1 for at in t if abs(at - p[2]) <= abs(p[3])) < 2:
+        # Fewer than two values within its width at half height do not resolve the line, such as one drawn
+        # through a single noisy value: its errors would say nothing.
+        found['errors'] = None
+    else:
         # Standard errors from what the line leaves and the curvature of the fit at its end, the values taken as
         # independent: the diagonal of the inverse of the normal equations, scaled by the residual variance.
         a = [[0.0] * 4 for _ in range(4)]

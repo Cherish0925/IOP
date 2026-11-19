@@ -356,6 +356,12 @@ class ViewCase(unittest.TestCase):
         self.assertLess(abs(fit['center'] - 1.06e9), 3 * fit['errors']['center'])
         self.assertLess(abs(fit['width'] - 0.5e6), 3 * fit['errors']['width'])
         self.assertLess(fit['errors']['width'], 0.01 * 0.5e6)
+        # One high value on the flat noise beside the dip is no line its samples resolve: its fit gives no errors.
+        spike = [1 + noise() for _ in range(120)]
+        spike[60] = 2
+        for shape in ('lorentzian', 'gaussian'):
+            fit = self.view(spike, {'dtype': 'float64'}, fit=shape)['fit']
+            self.assertEqual((fit['width'] < 1, fit['errors']), (True, None))
         # A Gaussian beam profile 10 um wide at half height, sampled every 0.5 um.
         x = {'name': 'x', 'unit': 'um', 'start': 0, 'step': 0.5}
         profile = [0.1 + 2 * math.exp(-math.log(2) * ((0.5 * i - 64.5) / 5) ** 2) for i in range(200)]
@@ -434,6 +440,7 @@ class ViewCase(unittest.TestCase):
              {'fit': 'lorentzian'}),
             (cube, {'dtype': 'float64', 'shape': [6, 7, 50], 'axes': [{'name': 'a'}, {'name': 'b'}, {'name': 'c'}]},
              {'along': 'c', 'at': {'a': 4}, 'fit': 'gaussian'}),
+            ([1, 1.01, 0.99, 1, 2, 1.01, 1, 0.99, 1], {'dtype': 'float64'}, {'fit': 'lorentzian'}),
         ]
         compared = 0
         for values, description, options in cases:
