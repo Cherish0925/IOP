@@ -98,6 +98,22 @@ These views are computed once, when the step that returned the array completes, 
 
 `GET /v1/library` lists the saved operations with their layer, description, parameters and use counts; `GET /v1/library/{id}` returns one with its steps, so a method can be read, changed and saved again. The laboratory overview lists the names by role, which is what an agent sees first. / 列表给出每个操作的角色、说明、参数和使用次数；单个查询返回其步骤，方法可以读出、修改后再保存。实验室概况按角色列出名称，Agent 连接后首先看到的就是这些。
 
+## Options of a step / 步骤的选项
+
+A step runs once unless it carries one of these. They apply to a device operation and to a use of a saved operation alike, in step graphs, batches, saved operations and platform procedures. / 步骤默认运行一次，带下列选项时除外。它们对设备操作和已保存操作的使用同样适用，可用于步骤图、批次、已保存的操作和平台过程。
+
+| Option / 选项 | Effect / 作用 | Section / 章节 |
+| --- | --- | --- |
+| `sweep` | Run at each value of the parameters named; what the points return is gathered into arrays / 按所列参数的各个取值依次运行，各点的返回值汇集成数组 | [Sweeps](#sweeps--扫描) |
+| `sweep` + `adapt` | Place each point from what the earlier ones read / 按之前各点的读数安排每个点 | [Sweeps](#sweeps--扫描) |
+| `repeat` | Run N times in turn, gathered over an axis named `repeat` / 依次运行 N 次，汇集在 `repeat` 轴上 | [Sweeps](#sweeps--扫描) |
+| `until` | Stop a sweep or repetition at a limit, or once what it gathered is known well enough / 读数越限或汇集结果足够确定时停止扫描或重复 | [Sweeps](#sweeps--扫描) |
+| `seek` | Find where a reading is largest or smallest, in place of `sweep` / 代替 `sweep`，寻找读数最大或最小之处 | [Sweeps](#sweeps--扫描) |
+| `retake` | Take again the points a lost condition put in doubt / 重测因条件不成立而存疑的点 | [Sweeps](#sweeps--扫描), [conditions](conditions.md#experiments-rely-on-conditions--实验依赖条件) |
+| `retry` | Make a failed instrument call again / 仪器调用失败后再调用 | [When a call fails](#when-a-call-fails--调用失败时) |
+
+A step graph that stopped continues from where it stopped: see [continuing a step graph](../../iop/continuity.md#continuing-a-step-graph). Agents read the same in short form with `guide("steps")` and `guide("sweeps")`. / 停止的步骤图可以从停止处继续，见[步骤图续接](../../iop/continuity.zh-CN.md#步骤图续接)。Agent 用 `guide("steps")`、`guide("sweeps")` 读到同样内容的简短版本。
+
 ## Sweeps / 扫描
 
 A step with `sweep` runs once at each value of the parameters it names, one point after another; the first name changes slowest. A list gives the values (numbers, or strings such as channel names); `start`, `stop` and `points`, or `center`, `span` and `points`, give evenly spaced numbers. A sweep has at most 10,000 points, and each point is an ordinary operation, or use of a saved operation, with its own record. / 带 `sweep` 的步骤按所列参数的每个取值依次运行一次，第一个参数变化最慢。列表给出取值（数值，或通道名等字符串）；`start`、`stop`、`points`，或 `center`、`span`、`points`，给出等间隔的数值。每次扫描最多 10,000 个点，每个点都是普通的操作或已保存操作的一次使用，有自己的记录。
