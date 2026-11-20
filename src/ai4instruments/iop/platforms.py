@@ -8,12 +8,13 @@ import re
 from . import views
 
 
-# What a submission, a step and a value read from an earlier result hold. Any other field is refused: left out
-# without a word, a misspelt requires or retry would run the experiment without it.
+# What a submission, a step, a single call and a value read from an earlier result hold. Any other field is
+# refused: left out without a word, a misspelt requires or retry would run the experiment without it.
 SUBMISSION = ('name', 'project', 'experiment', 'kind', 'steps', 'platform', 'platform_revision', 'resources',
               'requirements', 'parameters', 'requires', 'upkeep', 'request_id', 'preview')
 STEP = ('id', 'device', 'operation', 'arguments', 'after', 'bindings', 'sweep', 'repeat', 'until', 'seek', 'retake',
         'retry', 'resources', 'requirements')
+CALL = ('device', 'operation', 'arguments', 'request_id', 'resources', 'requirements', 'retry')
 SOURCE = ('step', 'path', 'view')
 
 

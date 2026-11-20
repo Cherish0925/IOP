@@ -357,7 +357,11 @@ class Handler(BaseHTTPRequestHandler):
                     if not 0 <= wait <= 25:
                         raise ValueError('Batch wait must be between 0 and 25 seconds')
                     if method == 'POST':
-                        result = batches.submit(engine, run_id, body['steps'], body.get('request_id'))
+                        if body.keys() - {'steps', 'request_id'}:
+                            # maintain is an option of the clients, which maintain and then submit again.
+                            raise ValueError('A batch takes steps and request_id; it has no '
+                                             + ' or '.join(sorted(body.keys() - {'steps', 'request_id'})))
+                        result = batches.submit(engine, run_id, body.get('steps'), body.get('request_id'))
                         if wait:
                             result = batches.describe(engine, run_id, body['request_id'], wait)
                     else:

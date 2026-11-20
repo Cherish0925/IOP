@@ -973,7 +973,7 @@ class Engine:
             for key, count in quantities(source.get('requirements', {}), self.capacities).items():
                 requirements[key] = max(requirements.get(key, 0), count)
         if 'retry' in step:
-            library.retried(step['retry'], f"Step {step.get('id')}")
+            library.retried(step['retry'], f"Step {step['id']}" if step.get('id') else 'A call')
         calibration = self.descriptions[device_id].get('calibration')
         recorded = operation_fields(calibration, name)
         if recorded.get('calibration_expired') and calibration.get('enforce'):
@@ -1205,6 +1205,10 @@ class Engine:
     def invoke(self, run_id, step):
         with self.lock:
             step = json.loads(dumps({'arguments': {}, **step}))
+            unknown = sorted(step.keys() - set(platform_model.CALL))
+            if unknown:
+                # With argument for arguments, an operation whose parameters all have defaults would run on them.
+                raise ValueError('A call has no ' + ' or '.join(unknown) + '; it takes ' + ', '.join(platform_model.CALL))
             old = self.store.request("operations", step.get("request_id"))
             if old:
                 if old['run_id'] != run_id:

@@ -135,6 +135,16 @@ class ServiceCase(unittest.TestCase):
             # A single call has no step to name.
             with self.assertRaisesRegex(IOPError, '^Unknown parameters: speed; it takes angle_deg, duration$'):
                 run.invoke('stage', 'move_to', {'speed': 3})
+            # With argument for arguments, an operation whose parameters all have defaults would run on them.
+            with self.assertRaisesRegex(IOPError, 'A call has no argument; it takes device, operation, arguments'):
+                self.client.request(f'/v1/runs/{run.id}/operations', {
+                    'device': 'stage', 'operation': 'wait', 'argument': {'duration': 30}, 'request_id': 'misspelt-call'})
+            with self.assertRaisesRegex(IOPError, 'A call: retry is'):
+                self.client.request(f'/v1/runs/{run.id}/operations', {
+                    'device': 'stage', 'operation': 'position', 'retry': {'times': 50}, 'request_id': 'retried-call'})
+            with self.assertRaisesRegex(IOPError, 'A batch takes steps and request_id; it has no maintain'):
+                self.client.request(f'/v1/runs/{run.id}/batches', {'steps': [move], 'request_id': 'kept', 'maintain': True})
+            self.assertEqual(run.operations()['operations'], [])
         with self.assertRaisesRegex(IOPError, 'Step move: a step has no retries'):
             self.client.save_operation({'id': 'stage.go', 'layer': 'standard', 'description': 'Go to an angle',
                                         'steps': [dict(move, retries={'times': 2})]})

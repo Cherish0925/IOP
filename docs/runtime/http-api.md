@@ -98,7 +98,7 @@ Batches default to input order. An explicit `after=[]` starts an independent bra
 
 The result maps step IDs to driver results. Step arguments follow the corresponding instrument description, including defaults, types, ranges and units.
 
-A submission and a step take the fields of the [workflow schema](../../iop/schema/workflow.schema.json) and no others: a field that is not one of them is refused, so that a misspelt `requires` or `retry` never runs an experiment without it. What is refused names the step and, for a device, operation, condition or step that does not exist, the nearest names that do.
+A submission and a step take the fields of the [workflow schema](../../iop/schema/workflow.schema.json) and no others, a single call takes `device`, `operation`, `arguments`, `request_id`, `resources`, `requirements` and `retry`, and a batch takes `steps` and `request_id`: a field that is not one of them is refused, so that a misspelt `requires` or `retry` never runs an experiment without it. What is refused names the step and, for a device, operation, condition or step that does not exist, the nearest names that do.
 
 ## Package
 
