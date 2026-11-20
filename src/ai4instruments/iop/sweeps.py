@@ -76,7 +76,7 @@ def _count(name, spec):
                          'or center, span and points')
     if points > MAX_POINTS:
         raise ValueError(f'A sweep has at most {MAX_POINTS} points; {name} has {points}')
-    if 'adapt' in spec:
+    if isinstance(spec, dict) and 'adapt' in spec:
         path = spec['adapt']
         if not isinstance(path, list) or not path or any(type(part) not in (str, int) for part in path):
             raise ValueError(f'sweep {name}: adapt is the path to the number each point reads, such as ["power"]')

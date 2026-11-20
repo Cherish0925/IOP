@@ -309,28 +309,46 @@ function listedCoordinates(view, n) {
     ? listed
     : null;
 }
+// A returning scan can revisit a coordinate; its endpoints need not bound its values.
+function coordinateBounds(listed) {
+  const first = listed[0],
+    last = listed[listed.length - 1],
+    direction = Math.sign(last - first);
+  return listed.every((c, i) => !i || (c - listed[i - 1]) * direction >= 0) &&
+    direction
+    ? [first, last]
+    : [Math.min(...listed), Math.max(...listed)];
+}
 // Where the i-th of n values or buckets lies across a chart: at its coordinate where the axis lists them unevenly,
 // as an adaptive sweep does, otherwise at its position, which also draws an evenly logarithmic sweep on a
 // logarithmic scale.
 function across(view, n, width) {
   const even = (i) => (n === 1 ? width / 2 : (i * width) / (n - 1)),
     listed = listedCoordinates(view, n);
-  if (!listed || n < 3) return even;
+  if (!listed || n < 2) return even;
   const ratio = listed[1] / listed[0];
   if (
+    ratio !== 1 &&
     listed.every((c) => c * listed[0] > 0) &&
+    listed.every((c, i) => !i || (c - listed[i - 1]) * (ratio - 1) > 0) &&
     listed.every((c, i) => !i || Math.abs(c / listed[i - 1] / ratio - 1) < 1e-5)
   )
     return even;
-  const first = listed[0],
-    last = listed[n - 1];
-  return (i) => ((listed[i] - first) / (last - first)) * width;
+  const [first, last] = coordinateBounds(listed);
+  return first === last
+    ? () => width / 2
+    : (i) => ((listed[i] - first) / (last - first)) * width;
 }
 // Where a coordinate of the axis followed lies across a chart of n values or buckets placed by x.
 function chartX(view, n, width, x) {
   const along = view.along,
     listed = listedCoordinates(view, n);
-  if (listed)
+  if (listed) {
+    const [first, last] = coordinateBounds(listed);
+    if (first === last) return () => width / 2;
+    if (first !== listed[0] || last !== listed[n - 1])
+      return (c) =>
+        Math.max(0, Math.min(width, ((c - first) / (last - first)) * width));
     // Between two listed coordinates, on the straight line between their places.
     return (c) => {
       const rising = listed[n - 1] >= listed[0],
@@ -341,6 +359,7 @@ function chartX(view, n, width, x) {
         ((c - listed[k - 1]) / (listed[k] - listed[k - 1])) * (x(k) - x(k - 1))
       );
     };
+  }
   const position = along.step
       ? (c) =>
           along.start +
@@ -446,7 +465,9 @@ function chart(view, perRow, fitted) {
           : "#" + index[0];
   const [first, last] = ends(
     along,
-    along.coordinates || view.envelope?.coordinate,
+    listedCoordinates(view, n)
+      ? coordinateBounds(listedCoordinates(view, n))
+      : along.coordinates || view.envelope?.coordinate,
   );
   // A line read at a peak or a dip: its center, and its width at half height, where the axis places them.
   // A fitted shape gives them instead, with their standard errors, and is drawn across the selection.

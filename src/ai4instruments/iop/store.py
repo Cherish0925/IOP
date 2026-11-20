@@ -444,17 +444,34 @@ class Store:
 
     def doubt(self, run_id, condition, after, entry):
         """Mark the operations of an experiment that relied on a condition and were in progress after a moment,
-        each with the first such entry; return their IDs."""
+        and the operations that consumed their results; return the entries that changed."""
         with self.lock:
             rows = self.db.execute("SELECT id,body FROM operations WHERE run_id=? AND "
                                    "(state='running' OR json_extract(body,'$.ended')>?)", (run_id, after)).fetchall()
-            marked = []
-            for identifier, body in rows:
-                item = json.loads(body)
+            records = {identifier: json.loads(body) for identifier, body in rows}
+            consumers, pending, marked = {}, [], {}
+            for identifier, item in records.items():
+                for source in item.get('input_operations', []):
+                    consumers.setdefault(source, []).append(identifier)
                 if condition in item.get('conditions', {}) and condition not in item.get('in_doubt', {}):
-                    item.setdefault('in_doubt', {})[condition] = entry
-                    self.db.execute('UPDATE operations SET body=? WHERE id=?', (dumps(item), identifier))
-                    marked.append(identifier)
+                    item.setdefault('in_doubt', {})[condition] = dict(entry)
+                    marked[identifier] = item['in_doubt'][condition]
+                if condition in item.get('in_doubt', {}):
+                    pending.append(identifier)
+            visited = set()
+            while pending:
+                source = pending.pop()
+                if source in visited:
+                    continue
+                visited.add(source)
+                for identifier in consumers.get(source, []):
+                    item = records[identifier]
+                    found = item.setdefault('in_doubt', {}).setdefault(condition, dict(entry))
+                    found['source_operations'] = sorted(set(found.get('source_operations', [])) | {source})
+                    marked[identifier] = found
+                    pending.append(identifier)
+            for identifier in marked:
+                self.db.execute('UPDATE operations SET body=? WHERE id=?', (dumps(records[identifier]), identifier))
             return marked
 
     def maintenance(self, identifier=None, request_id=None):

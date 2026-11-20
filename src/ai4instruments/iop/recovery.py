@@ -104,6 +104,7 @@ def resume(engine, run_id, request_id):
             shutil.rmtree(directory / 'output' / 'operations' / op['id'], ignore_errors=True)
         engine.runs[run_id] = run
         engine.interrupted.pop(run_id, None)
+        engine.conditions.renewed.pop(run_id, None)
         engine.operations.update((op['id'], op) for op in operations)
         engine._index_run(run)
         engine.conditions.rely(run_id, run.get('requires', []))

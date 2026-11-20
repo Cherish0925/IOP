@@ -257,6 +257,32 @@ class UpkeepCase(unittest.TestCase):
                 self.assertRaisesRegex(IOPError, 'retake takes again the points of a sweep in a step graph'):
             experiment.batch([{'id': 'scan', 'device': 'detector', 'operation': 'read', 'repeat': 2, 'retake': True}])
 
+    def test_retakes_do_not_replay_actions_whose_arguments_came_from_doubtful_data(self):
+        self.engine.config['upkeep_interval_s'] = 3600
+        self.client.configure_platform(chain(SOURCE, PATH, keep=False))
+        self.client.maintain('chain')
+        run = self.client.submit([
+            {'id': 'scan', 'device': 'detector', 'operation': 'read', 'repeat': 2, 'retake': True},
+            {'id': 'steer', 'device': 'stage', 'operation': 'move_to', 'arguments': {'duration': 0},
+             'repeat': 2, 'retake': True,
+             'bindings': {'angle_deg': {'step': 'scan', 'view': {'field': 'signal'}, 'path': ['summary', 'mean']}}},
+            {'id': 'wait', 'device': 'aux', 'operation': 'wait', 'arguments': {'duration': 2}, 'after': ['steer']},
+        ], requires=['path.aligned'], upkeep=True)
+        self.until(lambda: any(op['step'] == 'wait' and op['state'] == 'running'
+                               for op in run.operations()['operations']))
+        # The experiment is still active. A verification discovers drift since before scan and steer ran.
+        WORLD['alignment'] = 0.5
+        self.client.maintain('chain', force=True)
+        info = run.wait(timeout=15)
+        self.assertEqual(info['state'], 'completed', info.get('error'))
+        operations = info['operation_records']
+        self.assertTrue(any(op.get('retakes') and op['step'].startswith('scan.') for op in operations))
+        steering = [op for op in operations if op['step'].startswith('steer.')]
+        self.assertEqual(len(steering), 2)
+        self.assertTrue(all(op['in_doubt']['path.aligned']['source_operations'] for op in steering))
+        self.assertTrue(all('retaken_by' not in op and 'retakes' not in op for op in steering))
+        self.assertEqual(run.result(5)['scan']['signal']['values'], [1.0, 1.0])
+
     def test_a_pass_runs_between_the_points_taken_again(self):
         # The table is bumped during the third reading and shakes during the fourth, so the four readings since the
         # alignment was verified are in doubt; it shakes again while the first of them is taken again. The pass that
@@ -285,9 +311,15 @@ class UpkeepCase(unittest.TestCase):
         info = run.wait(timeout=30)
         self.assertEqual(info['state'], 'failed')
         self.assertRegex(info['error'], 'path.aligned is due .* renewed what this experiment requires 3 times in a row '
-                                        '.* give the condition a longer valid_for')
+                                        '.* Review maintenance and acquisition timing')
         events = self.client.request(f'/v1/events?run_id={run.id}&limit=1000')['events']
         self.assertEqual(sum(event['kind'] == 'upkeep.started' for event in events), 3)
+        self.assertNotIn('detector.integrate', WORLD['log'])
+        # Continuation starts a new maintenance budget, without silently extending the physical validity.
+        run.resume('retry-maintenance')
+        self.assertEqual(run.wait(timeout=30)['state'], 'failed')
+        events = self.client.request(f'/v1/events?run_id={run.id}&limit=1000')['events']
+        self.assertEqual(sum(event['kind'] == 'upkeep.started' for event in events), 6)
         self.assertNotIn('detector.integrate', WORLD['log'])
 
     def test_rejected_operations_do_not_start_instrument_maintenance(self):

@@ -254,6 +254,9 @@ def expand(steps, lookup, describe=None):
                     field = described.get(name) if spec is not None else {}
                     if not isinstance(field, dict):
                         raise ValueError(f"Step {sweep_id}: seek moves {name}, which {step['operation']} does not take")
+                    if field.get('type', 'number') != 'number' or 'enum' in field:
+                        raise ValueError(f"Step {sweep_id}: seek moves continuous numeric parameters; {name} is discrete. "
+                                         'Use a fixed sweep of its allowed values instead')
                     low, high = item['minimum'], item['maximum']
                     if (sweeping._number(low) and low < field.get('minimum', -math.inf)
                             or sweeping._number(high) and high > field.get('maximum', math.inf)):
@@ -405,6 +408,11 @@ def expand(steps, lookup, describe=None):
         return [final for inner_id in finishes[step_id] for final in finished(inner_id, depth + 1)]
 
     steps_by_id = {step['id']: step for step in flat}
+    decisions = {}
+    for step in flat:
+        for binding in step.get('bindings', {}).values():
+            if isinstance(binding.get('within'), str):
+                decisions.setdefault((binding['within'], binding['index']), set()).add(step['id'])
 
     def source(binding):
         """Follow a binding into saved operations until it names a Basic Operation or a sweep; a range reads its
@@ -455,6 +463,9 @@ def expand(steps, lookup, describe=None):
             record = sweeps[sweep_id]
             points = [{'named': {key: source(item) for key, item in calls[point]['result'].items()}} if point in calls
                       else {'step': point} for point in record['points']]
+            for index, point in enumerate(points):
+                if (sweep_id, index) in decisions:
+                    point['decisions'] = sorted(decisions[sweep_id, index])
             axes = [{**axis, 'range': source({'range': axis['range']})['range']} if 'range' in axis else axis
                     for axis in record['axes']]
             holding[sweep_id] = {'shape': record['shape'], 'axes': axes, 'points': points,
@@ -508,6 +519,9 @@ def locate_gathering(gathering, ids):
     """How to gather a sweep, with its points and the ends of its ranges named by operation IDs."""
     points = [{'named': {key: locate(item, ids) for key, item in point['named'].items()}} if 'named' in point
               else {'step': ids[point['step']]} for point in gathering['points']]
+    for point, original in zip(points, gathering['points']):
+        if original.get('decisions'):
+            point['decisions'] = [ids[step] for step in original['decisions']]
     axes = [{**axis, 'range': locate({'range': axis['range']}, ids)['range']} if 'range' in axis else axis
             for axis in gathering['axes']]
     found = {**gathering, 'points': points, 'axes': axes}
@@ -612,6 +626,45 @@ def read(source, record, output=None, located=False, known=None):
     return found
 
 
+def input_operations(source, record):
+    """The completed records read by a binding now, before a later retake changes a gathered result.
+
+    This follows the existing binding and gathering descriptions, including the earlier readings that
+    place an adaptive or seek point. It does not treat ordering-only dependencies as data inputs.
+    """
+    if 'range' in source or 'seek' in source:
+        bounds = (value for key, value in source['range'].items() if key not in {'adapt', 'points'}) if 'range' in source else (
+            value for item in source['seek']['over'].values() for value in item.values())
+        for bound in bounds:
+            if isinstance(bound, dict):
+                yield from input_operations(bound, record)
+        if 'within' not in source:
+            return
+        within = source['within']
+        sweep = record(within['step'])['gathers'][within['sweep']]
+        index = source['index']
+        # The preceding decision already records its own predecessors. Keeping it and the last reading
+        # retains the whole causal chain without copying O(N²) historical IDs into an N-point scan.
+        start = index - 1 if index and sweep['points'][index - 1].get('decisions') else 0
+        points = sweep['points'][start:index]
+    elif 'sweep' in source:
+        sweep = record(source['step'])['gathers'][source['sweep']]
+        points = sweep['points']
+        for axis in sweep['axes']:
+            if 'range' in axis:
+                yield from input_operations({'range': axis['range']}, record)
+    else:
+        operation = record(source['step'])
+        if operation and operation.get('state') == 'completed':
+            yield operation['id']
+        return
+    for point in points:
+        for decision in point.get('decisions', []):
+            yield from input_operations({'step': decision}, record)
+        for item in point['named'].values() if 'named' in point else [point]:
+            yield from input_operations(item, record)
+
+
 def _located(found, operation):
     """A value with the file of each array in it named from the experiment's output folder."""
     if isinstance(found, list):
@@ -712,8 +765,11 @@ def _sought(sweep, record, output=None):
 
 def _finished(point, record):
     """Whether a point of a sweep has finished: its operation, or those its named results read."""
-    steps = [item['step'] for item in point['named'].values()] if 'named' in point else [point['step']]
-    return all((record(step) or {}).get('state') == 'completed' for step in steps)
+    sources = point['named'].values() if 'named' in point else [point]
+    # An inner sweep that stopped early still has a gathered result; its final operation holds it even
+    # when that operation was skipped. An ordinary skipped operation has no reading to gather.
+    return all((record(source['step']) or {}).get('state') in
+               ({'completed', 'skipped'} if 'sweep' in source else {'completed'}) for source in sources)
 
 
 def stopped(marker, record, output=None, known=None):

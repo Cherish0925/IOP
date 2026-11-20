@@ -715,8 +715,9 @@ def _fit(seq, first, coordinates=None):
         # Standard errors from what the line leaves, the values taken as independent: the slope's, and that of
         # where it reaches zero from the slope and the mean, which are uncorrelated.
         variance = squares / (n - 2.0)
+        scaled = math.sqrt(variance) / slope if slope != 0.0 else None
         found['errors'] = {'slope': _finite(math.sqrt(variance / sxx)),
-                           'zero': _finite(math.sqrt(variance / (slope * slope) * (1.0 / n + my * my / (slope * slope * sxx))))
+                           'zero': _finite(math.hypot(scaled / math.sqrt(n), (my / slope) * (scaled / math.sqrt(sxx))))
                            if slope != 0.0 else None}
     return {**found, **({'coordinates': True} if coordinates is not None else {})}
 

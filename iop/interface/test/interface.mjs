@@ -143,10 +143,17 @@ try {
     (await page.locator("#device-response").innerText()).includes("1.25"),
   );
   await page.click("#device-release");
-  await page.waitForFunction(() => document.querySelector("#device-invoke")?.disabled);
-  assert.equal((await api("devices/" + identified.id)).status.state, "released");
+  await page.waitForFunction(
+    () => document.querySelector("#device-invoke")?.disabled,
+  );
+  assert.equal(
+    (await api("devices/" + identified.id)).status.state,
+    "released",
+  );
   await page.click("#device-reconnect");
-  await page.waitForFunction(() => !document.querySelector("#device-invoke")?.disabled);
+  await page.waitForFunction(
+    () => !document.querySelector("#device-invoke")?.disabled,
+  );
   assert.equal((await api("devices/" + identified.id)).status.state, "ready");
   if (images)
     await page.screenshot({
@@ -669,6 +676,46 @@ sys.stdout.buffer.write(b.getvalue())`,
   for (const [x, y] of drawn)
     assert.ok(Math.abs(y - (146 - (x / 600) * 142)) < 0.01, `${x},${y}`);
   await page.click("#modal-close");
+  // Returning and hysteresis scans use their whole coordinate range, even when their endpoints coincide.
+  for (const angles of [
+    [0, 1, 0],
+    [0, 2, 1],
+  ]) {
+    const returning = await api("runs", {
+      name: "Returning turn",
+      steps: [
+        {
+          id: "turn",
+          device: "sim-axis",
+          operation: "move_to",
+          arguments: { duration: 0 },
+          sweep: { angle_deg: angles },
+        },
+      ],
+    });
+    await page.evaluate(
+      (id) =>
+        document.dispatchEvent(new CustomEvent("iop:run", { detail: id })),
+      returning.id,
+    );
+    await page.waitForSelector("#run-detail-summary .badge.completed");
+    await page.click('[data-detail-tab="results"]');
+    await page.waitForSelector("#detail-results .array-plot svg polyline");
+    const points = (
+      await page
+        .locator("#detail-results .array-plot svg polyline")
+        .first()
+        .getAttribute("points")
+    )
+      .split(" ")
+      .map((point) => point.split(",").map(Number));
+    assert.deepEqual(
+      points.map(([x]) => x),
+      angles.map((a) => (a * 600) / Math.max(...angles)),
+    );
+    assert.ok(points.flat().every(Number.isFinite));
+    await page.click("#modal-close");
+  }
   // A sweep stopped by its until shows how many of its points were skipped.
   const stopped = await api("runs", {
     name: "Stopped turn",

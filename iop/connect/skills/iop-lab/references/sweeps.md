@@ -36,6 +36,8 @@ Stops a sweep or repetition; the later points are skipped without reaching an in
 
 In place of `sweep`: find where a reading is largest (`maximize`) or smallest (`minimize`).
 
+Seek moves continuous numeric parameters. Use a fixed `sweep` of allowed values for integer, categorical or enumerated parameters; the submission rejects them before any calls run.
+
 ```json
 {"id": "align", "device": "fiber", "operation": "couple",
  "seek": {"maximize": ["power"], "points": 60,

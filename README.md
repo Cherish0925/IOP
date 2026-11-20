@@ -46,21 +46,16 @@ Operations keep the three roles defined by [AI4Instruments](https://github.com/C
 | **Standard Operations** | Saved methods built from Basic and Standard Operations, with parameters, conditions, a named result and a record of use. |
 | **Workflow Operations** | Saved organizations of methods across devices: a step graph in sequence and in parallel, or a program that decides from results. |
 
-A step with `device` is a Basic Operation; a step without it uses a saved operation by name. The Runtime expands it into its Basic Operations and records every use, so methods that worked accumulate in the laboratory and stay open to reading and revision.
+A step with `device` is a Basic Operation; a step without it uses a saved operation by name. The Runtime expands saved methods into Basic Operations and records every use, so methods remain inspectable and reusable.
 
-A step does more than run once:
-
-| A step can | With |
+| Research task | Execution control |
 | --- | --- |
-| Run at each value of its parameters; the numbers it returns become arrays over the sweep that later steps read, for example to go to the angle of most power | `sweep` |
-| Place each point from the readings before it, closer together where they change most | `sweep` with `adapt` |
-| Run several times, for the spread of a reading | `repeat` |
-| Stop once a reading crosses a limit, such as a bias ramp at compliance, or once what it gathered is known well enough, such as a line's fitted center | `until` |
-| Find where a reading is largest or smallest by a bounded search, such as the position of most coupled power | `seek` |
-| Take again the points a lost condition put in doubt | `retake` |
-| Make a failed instrument call again | `retry` |
+| Scan and refine a range | `sweep` gathers scalar and array results. Ranges can read earlier results; adaptive scans place points from the readings so far. |
+| Estimate variation or reach a stopping criterion | `repeat` takes repeated readings; `until` stops on a threshold or on an uncertainty computed from the gathered data. |
+| Optimize a measured response | `seek` searches for a local maximum or minimum within declared bounds. |
+| Recover interrupted work | Explicit `retry` repeats eligible failed calls. A stopped step graph can continue with its completed results preserved. |
 
-A step graph that failed or was stopped continues from where it stopped, keeping what it completed. See [operations](docs/runtime/operations.md).
+Later steps can bind to gathered results, such as the angle of most power or the center of a fitted line. See [operations](docs/runtime/operations.md) for parameters, composition and recovery behavior.
 
 ## Operating conditions
 
@@ -74,7 +69,11 @@ A platform that declares `upkeep` is kept by the Runtime: while its instruments 
 
 ## Measured arrays
 
-Traces, spectra, images, buffers and numeric data streams are saved with their type, shape, unit and axes; axis coordinates can come from the instrument, such as a sweep's start and stop. `read_array` and the clients tell what an array says without moving it: extremes and where they lie, mean and spread, an envelope along an axis or a map along two, exact values in a chosen window, or the line at a peak or a dip with its center between samples and its width at half height, every line of a spectrum that stands out by a given prominence, where a trace crosses a level, and a straight, Lorentzian or Gaussian line through it, in one trace or at each row of a map; complex values read as modulus, argument or one component. Rust `iop-execd` computes these views outside the service process; the whole array also comes as a NumPy file. A saved operation can name a value read through a view, such as the frequency of a resonance; later steps bind it and operating conditions verify and tune on it. See [reading arrays](docs/runtime/drivers.md#reading-arrays--读取数组).
+Traces, spectra, images, buffers and numeric streams retain their type, shape, units and axes. `read_array` returns bounded summaries, traces or maps, with exact values in a selected window. The full array can be downloaded as a NumPy file; complex data can be read as modulus, phase, power or a component.
+
+Views can locate peaks, dips and level crossings, or fit a straight line, Lorentzian or Gaussian with standard errors. The same analysis can follow each row of a map. Rust `iop-execd` processes large files outside the service process; a bounded Python implementation provides matching results.
+
+Saved operations can name values from these views. Later steps bind to them, and operating conditions use them for verification or tuning. See [reading arrays](docs/runtime/drivers.md#reading-arrays--读取数组).
 
 ## Research and learning
 

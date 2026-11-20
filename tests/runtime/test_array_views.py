@@ -332,6 +332,9 @@ class ViewCase(unittest.TestCase):
             self.assertAlmostEqual(fit[key], expected, delta=1e-12)
         self.assertLess(max(fit['errors'].values()), 1e-12)
         self.assertEqual(fit['count'], 31)
+        tiny = self.view([1e-170 * x for x in range(10)], {'dtype': 'float64'}, fit='line')['fit']
+        self.assertAlmostEqual(tiny['slope'] / 1e-170, 1.0)
+        self.assertEqual(tiny['errors']['zero'], 0.0)
         with self.assertRaisesRegex(ValueError, 'fit is line'):
             self.view(light, {'dtype': 'float64'}, fit='curve')
         with self.assertRaisesRegex(ValueError, 'A fit is read along one axis, at each position of at most one other'):
@@ -430,6 +433,7 @@ class ViewCase(unittest.TestCase):
             (nan_trace, {'dtype': 'float64'}, {'points': 37, 'fit': 'line'}),
             (DIP, {'dtype': 'float64', 'axes': [FREQUENCY]}, {'low': 1.05e9, 'high': 1.07e9, 'fit': 'line', 'level': 0.5}),
             ([1, 3, 2, 5], {'dtype': 'float64', 'axes': [{'name': 'x', 'coordinates': [0, 2, 1, 3]}]}, {'fit': 'line'}),
+            ([1e-170 * x for x in range(10)], {'dtype': 'float64'}, {'fit': 'line'}),
             (cube, {'dtype': 'float64', 'shape': [6, 7, 50], 'axes': [{'name': 'a'}, {'name': 'b'}, {'name': 'c'}]},
              {'along': 'c', 'at': {'a': 4}, 'peak': 'max', 'level': 70, 'fit': 'line'}),
             (nan_trace[:20000], {'dtype': 'float32', 'byte_order': 'big', 'shape': [100, 200]},

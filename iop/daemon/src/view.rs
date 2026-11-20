@@ -924,7 +924,8 @@ fn line_through(trace: &[f64], first: usize, coordinates: Option<&[f64]>) -> Val
         found["errors"] = json!({
             "slope": number((variance / sxx).sqrt()),
             "zero": if slope != 0.0 {
-                number((variance / (slope * slope) * (1.0 / n + my * my / (slope * slope * sxx))).sqrt())
+                let scaled = variance.sqrt() / slope;
+                number((scaled / n.sqrt()).hypot((my / slope) * (scaled / sxx.sqrt())))
             } else {
                 Value::Null
             },

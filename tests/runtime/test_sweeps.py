@@ -139,6 +139,46 @@ class Fiber(Driver):
 class GatherCase(unittest.TestCase):
     """What a sweep returns, from what its points returned."""
 
+    def test_seek_rejects_discrete_parameters_before_expanding_instrument_calls(self):
+        seek = {'maximize': ['power'], 'over': {'angle': {'minimum': 0, 'maximum': 80, 'step': 4}}}
+        for field in ({'type': 'integer'}, {'type': 'string'}, {'type': 'number', 'enum': [0, 40, 80]}):
+            for saved in (False, True):
+                step = {'id': 'scan', 'operation': 'axis.measure', 'arguments': {'axis': 'stage'}, 'seek': seek}
+                if not saved:
+                    step.update(device='stage', operation='move_to')
+                with self.subTest(field=field, saved=saved), self.assertRaisesRegex(ValueError, 'Use a fixed sweep'):
+                    library.expand([step], lambda name: {**MEASURE, 'parameters': {'angle': field}, 'revision': 1},
+                                   lambda device, operation: {'parameters': {'angle': field}})
+
+    def test_adaptive_and_seek_provenance_grows_linearly_in_the_number_of_points(self):
+        from ai4instruments.iop.engine import Engine
+        for saved in (False, True):
+            base = {'id': 'scan', 'operation': 'axis.measure', 'arguments': {'axis': 'stage'}} if saved else {
+                'id': 'scan', 'device': 'sensor', 'operation': 'read'}
+            for kind in ('adaptive', 'seek'):
+                options = {'sweep': {'angle': {'start': 0.0, 'stop': 89.0, 'points': 1000, 'adapt': ['power']}}} \
+                    if kind == 'adaptive' else {'seek': {'maximize': ['power'], 'points': 1000,
+                                                       'over': {'angle': {'minimum': 0, 'maximum': 89, 'step': 1}}}}
+                flat, _, _ = library.expand([{**base, **options}], lambda name: {**MEASURE, 'revision': 1},
+                                             lambda device, operation: {'parameters': {'angle': {'type': 'number'}}})
+                operations = [{**step, 'id': f'op-{index}', 'step': step['id'], 'state': 'completed',
+                               'bindings': step.get('bindings', {})} for index, step in enumerate(flat)]
+                Engine._locate(operations)
+                records = {op['id']: op for op in operations}
+                for op in operations:
+                    op['input_operations'] = sorted({oid for source in op['bindings'].values()
+                                                     for oid in library.input_operations(source, records.__getitem__)})
+                with self.subTest(saved=saved, kind=kind):
+                    self.assertEqual(sum(len(op['input_operations']) for op in operations), 1998 if saved else 999)
+                    last = operations[-2] if saved else operations[-1]
+                    pending, ancestors = list(last['input_operations']), set()
+                    while pending:
+                        identifier = pending.pop()
+                        if identifier not in ancestors:
+                            ancestors.add(identifier)
+                            pending.extend(records[identifier]['input_operations'])
+                    self.assertIn(operations[1 if saved else 0]['id'], ancestors)
+
     def test_a_step_repeats_at_each_point_over_a_last_axis(self):
         self.assertEqual(sweeps.grid({}, 3), ([{}, {}, {}], [3], [{'name': 'repeat', 'start': 0, 'step': 1}]))
         points, shape, axes = sweeps.grid({'axis': ['x', 'y']}, 2)
@@ -204,6 +244,8 @@ class GatherCase(unittest.TestCase):
                 self.assertGreaterEqual(sum(abs(f - 1.0613e9) < 1.5e6 for f in values), 4)
 
     def test_values_and_axes_of_a_sweep(self):
+        self.assertEqual(sweeps.taken('mode', ['adapt', 'fixed']),
+                         (['adapt', 'fixed'], {'name': 'mode', 'labels': ['adapt', 'fixed']}))
         points, shape, axes = sweeps.grid({'axis': ['x', 'y'], 'volts': {'start': 0, 'stop': 1, 'points': 3}})
         self.assertEqual((shape, len(points), points[:2]), ([2, 3], 6, [{'axis': 'x', 'volts': 0.0}, {'axis': 'x', 'volts': 0.5}]))
         self.assertEqual(axes, [{'name': 'axis', 'labels': ['x', 'y']}, {'name': 'volts', 'start': 0, 'stop': 1}])
@@ -460,6 +502,19 @@ class SweepCase(unittest.TestCase):
         for got, angle in zip(found['power']['values'], angles):
             self.assertAlmostEqual(got, power(angle))
 
+    def test_an_adaptive_sweep_gathers_saved_operations_that_stop_their_inner_sweeps(self):
+        self.client.register({'id': 'flaky', 'driver': Flaky.__module__ + ':Flaky'})
+        self.client.save_operation({
+            'id': 'limited.read', 'layer': 'standard', 'description': 'Read until above the limit',
+            'parameters': {'x': {'type': 'number'}},
+            'steps': [{'id': 'scan', 'device': 'flaky', 'operation': 'read', 'arguments': {'x': '${x}'},
+                       'repeat': 3, 'until': {'path': ['value'], 'above': -1}}],
+            'result': {'value': {'step': 'scan', 'view': {'field': 'value'}, 'path': ['summary', 'max']}}})
+        with patch.object(Flaky, 'failing', lambda call: False):
+            result = self.submit([{'id': 'outer', 'operation': 'limited.read',
+                                   'sweep': {'x': {'start': 0, 'stop': 4, 'points': 5, 'adapt': ['value']}}}]).result(10)
+        self.assertEqual(result['outer']['value']['values'], [0, 1, 2, 3, 4])
+
     def test_a_ramp_stops_at_compliance_and_the_steps_after_it_run(self):
         self.client.register({'id': 'smu', 'driver': Diode.__module__ + ':Diode'})
         Diode.given = []
@@ -563,6 +618,22 @@ class SweepCase(unittest.TestCase):
                          .wait(10, details=False)['state'], 'failed')
         with self.assertRaisesRegex(IOPError, 'retry is'):
             self.submit([{'id': 'scan', 'device': 'flaky', 'operation': 'read', 'retry': {'times': 0}}])
+
+    def test_retry_and_resume_preserve_unknown_outcomes_and_resource_holds(self):
+        from ai4instruments.iop.drivers import UnconfirmedChange
+        self.client.register({'id': 'flaky', 'driver': Flaky.__module__ + ':Flaky'})
+        with patch.object(Flaky, 'invoke', side_effect=UnconfirmedChange('position was not confirmed')) as invoked:
+            run = self.submit([{'id': 'read', 'device': 'flaky', 'operation': 'read',
+                               'retry': {'times': 3, 'after_s': 0}}])
+            info = run.wait(10)
+        self.assertEqual(invoked.call_count, 1)
+        self.assertEqual(info['state'], 'failed')
+        self.assertTrue(info['operation_records'][0]['outcome_unknown'])
+        self.assertNotIn('attempts', info['operation_records'][0])
+        self.assertIn('device:flaky', self.engine.resource_holds)
+        with self.assertRaises(IOPError) as held:
+            run.resume('do-not-repeat-unknown')
+        self.assertEqual(held.exception.code, 'device_outcome_unknown')
 
     def test_a_seek_finds_where_a_reading_is_largest(self):
         self.client.register({'id': 'fiber', 'driver': Fiber.__module__ + ':Fiber'})

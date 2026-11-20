@@ -629,8 +629,9 @@ class Conditions:
                 # Upkeep restored them each time, and each time they came due before an operation could start.
                 raise RequestError('conditions_not_held', f'{text}, again after upkeep renewed what this experiment '
                                    f'requires {RENEWALS} times in a row without one of its operations starting. A validity '
-                                   'shorter than the time from a verification to the next operation cannot be kept: give '
-                                   'the condition a longer valid_for.', conditions=lacking, run_id=run_id)
+                                   'shorter than the time from a verification to the next operation cannot be kept. '
+                                   'Review maintenance and acquisition timing and the valid_for setting; extend validity '
+                                   'only when observations support it.', conditions=lacking, run_id=run_id)
             raise RequestError('conditions_not_held', text + '. Maintain these conditions, then submit again.',
                                conditions=lacking, maintain='/v1/conditions/maintain',
                                **({'run_id': run_id} if run_id else {}))

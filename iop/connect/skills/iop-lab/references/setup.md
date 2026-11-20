@@ -2,7 +2,7 @@
 
 ## A new instrument
 
-An instrument is described, not programmed. Choose the adapter for its interface and take commands, ranges and units from its manual.
+Describe an instrument with an installed adapter, taking commands, ranges and units from its manual. Add a driver when existing adapters cannot express its interface.
 
 | Interface | Adapter |
 | --- | --- |

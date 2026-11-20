@@ -358,14 +358,17 @@ class Engine:
     def doubt(self, run_id, condition_id, after, entry):
         """Its data may have been taken while a condition did not hold: mark each operation of this experiment
         that relied on the condition and was in progress after that moment, in its record and in memory."""
-        for oid in self.store.doubt(run_id, condition_id, after, entry):
+        for oid, found in self.store.doubt(run_id, condition_id, after, entry).items():
             if oid in self.operations:
-                self.operations[oid].setdefault('in_doubt', {}).setdefault(condition_id, entry)
+                self.operations[oid].setdefault('in_doubt', {})[condition_id] = found
                 self._doubted(self.operations[oid])
 
     def _doubted(self, op):
         """A point of a sweep that retakes its points, ended and now in doubt, is taken again."""
-        if op.get('retake') and op['state'] == 'completed' and op.get('in_doubt') and 'retaken_by' not in op:
+        if any(entry.get('source_operations') for entry in op.get('in_doubt', {}).values()):
+            # The arguments came from doubtful data. Repeating the same physical action cannot repair them.
+            self.doubted.get(op['run_id'], {}).pop(op['id'], None)
+        elif op.get('retake') and op['state'] == 'completed' and op.get('in_doubt') and 'retaken_by' not in op:
             self.doubted.setdefault(op['run_id'], {})[op['id']] = None
 
     def _retake(self, run, originals):
@@ -377,6 +380,7 @@ class Engine:
             op = self._operation(run['id'], {'id': original['step'] + '~1', 'device': original['device'],
                                              'operation': original['operation'], 'arguments': original['arguments']})
             op.update(after_ids=[], swept_by=original['swept_by'], retakes=oid,
+                      **({'input_operations': original['input_operations']} if original.get('input_operations') else {}),
                       **({'requires': original['requires']} if original.get('requires') else {}))
             ops.append((op, original))
         for op, original in ops:
@@ -1790,14 +1794,20 @@ class Engine:
                     op['conditions'] = self.conditions.require(op['requires'], rid)
                 if op.get('bindings'):
                     args = dict(op['arguments'])
+                    inputs = set()
                     for name, binding in op['bindings'].items():
-                        if library.by_id(binding):
-                            args[name] = library.read(binding, self._recorded, self.home / 'runs' / rid / 'output',
-                                                      known=self.ranges.setdefault(rid, {}))
-                            continue
-                        source = op.get('binding_ids', {}).get(name) or self.step_ids[rid][binding['step']]
-                        args[name] = library.value(self._recorded(source), binding)
+                        if not library.by_id(binding):
+                            source = op.get('binding_ids', {}).get(name) or self.step_ids[rid][binding['step']]
+                            binding = {**binding, 'step': source}
+                        args[name] = library.read(binding, self._recorded, self.home / 'runs' / rid / 'output',
+                                                  known=self.ranges.setdefault(rid, {}))
+                        inputs.update(library.input_operations(binding, self._recorded))
                     op['arguments'] = parameters(self.descriptions[op['device']]['operations'][op['operation']], args)
+                    op['input_operations'] = sorted(inputs)
+                for source in op.get('input_operations', []):
+                    for condition, entry in self._recorded(source).get('in_doubt', {}).items():
+                        found = op.setdefault('in_doubt', {}).setdefault(condition, dict(entry))
+                        found['source_operations'] = sorted(set(found.get('source_operations', [])) | {source})
                 error = None
             except Exception as error:
                 dispatch.append((op, context, error))

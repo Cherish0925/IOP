@@ -338,6 +338,31 @@ class ConditionsCase(unittest.TestCase):
         self.assertEqual((doubt['outcome'], doubt['since']), ('drifted', info['conditions']['path.aligned']['accepted']))
         self.assertEqual(later['operation_records'][0]['in_doubt'], {'path.aligned': doubt})
 
+    def test_doubt_follows_consumed_results_without_replaying_downstream_actions(self):
+        self.client.maintain('chain')
+        run = self.client.submit([
+            {'id': 'read', 'device': 'source', 'operation': 'read', 'repeat': 2, 'retake': True},
+            {'id': 'move', 'device': 'stage', 'operation': 'move_to', 'arguments': {'duration': 0},
+             'bindings': {'angle_deg': {'step': 'read', 'view': {'field': 'level'}, 'path': ['summary', 'mean']}}},
+            {'id': 'follow', 'device': 'aux', 'operation': 'move_to', 'arguments': {'duration': 0},
+             'bindings': {'angle_deg': {'step': 'move', 'path': ['angle_actual']}}},
+            {'id': 'ordered', 'device': 'stage', 'operation': 'position', 'after': ['follow']},
+        ], requires=['source.stable'])
+        run.result(10)
+        before = {op['step']: op for op in run.info()['operation_records']}
+        inputs = sorted([before['read.0']['id'], before['read.1']['id']])
+        self.assertEqual(before['move']['input_operations'], inputs)
+        self.assertEqual(before['follow']['input_operations'], [before['move']['id']])
+        WORLD['level'] = 0.5
+        self.client.maintain('chain', force=True)
+        after = {op['step']: op for op in run.info()['operation_records']}
+        self.assertEqual(after['move']['in_doubt']['source.stable']['source_operations'], inputs)
+        self.assertEqual(after['follow']['in_doubt']['source.stable']['source_operations'], [before['move']['id']])
+        self.assertNotIn('source_operations', after['ordered']['in_doubt']['source.stable'])
+        self.assertEqual({key: op['started'] for key, op in before.items()},
+                         {key: op['started'] for key, op in after.items()})
+        self.assertEqual(after['follow']['result'], before['follow']['result'])
+
     def test_saved_operations_name_the_conditions_they_require(self):
         self.client.save_operation({'id': 'signal.read', 'layer': 'standard', 'description': 'Read the signal',
                                     'requires': ['path.aligned'],
@@ -479,6 +504,28 @@ class ExampleCase(unittest.TestCase):
         report = self.client.maintain('demo-bench', force=True)
         self.assertEqual([(e['condition'], e['result']) for e in report['report']],
                          [('stage.in_range', 'corrected'), ('meter.signal', 'verified')])
+
+
+class ProvenanceCase(unittest.TestCase):
+    def test_stored_consumers_inherit_doubt_without_declaring_the_source_condition(self):
+        from ai4instruments.iop.store import Store
+        store = Store(':memory:')
+        self.addCleanup(store.close)
+        def operation(name, **extra):
+            return {'id': name, 'run_id': 'experiment', 'state': 'completed', 'created': '2026-01-01T00:00:00Z',
+                    'ended': '2026-01-01T00:01:00Z', **extra}
+        with store.transaction():
+            store.put('operations', operation('reading', conditions={'aligned': {'accepted': '2026-01-01T00:00:00Z'}}))
+            store.put('operations', operation('consumer', input_operations=['reading']))
+            store.put('operations', operation('later', input_operations=['consumer']))
+            store.put('operations', operation('ordered', after_ids=['later']))
+        entry = {'since': '2026-01-01T00:00:00Z', 'found': '2026-01-01T00:02:00Z', 'outcome': 'drifted'}
+        marked = store.doubt('experiment', 'aligned', entry['since'], entry)
+        self.assertEqual(set(marked), {'reading', 'consumer', 'later'})
+        self.assertEqual(marked['consumer']['source_operations'], ['reading'])
+        self.assertEqual(marked['later']['source_operations'], ['consumer'])
+        self.assertNotIn('in_doubt', store.get('operations', 'ordered'))
+        self.assertEqual(store.get('operations', 'later')['state'], 'completed')
 
 
 class DefinitionCase(unittest.TestCase):

@@ -5,7 +5,7 @@ description: Use IOP to operate instruments or scientific software, submit exper
 
 # Operate a laboratory
 
-The laboratory is a service that keeps instruments, platforms, methods, experiments and their records. It goes on working when this connection closes.
+The laboratory is a service that keeps instruments, platforms, methods, experiments and their records. It goes on working when this connection closes. These guides describe IOP 0.12.0; check `lab_context.service.version` and upgrade an older service while idle before using newer options.
 
 ## Working method
 
@@ -38,7 +38,7 @@ Each is short, with examples. Read one when the task needs it: `guide(topic)`, o
 ## What keeps the record true
 
 - Record what was observed: `resolve_resources` takes the instrument state that was seen, `report_manual_step` what the person stated.
-- A failed or uncertain operation stays as recorded; a continuation runs it again under the same experiment.
+- A failed operation retains its record when continued under the same experiment. An unknown instrument outcome keeps its resources held until the instrument state is observed and resolved; it is not retried automatically.
 - Timing that needs a hardware clock or trigger stays on the instrument.
 - Paths of programs, downloads and archives are on the computer that runs this connection.
 - A run ID belongs to the service that issued it; keep the method's name beside it.

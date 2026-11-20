@@ -2,10 +2,12 @@
 
 from html import escape as esc
 from pathlib import Path
+import json
 import re
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
+VERSION = json.loads((ROOT / 'iop/release.json').read_text(encoding='utf-8'))['version']
 BASE = "https://github.com/Cherish0925/IOP"
 CSS = """
 :root{color-scheme:light;--ink:#172c33;--muted:#50626b;--line:#cddad7;--paper:#fafbf8;--teal:#126354;--wash:#e6f3ec}
@@ -81,7 +83,7 @@ def render(zh):
     ids = ["overview", "marketplace", "connection", "installation", "experiment"]
     ids.extend(f"section-{i}" for i in range(len(ids), len(names)))
     sections = [
-        f'<section id="overview"><span class="eyebrow">IOP RUNTIME · 0.11.0</span><h1>{title}</h1>{html(intro)}{diagram}<h3>{("首次接入" if zh else "First connection")}</h3><p>{role}</p></section>'
+        f'<section id="overview"><span class="eyebrow">IOP RUNTIME · {VERSION}</span><h1>{title}</h1>{html(intro)}{diagram}<h3>{("首次接入" if zh else "First connection")}</h3><p>{role}</p></section>'
     ]
     for i, chunk in enumerate(chunks, 1):
         first, body = chunk.split("\n", 1)

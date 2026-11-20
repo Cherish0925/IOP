@@ -37,9 +37,9 @@ export type PlatformDefinition = {
 };
 export type Platform = { id: string; revision: number; updated: string; definition: PlatformDefinition; active_runs?: string[]; missing_devices?: string[] };
 /** Data that may have been taken while a condition did not hold: since its last accepted verification, until it was found lost or disturbed. */
-export type Doubt = { since: string | null; found: string; outcome: string; reason?: string };
+export type Doubt = { since: string | null; found: string; outcome: string; reason?: string; source_operations?: string[] };
 export type RunRecord = { id: string; state: string; result?: unknown; error?: string; platform?: Platform; operation_states?: Record<string, number>; in_doubt?: Record<string, Doubt>; estimated_end?: string; can_resume?: boolean; attempt?: number; [key: string]: unknown };
-export type OperationRecord = RunRecord & { run_id: string; device: string; operation: string; device_revision?: number; maintenance?: boolean; retakes?: string; retaken_by?: string; attempts?: { state: string; error?: string; started: string; ended: string }[]; retry_at?: string; conditions?: Record<string, { accepted: string; value?: unknown; reference?: Record<string, unknown> }> };
+export type OperationRecord = RunRecord & { run_id: string; device: string; operation: string; device_revision?: number; maintenance?: boolean; retakes?: string; retaken_by?: string; input_operations?: string[]; attempts?: { state: string; error?: string; started: string; ended: string }[]; retry_at?: string; conditions?: Record<string, { accepted: string; value?: unknown; reference?: Record<string, unknown> }> };
 export type BatchRecord = { request_id: string; run_id: string; complete: boolean; operations: OperationRecord[] };
 export type ArtifactRecord = { id: string; run_id: string; name: string; size: number; media_type: string; created: string; operation_ids?: string[] };
 export type Event = { sequence: number; kind: string; run_id?: string; [key: string]: unknown };
@@ -308,7 +308,6 @@ export class Run {
   maintain(conditions?: string[], options: { force?: boolean; signal?: AbortSignal } = {}) {
     return this.client.maintain({ conditions, runId: this.id, ...options });
   }
-  /** Use a saved operation and return its named result; with sweep, at each point, its named results gathered into arrays, stopping early with until. */
   /** Use a saved operation in this experiment and return its named result; the options of a step apply: sweep, repeat, until, seek and retry. */
   async call(operation: string, args: Record<string, unknown> = {}, options: { requestId?: string; signal?: AbortSignal } & Pick<Step, 'sweep' | 'repeat' | 'until' | 'seek' | 'retry'> = {}) {
     const requestId = options.requestId ?? crypto.randomUUID();
