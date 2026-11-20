@@ -80,6 +80,38 @@ class ViewCase(unittest.TestCase):
         holder, path = saved(self.folder.name, values, description)
         return views.view(holder, path, use_native=use_native, **options)
 
+    def assertFitEqual(self, actual, expected, path='fit'):
+        """Compare fit structure exactly while allowing final-rounding differences between math libraries."""
+        self.assertIs(type(actual), type(expected), path)
+        if isinstance(expected, dict):
+            self.assertEqual(actual.keys(), expected.keys(), path)
+            for key in expected:
+                self.assertFitEqual(actual[key], expected[key], f'{path}.{key}')
+        elif isinstance(expected, list):
+            self.assertEqual(len(actual), len(expected), path)
+            for index, (a, b) in enumerate(zip(actual, expected)):
+                self.assertFitEqual(a, b, f'{path}[{index}]')
+        elif isinstance(expected, float):
+            self.assertTrue(math.isclose(actual, expected, rel_tol=5e-15, abs_tol=0.0),
+                            f'{path}: {actual!r} != {expected!r}')
+        else:
+            self.assertEqual(actual, expected, path)
+
+    def test_fit_comparison_allows_roundoff_but_rejects_changed_results(self):
+        def row(value):
+            return [{'count': 3, 'errors': {'zero': value}, 'model': 'line', 'width': None}]
+        for value in (2355324.4776665154, 1e-170, 1e-300):
+            with self.subTest(value=value):
+                self.assertFitEqual(row(math.nextafter(value, math.inf)), row(value), 'rows.fit')
+                for changed in (value * (1 + 1e-12), 0.0):
+                    with self.assertRaises(AssertionError):
+                        self.assertFitEqual(row(changed), row(value), 'rows.fit')
+        for actual, expected in (({'count': 3.0}, {'count': 3}), ({'count': 4}, {'count': 3}),
+                                  ({'model': 'gaussian'}, {'model': 'line'}), ({'width': 0.0}, {'width': None}),
+                                  ({'width': None}, {}), ([None], [None, None])):
+            with self.subTest(actual=actual, expected=expected), self.assertRaises(AssertionError):
+                self.assertFitEqual(actual, expected)
+
     def test_a_trace_reads_as_a_summary_an_envelope_and_a_window(self):
         trace = {'dtype': 'float64', 'axes': [FREQUENCY]}
         seen = self.view(DIP, trace, points=10)
@@ -468,8 +500,15 @@ class ViewCase(unittest.TestCase):
                 self.assertEqual(native.get('peak'), python.get('peak'))
                 self.assertEqual(native.get('peaks'), python.get('peaks'))
                 self.assertEqual(native.get('crossings'), python.get('crossings'))
-                self.assertEqual(native.get('fit'), python.get('fit'))
-                self.assertEqual(native.get('rows'), python.get('rows'))
+                self.assertFitEqual(native.get('fit'), python.get('fit'))
+                native_rows, python_rows = native.get('rows'), python.get('rows')
+                if native_rows is None or python_rows is None:
+                    self.assertEqual(native_rows, python_rows)
+                else:
+                    self.assertEqual(native_rows.keys(), python_rows.keys())
+                    self.assertEqual({k: v for k, v in native_rows.items() if k != 'fit'},
+                                     {k: v for k, v in python_rows.items() if k != 'fit'})
+                    self.assertFitEqual(native_rows.get('fit'), python_rows.get('fit'), 'rows.fit')
         # The chunks of a stream: the same values split across files at arbitrary byte boundaries.
         holder, path = saved(folder, nan_trace, {'dtype': 'float64'})
         payload, parts = path.read_bytes(), []
