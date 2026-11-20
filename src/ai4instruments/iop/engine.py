@@ -53,6 +53,10 @@ def relative_path(name):
     return Path(*path.parts)
 
 
+def week_ago():
+    return datetime.fromtimestamp(time.time() - 7 * 86400, timezone.utc).isoformat(timespec='microseconds')
+
+
 class Engine:
     def __init__(self, home, config):
         self.home, self.config = Path(home), config
@@ -126,8 +130,7 @@ class Engine:
         self.resource_holds = self.store.resource_holds()
         # Experiments a stop of the service or an unresolved instrument left interrupted in the last week, until
         # they are continued: the laboratory overview names them as something to do.
-        self.interrupted = self.store.interrupted(
-            datetime.fromtimestamp(time.time() - 7 * 86400, timezone.utc).isoformat(timespec='microseconds'))
+        self.interrupted = self.store.interrupted(week_ago())
         self.thread = threading.Thread(target=self._loop, name="iop-scheduler", daemon=True)
 
     def start(self):
@@ -350,6 +353,15 @@ class Engine:
         amounts = {r: self.allocation.limit(r) if reserve else 1 for r in item['resources']}
         amounts.update(item.get('requirements', {}))
         return amounts
+
+    def left_interrupted(self):
+        """The experiments left interrupted in the last week and not continued since, oldest first."""
+        since = week_ago()
+        with self.lock:
+            # A service that stays up for months forgets those it named for a week.
+            for run_id in [run_id for run_id, run in self.interrupted.items() if run.get('ended', since) < since]:
+                del self.interrupted[run_id]
+            return list(self.interrupted.values())
 
     def running(self, run_id):
         """Whether an operation of this experiment is in progress."""

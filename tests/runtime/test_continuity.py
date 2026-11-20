@@ -144,6 +144,12 @@ run.save_result({'measurements':3})
         step = next(s for s in self.client.context()['next_steps'] if s['action'] == 'continue_experiments')
         self.assertEqual([(r['id'], r['name'], r['kind']) for r in step['runs']], [(run.id, 'Three holds', 'workflow')])
         self.assertEqual(run.info(details=False)['operation_states'].get('completed'), 1)
+        # It is named for a week; a service that stays up longer stops asking for it, and it can still continue.
+        ended = self.engine.interrupted[run.id]['ended']
+        self.engine.interrupted[run.id]['ended'] = '2000-01-01T00:00:00.000000+00:00'
+        self.assertFalse([s for s in self.client.context()['next_steps'] if s['action'] == 'continue_experiments'])
+        self.assertEqual(self.engine.interrupted, {})
+        self.engine.interrupted[run.id] = {'id': run.id, 'name': 'Three holds', 'kind': 'workflow', 'ended': ended}
         run.resume('after-restart')
         self.assertEqual(run.wait(10, details=False)['operation_states'], {'completed': 3})
         self.assertFalse([s for s in self.client.context()['next_steps'] if s['action'] == 'continue_experiments'])

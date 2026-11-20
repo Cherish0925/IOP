@@ -112,10 +112,8 @@ def laboratory(engine, refresh=False, detail='summary'):
         result['next_steps'].append({'action': 'renew_calibration', 'devices': stale})
     for platform_id, missing in result['setup']['missing_platform_devices'].items():
         result['next_steps'].append({'action': 'restore_platform_devices', 'platform': platform_id, 'devices': missing})
-    # Experiments left interrupted that can continue from where they stopped, the latest twenty.
-    with engine.lock:
-        stopped = list(engine.interrupted.values())[-20:]
-    stopped = [run for run in stopped if engine.run_info(run['id'], details=False)['can_resume']]
+    # Experiments left interrupted in the last week that can continue from where they stopped, the latest twenty.
+    stopped = [run for run in engine.left_interrupted()[-20:] if engine.run_info(run['id'], details=False)['can_resume']]
     if stopped:
         held = sorted(engine.resource_holds)
         result['next_steps'].append({'action': 'continue_experiments', 'runs': stopped, 'submit': '/v1/runs/{id}/resume',
