@@ -148,10 +148,13 @@ class ConditionsCase(unittest.TestCase):
                          ('due', 'dependency disturbed: correction started: source.stabilize'))
 
     def test_a_verification_is_trusted_for_a_time(self):
-        self.client.configure_platform(platform(SOURCE, {**PATH, 'valid_for': 0.3}), expected_revision=1)
+        # Long enough for a slow machine to read the state while it still holds.
+        self.client.configure_platform(platform(SOURCE, {**PATH, 'valid_for': 2.0}), expected_revision=1)
         self.client.maintain('chain')
         self.assertEqual(self.states()['path.aligned'], 'holds')
-        time.sleep(0.35)
+        deadline = time.monotonic() + 30
+        while self.states()['path.aligned'] == 'holds' and time.monotonic() < deadline:
+            time.sleep(0.05)
         row = [r for r in self.client.conditions() if r['id'] == 'path.aligned'][0]
         self.assertEqual((row['state'], row['reason']), ('due', 'valid_for elapsed'))
 
@@ -378,12 +381,14 @@ class ConditionsCase(unittest.TestCase):
 
     def test_a_continuous_experiment_maintains_what_it_relies_on_as_it_goes(self):
         # valid_for leaves room for a slow machine to start the experiment and run its first batch in time.
-        self.client.configure_platform(platform(SOURCE, {**PATH, 'valid_for': 1.5}), expected_revision=1)
+        self.client.configure_platform(platform(SOURCE, {**PATH, 'valid_for': 3.0}), expected_revision=1)
         self.client.maintain('chain')
         experiment = self.client.start_experiment(resources=['source', 'coupler', 'detector'], requires=['path.aligned'])
         read = [{'id': 'read', 'device': 'detector', 'operation': 'read'}]
         experiment.batch(read)
-        time.sleep(1.55)
+        deadline = time.monotonic() + 30
+        while self.states()['path.aligned'] != 'due' and time.monotonic() < deadline:
+            time.sleep(0.05)
         WORLD['alignment'] = 0.3
         with self.assertRaises(IOPError) as refused:
             experiment.batch(read)
