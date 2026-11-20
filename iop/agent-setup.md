@@ -132,8 +132,7 @@ Python and TypeScript `run.invoke()` wait for the target operation and return as
 
 [Instrument setup](instrument-setup.md) · [Measurements](performance/README.md)
 
-
-## 0.8.1 · Identity and automatic setup
+## Identity and automatic setup
 
 Read `lab_context` first. `discover_instruments(refresh=false).instruments` retains identity, source, presence and required setup fields. Use automatically registered instruments directly. `complete_instrument_setup` entries in `next_steps` identify the remaining protocol, communication settings, driver or model operations.
 
@@ -144,10 +143,10 @@ Read `lab_context` first. `discover_instruments(refresh=false).instruments` reta
 
 Python: `identify()`, `instrument_profiles()`, `save_instrument_profile()`, `retry_discovery()`. TypeScript: `identify()`, `instrumentProfiles()`, `saveInstrumentProfile()`, `retryDiscovery()`. Read `configuration_schema("instrument-profile")` for the description format.
 
-## 0.8.2 · Continuing work
+## Continuing work
 
-The default context links to full descriptions; use `lab_context(after=cursor)` for subsequent changes. `instrument_configuration` reads or edits versioned settings. `continue_program` reads progress or continues a program declaring resume support. [Program progress and binary data](continuity.md).
+The default context links to full descriptions; use `lab_context(after=cursor)` for subsequent changes. `instrument_configuration` reads or edits versioned settings. `continue_program` continues an experiment that stopped: a step graph from the operations that completed, a program that declares resume support from the progress it saved. [Program progress and binary data](continuity.md).
 
-## 0.8.3 · Installed model descriptions
+## Installed model descriptions
 
 `instrument_profiles(manufacturer=..., model=...)` returns short pages. Continue with `next_offset`; set `details=true` for operation definitions. Sources include package versions and original documentation. Equally applicable descriptions remain explicit choices applied through existing device configuration. [Instrument support packages](instrument-packages.md).
