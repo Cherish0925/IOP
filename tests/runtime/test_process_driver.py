@@ -1,7 +1,10 @@
 import json
 import os
+import queue
+import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -14,6 +17,51 @@ try:
     available = True
 except ValueError:
     available = False
+
+
+@unittest.skipUnless(available, 'Build iop-execd to run native process cases')
+class NativeProtocolCase(unittest.TestCase):
+    def test_nonreading_sdk_cannot_block_the_operation_deadline(self):
+        process = subprocess.Popen([executable(), '--', sys.executable, '-c', 'import time;time.sleep(2)'],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
+        replies = queue.Queue()
+        reader = threading.Thread(target=lambda: replies.put(process.stdout.readline()), daemon=True)
+        reader.start()
+        try:
+            # This exceeds the pipe capacity. Forwarding it must not suspend the
+            # native select loop while the SDK ignores its stdin.
+            process.stdin.write(json.dumps({'id': 'blocked-write', 'method': 'invoke',
+                'timeout_s': 0.1, 'params': {'payload': 'x' * 1_048_576}}) + '\n')
+            process.stdin.flush()
+            reply = json.loads(replies.get(timeout=5))
+            self.assertEqual(reply['id'], 'blocked-write')
+            self.assertTrue(reply['outcome_unknown'])
+            self.assertIn('timed out', reply['error'])
+        finally:
+            process.stdin.close()
+            try: process.wait(timeout=5)
+            except subprocess.TimeoutExpired: process.kill(); process.wait()
+            reader.join(2)
+            process.stdout.close(); process.stderr.close()
+
+    def test_invalid_job_deadlines_do_not_start_or_truncate_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output, errors, started = root/'stdout', root/'stderr', root/'started'
+            output.write_text('previous output')
+            for timeout in (-1, True, '3', 1e300):
+                with self.subTest(timeout=timeout):
+                    request = {'id': 'invalid-timeout', 'params': {
+                        'command': [sys.executable, '-c', 'from pathlib import Path;Path("started").touch()'],
+                        'cwd': str(root), 'stdout': str(output), 'stderr': str(errors), 'timeout': timeout}}
+                    result = subprocess.run([executable(), '--job'], input=json.dumps(request)+'\n',
+                        capture_output=True, text=True, timeout=5, check=True)
+                    reply = json.loads(result.stdout)
+                    self.assertEqual(reply['id'], request['id'])
+                    self.assertIn('timeout', reply['error'])
+                    self.assertFalse(started.exists())
+                    self.assertEqual(output.read_text(), 'previous output')
+                    self.assertFalse(errors.exists())
 
 
 @unittest.skipUnless(available, 'Build iop-execd to run native process cases')

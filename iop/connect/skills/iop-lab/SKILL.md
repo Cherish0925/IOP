@@ -5,7 +5,7 @@ description: Use IOP to operate instruments or scientific software, submit exper
 
 # Operate a laboratory
 
-The laboratory is a service that keeps instruments, platforms, methods, experiments and their records. It goes on working when this connection closes. These guides describe IOP 0.13.0; check `lab_context.service.version` and upgrade an older service while idle before using newer options.
+The laboratory is a service that keeps instruments, platforms, methods, experiments and their records. It goes on working when this connection closes. These guides describe IOP 0.14.0; check `lab_context.service.version` and upgrade an older service while idle before using newer options.
 
 ## Working method
 
@@ -18,6 +18,7 @@ The laboratory is a service that keeps instruments, platforms, methods, experime
    - an algorithm: `submit_program`, which runs beside the instruments.
 5. Submit once with a `request_id` you choose and a `name` that says what it is, and keep the run ID. After a lost reply, repeat the identical request with the same `request_id`; in a later conversation, `find_experiments` finds the experiment again.
 6. Read results where they lie: `experiment_updates`, `experiment`, `operation_result`, `read_array`. Save what was acquired with `save_acquisition`; do not acquire again to save.
+   For averaging, calibration or normalization, read `guide(measurements)`: retain common error sources across readings and keep raw data with the reduced result.
 7. When an experiment failed or was interrupted, read why, remove the cause and continue it with `continue_program`: what completed keeps its results.
 
 ## References
@@ -29,6 +30,7 @@ Each is short, with examples. Read one when the task needs it: `guide(topic)`, o
 | `steps` | A step, order, bindings, saved operations, options of a step and of a submission |
 | `sweeps` | `sweep`, `adapt`, `repeat`, `until`, `seek`, `retake`, `retry` |
 | `arrays` | `read_array`: summaries, windows, maps, lines, crossings, fits |
+| `measurements` | Streaming means, correlated uncertainty, dark/reference correction, precision stopping |
 | `conditions` | What an experiment relies on: `requires`, maintenance, `upkeep`, data in doubt |
 | `experiments` | The three forms, following a run, failure and continuation, files, archives |
 | `programs` | Writing a research program: the package, the SDK inside it, saved progress |

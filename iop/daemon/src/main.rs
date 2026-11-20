@@ -57,7 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.first().map(String::as_str) == Some("--") {
         args.remove(0);
     }
-    if args.is_empty() || !timeout.is_finite() || timeout <= 0.0 {
+    if args.is_empty() || !timeout.is_finite() || timeout <= 0.0 || timeout > 31_536_000.0 {
         return Err("Usage: iop-execd [--timeout seconds] -- program [arguments]".into());
     }
     let mut command = Command::new(&args[0]);
@@ -81,12 +81,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut input = child.stdin.take().unwrap();
     let mut responses = BufReader::new(child.stdout.take().unwrap()).lines();
     let mut requests = BufReader::new(tokio::io::stdin()).lines();
+    let mut outgoing = Vec::<u8>::new();
+    let mut written = 0;
     let mut pending: Option<Value> = None;
     let timer = time::sleep(Duration::from_secs_f64(timeout));
     tokio::pin!(timer);
     let outcome: Result<(), Box<dyn std::error::Error>> = async {
         loop {
             tokio::select! {
+                result = input.write(&outgoing[written..]), if written < outgoing.len() => {
+                    let count = result?;
+                    if count == 0 { return Err(io::Error::from(io::ErrorKind::WriteZero).into()); }
+                    written += count;
+                    if written == outgoing.len() { outgoing.clear(); written = 0; }
+                }
                 line = requests.next_line() => {
                     let Some(line) = line? else { break; };
                     let message: Value = serde_json::from_str(&line)?;
@@ -107,8 +115,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         let deadline = timer.deadline().min(Instant::now() + Duration::from_secs_f64(duration));
                         timer.as_mut().reset(deadline);
                     }
-                    input.write_all(format!("{message}\n").as_bytes()).await?;
-                    input.flush().await?;
+                    // Keep control input and the deadline live when an SDK stops
+                    // reading its pipe. ChildStdin writes directly to the pipe.
+                    outgoing.extend_from_slice(format!("{message}\n").as_bytes());
                 }
                 line = responses.next_line() => {
                     let Some(line) = line? else {

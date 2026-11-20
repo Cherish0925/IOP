@@ -19,7 +19,7 @@ PROMPT_STEPS = 8000
 # descriptions and the guide are always offered. Every tool belongs to exactly one toolset.
 ALWAYS = ('lab_context', 'describe_instrument', 'describe_platform', 'guide')
 # What an agent reads when a task needs it, so that tool descriptions, read on every turn, stay short.
-GUIDES = ('steps', 'sweeps', 'arrays', 'conditions', 'experiments', 'programs', 'setup', 'episodes')
+GUIDES = ('steps', 'sweeps', 'arrays', 'measurements', 'conditions', 'experiments', 'programs', 'setup', 'episodes')
 TOOLSETS = {
     'setup': ('configuration_schema', 'register_instrument', 'instrument_configuration', 'register_instruments',
               'discover_instruments', 'identify_instrument', 'instrument_profiles', 'save_instrument_profile',
@@ -204,8 +204,8 @@ def create_server(client, *, http=False, selection=None):
         return client.platform(platform)
 
     @tool(annotations=read_only)
-    def guide(topic: Literal['overview', 'steps', 'sweeps', 'arrays', 'conditions', 'experiments', 'programs', 'setup', 'episodes'] = 'overview') -> str:
-        """Read how to work here, with examples, when a task needs it. overview: the working method. steps: a step, order, bindings, saved operations. sweeps: sweep, repeat, until, seek, retry. arrays: what read_array returns. conditions: requires, upkeep, data in doubt. experiments: the three forms, following, continuing, saving. programs: writing a research program with the SDK. setup: describing instruments and platforms. episodes: research trajectories."""
+    def guide(topic: Literal['overview', 'steps', 'sweeps', 'arrays', 'measurements', 'conditions', 'experiments', 'programs', 'setup', 'episodes'] = 'overview') -> str:
+        """Read the working method or one topic when needed. steps: ordering, bindings, saved operations. sweeps: scans, repeat, seek, stopping. arrays: selections and fits. measurements: averaging, shared calibration errors, reference normalization. conditions: requires and upkeep. experiments: submission and continuation. programs: SDK and saved progress. setup: instruments and platforms. episodes: research trajectories."""
         return guide_text(topic)
 
     @tool(annotations=read_only)
@@ -554,18 +554,21 @@ def create_server(client, *, http=False, selection=None):
         """Read the laboratory and say what is ready and what needs the person."""
         return ('Read `lab_context`. Tell me briefly which instruments and platforms are ready and which are not, which '
                 'saved operations there are, which experiments are open or can continue, and what its next_steps ask, of '
-                'you and of me. Carry out the steps that only read; name the others and wait for my word.')
+                'you and of me. Continue work already authorized by the task. Ask for missing physical details or a '
+                'decision that changes its scope, and preserve existing experiments and configuration.')
 
     @prompt('experiments', title='Plan and run a measurement')
     def measure(goal: str) -> str:
-        """From a goal to observed numbers: descriptions, saved methods, a preview, one submission, the arrays."""
+        """Choose a reusable method or program, acquire the data and report its scientific meaning."""
         return ('Goal: ' + goal + '\n\nWork as `guide` describes. Read `lab_context`, then `describe_instrument` for each '
                 'instrument involved, and look in `saved_operations` for a method that already does this: use it rather '
-                'than new steps. Build the step graph, name the conditions it relies on in requires, and read it back '
-                'with `submit_experiment` and preview=true: tell me the operation counts, the state of the conditions and '
-                'the estimated time. Then submit it once with a request_id, follow it with `experiment_updates` and read '
-                'what it gathered with `read_array`. Report the numbers observed with units and errors, the points in '
-                'doubt, and what the goal still lacks.')
+                'than new steps. Choose a step graph for known steps, a continuous experiment for decisions between '
+                'calls, or a submitted program for an algorithm. Name required conditions in requires. Preview a step '
+                'graph before submitting; keep long loops and saved progress in a program. For repeated measurements, '
+                'dark subtraction or reference normalization, read `guide(measurements)` and preserve shared calibration '
+                'errors. Submit once with a request_id and follow it with `experiment_updates`. Read relevant arrays or '
+                'saved results. Report the measured quantity with units and uncertainty, the assumptions of the '
+                'reduction, any points in doubt, and what the goal still lacks.')
 
     @prompt('experiments', title='Report what an experiment observed')
     def report(run_id: str) -> str:

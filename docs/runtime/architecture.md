@@ -2,11 +2,11 @@
 
 [中文](architecture.zh-CN.md) · [Installation](README.md) · [Execution](../../iop/execution.md) · [Extensions](../../iop/software.md)
 
-0.8.3 improves [instrument setup](../../iop/instrument-setup.md), parallel scheduling and repeated program calls. [Agent integration](../../iop/agent-setup.md) uses the same saved laboratory configuration. [Application interfaces and system support](../../iop/product.md).
+[Instrument setup](../../iop/instrument-setup.md), [agent integration](../../iop/agent-setup.md) and [application interfaces](../../iop/product.md) use the same saved laboratory configuration.
 
 IOP Runtime runs on laboratory computers between people, agents, experiment programs and their instruments or computational tools. A computer may manage several experimental platforms. Platform definitions describe device membership, physical connections, shared objects and initialization.
 
-## Implementation in 0.8.3
+## Components
 
 | Component | Responsibility | Source |
 | --- | --- | --- |

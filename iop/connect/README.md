@@ -58,7 +58,7 @@ The connector writes a receipt with paths, without contacting an instrument. Its
 
 Read `lab_context` and `describe_instrument`. Submit once with a stable `request_id`; keep the laboratory name and returned run ID. Read `experiment(run_id, include_result=true)` after reconnecting. Repeat a submission with its original request ID only for the identical experiment. A successful installation does not identify cables, samples, or an unknown instrument's command set.
 
-## Connections in 0.8.7
+## Portable and DeepSeek connections
 
 `iop connect --name bench` also returns `portable` and `deepseek` directories.
 Portable packages use Agent Plugins plugin.json / mcp.json. DeepSeek packages
@@ -69,5 +69,5 @@ Remote credentials are resolved through the host credential/environment system.
 The project index for DeepSeek Discover is
 https://raw.githubusercontent.com/Cherish0925/IOP/main/docs/dsh/index.json.
 Its general connection runs the installed `iop mcp`; use a named connection above
-for a specific laboratory. Read `iop://guides/operations` through MCP resources
+for a specific laboratory. Read `iop://guides/overview` through MCP resources
 when operating instructions are needed.

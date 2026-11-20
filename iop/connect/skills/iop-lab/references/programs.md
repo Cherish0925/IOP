@@ -20,7 +20,10 @@ from ai4instruments.iop import Client
 
 run = Client().current_run()
 parameters = json.loads(os.environ.get("IOP_PARAMETERS_JSON", "{}"))
-progress = run.checkpoints().get("main", {}).get("state", {"next": 0})
+progress = run.checkpoints().get("main", {}).get("state")
+if progress is None:
+    progress = {"next": 0}
+    run.checkpoint(progress)  # Establish continuation before the first instrument call.
 for index in range(progress["next"], parameters.get("points", 10)):
     reading = run.invoke("meter", "measure", request_id=f"{run.id}-{index}")
     run.checkpoint({"next": index + 1})
@@ -39,7 +42,9 @@ run.save_result({"points": parameters.get("points", 10)})
 
 ## Continuing
 
-A stable `request_id` on each call makes a repeated call return its first result instead of acting twice. A program that declares `"resume": true` and saves checkpoints continues after an interruption with `continue_program(run_id, request_id)`: it starts again, reads its progress and goes on from there. Output printed by each attempt is kept.
+A stable `request_id` on each call makes a repeated call return its first result instead of acting twice. Save an initial progress point before the first instrument call, then update it after completed work; this also permits continuation when the first round is interrupted. A program that declares `"resume": true` and saves checkpoints continues after an interruption with `continue_program(run_id, request_id)`: it starts again, reads its progress and goes on from there. Output printed by each attempt is kept.
+
+A failed operation also retains its response under that ID. A research method that decides to retry a known failed reading uses a new stable ID for that reading, while keeping the IDs of completed calls. The reference-measurement example in the `measurements` guide implements this choice. Preparation actions and unknown instrument outcomes need their own recovery; changing every ID on continuation would repeat completed work.
 
 ## Choosing this form
 

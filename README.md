@@ -75,6 +75,12 @@ Views can locate peaks, dips and level crossings, or fit a straight line, Lorent
 
 Saved operations can name values from these views. Later steps bind to them, and operating conditions use them for verification or tuning. See [reading arrays](docs/runtime/drivers.md#reading-arrays--读取数组).
 
+## Measurement methods
+
+Research programs can use `ai4instruments.iop.measurements` for streaming means and first-order uncertainty propagation. Named error contributions preserve covariance: a common calibration error remains shared when readings are averaged, and a common gain cancels when a ratio permits it. Units and signed sensitivities stay with the estimate.
+
+The [reference measurement program](examples/iop/reference-measurement/) acquires configurable signal, dark and reference readings, records the raw acquisitions, and stops at a chosen standard uncertainty or sample limit. It saves progress through the existing experiment API and resumes without repeating completed operations. Read [measurement reduction](iop/connect/skills/iop-lab/references/measurements.md) for assumptions and use outside this example.
+
 ## Research and learning
 
 Episode records retain the experiment trajectory alongside the three operation roles. Python, TypeScript and MCP clients can save versioned task/policy identities, observations, rewards and termination information. Each transition links to completed operations in that experiment. Identical retries return the saved record; reconnection preserves the sequence. JSON Lines export supports downstream data processing and learning. A whole experiment saves as one ZIP of its records and files with an RO-Crate description that research data repositories read.

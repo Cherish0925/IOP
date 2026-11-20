@@ -86,6 +86,33 @@ export class IOPError extends Error {
   get code() { return this.details.code as string | undefined; }
 }
 const terminal = new Set(['completed', 'skipped', 'failed', 'cancelled', 'interrupted']);
+/** A caller can end a request sooner; it does not remove the connection deadline. */
+function boundedSignal(timeout: number, signal?: AbortSignal) {
+  const deadline = AbortSignal.timeout(timeout);
+  if (!signal) return { signal: deadline, dispose() {} };
+  if (typeof AbortSignal.any === 'function') return { signal: AbortSignal.any([signal, deadline]), dispose() {} };
+  // Node 20.0 and older browser hosts have timeout but not any. Release listeners
+  // after a JSON reply; streamed responses retain them until abort or deadline.
+  const controller = new AbortController();
+  const dispose = () => { signal.removeEventListener('abort', cancelled); deadline.removeEventListener('abort', expired); };
+  const cancelled = () => { controller.abort(signal.reason); dispose(); };
+  const expired = () => { controller.abort(deadline.reason); dispose(); };
+  if (signal.aborted) cancelled();
+  else {
+    signal.addEventListener('abort', cancelled, { once: true });
+    deadline.addEventListener('abort', expired, { once: true });
+  }
+  return { signal: controller.signal, dispose };
+}
+async function jsonRequest<T>(url: string, init: RequestInit, timeout: number, signal?: AbortSignal): Promise<T> {
+  const request = boundedSignal(timeout, signal);
+  try {
+    const response = await fetch(url, { ...init, signal: request.signal });
+    const value = await response.json();
+    if (!response.ok) throw new IOPError(value.error ?? response.statusText, response.status, value);
+    return value as T;
+  } finally { request.dispose(); }
+}
 const delay = (ms: number, signal?: AbortSignal): Promise<void> => new Promise((resolve, reject) => {
   if (signal?.aborted) { reject(signal.reason); return; }
   const abort = () => { clearTimeout(timer); reject(signal?.reason); };
@@ -98,12 +125,9 @@ export class IOP {
     this.endpoint = endpoint.replace(/\/$/, '');
   }
   async request<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
-    const response = await fetch(this.endpoint + path, { method: body === undefined ? 'GET' : 'POST',
+    return jsonRequest<T>(this.endpoint + path, { method: body === undefined ? 'GET' : 'POST',
       headers: { 'Authorization': 'Bearer ' + this.token, 'Content-Type': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body), signal: signal ?? AbortSignal.timeout(this.timeout) });
-    const value = await response.json();
-    if (!response.ok) throw new IOPError(value.error ?? response.statusText, response.status, value);
-    return value as T;
+      body: body === undefined ? undefined : JSON.stringify(body) }, this.timeout, signal);
   }
   devices() { return this.request<Record<string, unknown>[]>('/v1/devices'); }
   context(refresh = false, detail: 'summary' | 'full' = 'summary') { return this.request<Record<string, unknown>>('/v1/context?' + new URLSearchParams({ refresh: String(refresh), detail })); }
@@ -112,7 +136,7 @@ export class IOP {
   deviceHistory(device: string) { return this.request<{id: string; revision: number; definition: Record<string, unknown>}[]>(`/v1/devices/${encodeURIComponent(device)}/history`); }
   configureDevice(device: string, definition: Record<string, unknown>, expectedRevision: number) { return this.request(`/v1/devices/${encodeURIComponent(device)}/configuration`, { definition, expected_revision: expectedRevision }); }
   /** How to work with this laboratory, as text: the working method, or one part of it with examples. */
-  async guide(topic: 'overview' | 'steps' | 'sweeps' | 'arrays' | 'conditions' | 'experiments' | 'programs' | 'setup' | 'episodes' = 'overview') {
+  async guide(topic: 'overview' | 'steps' | 'sweeps' | 'arrays' | 'conditions' | 'experiments' | 'programs' | 'measurements' | 'setup' | 'episodes' = 'overview') {
     return (await this.request<{ topic: string; text: string }>('/v1/guides/' + topic)).text;
   }
   schema(name: 'device' | 'platform' | 'workflow' | 'instrument-profile' | 'operation') { return this.request<Record<string, unknown>>('/v1/schemas/' + name); }
@@ -164,14 +188,17 @@ export class IOP {
   }
   /** A file the service makes on request, such as an array as .npy. */
   async file(path: string, signal?: AbortSignal): Promise<Response> {
-    const response = await fetch(this.endpoint + path, { headers: { Authorization: 'Bearer ' + this.token }, signal: signal ?? AbortSignal.timeout(this.timeout) });
-    if (!response.ok) {
-      const text = await response.text();
-      let message = response.statusText;
-      try { message = JSON.parse(text).error ?? message; } catch { /* not JSON */ }
-      throw new IOPError(message, response.status);
-    }
-    return response;
+    const request = boundedSignal(this.timeout, signal);
+    try {
+      const response = await fetch(this.endpoint + path, { headers: { Authorization: 'Bearer ' + this.token }, signal: request.signal });
+      if (!response.ok) {
+        const text = await response.text();
+        let message = response.statusText;
+        try { message = JSON.parse(text).error ?? message; } catch { /* not JSON */ }
+        throw new IOPError(message, response.status);
+      }
+      return response; // The deadline and caller signal also apply while consuming its body.
+    } catch (error) { request.dispose(); throw error; }
   }
   /** The whole array an operation returned as a NumPy .npy file; a last axis of re/im pairs becomes complex values. */
   arrayFile(operationId: string, field?: string, signal?: AbortSignal) {
@@ -339,13 +366,10 @@ export class Run {
     return record;
   }
   async upload(name: string, file: Blob, signal?: AbortSignal, operationIds: string[] = []) {
-    const response = await fetch(this.client.endpoint + `/v1/runs/${encodeURIComponent(this.id)}/files?` + new URLSearchParams({ name, operation_ids: JSON.stringify(operationIds) }), {
+    return jsonRequest<ArtifactRecord>(this.client.endpoint + `/v1/runs/${encodeURIComponent(this.id)}/files?` + new URLSearchParams({ name, operation_ids: JSON.stringify(operationIds) }), {
       method: 'POST', headers: { Authorization: 'Bearer ' + this.client.token, 'Content-Type': 'application/octet-stream' },
-      body: file, signal: signal ?? AbortSignal.timeout(this.client.timeout)
-    });
-    const value = await response.json();
-    if (!response.ok) throw new IOPError(value.error ?? response.statusText, response.status);
-    return value as ArtifactRecord;
+      body: file
+    }, this.client.timeout, signal);
   }
   /** The whole experiment as one ZIP: its records, its files and an RO-Crate description; read the response as a stream. */
   async archive(signal?: AbortSignal): Promise<Response> {
@@ -356,11 +380,7 @@ export class Run {
     return response;
   }
   async download(artifactId: string, signal?: AbortSignal): Promise<Response> {
-    const response = await fetch(this.client.endpoint + '/v1/artifacts/' + encodeURIComponent(artifactId), {
-      headers: { Authorization: 'Bearer ' + this.client.token }, signal: signal ?? AbortSignal.timeout(this.client.timeout)
-    });
-    if (!response.ok) throw new IOPError(response.statusText, response.status);
-    return response;
+    return this.client.file('/v1/artifacts/' + encodeURIComponent(artifactId), signal);
   }
   async *watch(after = 0, signal?: AbortSignal): AsyncGenerator<Event> {
     let ended = false;
@@ -388,13 +408,10 @@ export class DataStream {
   /** The whole samples of a numeric stream, by channels, as a NumPy .npy file. */
   arrayFile(signal?: AbortSignal) { return this.run.client.file(this.path + '/array.npy', signal); }
   async append(data: Blob, sequence: number, signal?: AbortSignal) {
-    const response = await fetch(this.run.client.endpoint + this.path + '/chunks?sequence=' + sequence, {
+    return jsonRequest<{id: string; sequence: number; size: number}>(this.run.client.endpoint + this.path + '/chunks?sequence=' + sequence, {
       method: 'POST', headers: { Authorization: 'Bearer ' + this.run.client.token, 'Content-Type': 'application/octet-stream' },
-      body: data, signal: signal ?? AbortSignal.timeout(this.run.client.timeout)
-    });
-    const value = await response.json();
-    if (!response.ok) throw new IOPError(value.error ?? response.statusText, response.status, value);
-    return value as {id: string; sequence: number; size: number};
+      body: data
+    }, this.run.client.timeout, signal);
   }
 }
 
