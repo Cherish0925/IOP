@@ -24,7 +24,7 @@ from pathlib import Path, PurePosixPath
 from .calibration import operation_fields
 from .config import save_json
 from .device_configuration import METADATA, allowed
-from .drivers import make_driver, parameters
+from .drivers import make_driver, operation_parameters, parameters
 from .store import Store, dumps, finite, now
 from . import library, views
 from . import platforms as platform_model
@@ -369,10 +369,16 @@ class Engine:
 
     def startable(self, run_id):
         """Whether an operation of this experiment could start now but for the conditions it relies on: it is
-        ready and its instruments are free."""
+        ready, its retry delay and any retakes have cleared, and its instruments are free."""
         return any(not self.operations[oid].get('maintenance')
+                   and not self._deferred(self.operations[oid])
                    and self.allocation.can_claim(run_id, self._amounts(self.operations[oid]))
                    for oid in self.ready.get(run_id, ()))
+
+    def _deferred(self, op):
+        """A retry delay or pending retakes prevents this operation from starting."""
+        return (bool(self.retaking.get(op['run_id'])) and not (op.get('retakes') or op.get('maintenance'))
+                or 'retry_at' in op and stamp(op['retry_at']) > time.time())
 
     def doubt(self, run_id, condition_id, after, entry):
         """Its data may have been taken while a condition did not hold: mark each operation of this experiment
@@ -759,6 +765,10 @@ class Engine:
         with self.registration_lock:
             from .identification import same_registration
             record = json.loads(dumps(record))
+            if persist and not any((not record.get('id') or old['id'] == record['id']) and same_registration(old, record)
+                                   for old in self.config.get('devices', [])):
+                operation_parameters(record.get('config', {}).get('operations', {}),
+                                     'Instrument ' + record.get('id', '(new)') + ' operations')
             if 'calibration' in record:
                 from .calibration import check
                 check(record['calibration'])
@@ -920,6 +930,7 @@ class Engine:
         from .identification import validate_profile
         profile = json.loads(dumps(profile))
         validate_profile(profile)
+        operation_parameters(profile['config']['operations'], 'Instrument profile ' + profile['id'] + ' operations')
         with self.lock:
             saved = {p['id']:p for p in self.config.get('instrument_profiles', [])}
             saved[profile['id']] = profile
@@ -1059,9 +1070,6 @@ class Engine:
             unknown = sorted(spec.keys() - set(platform_model.SUBMISSION)) if isinstance(spec, dict) else None
             if unknown is None:
                 raise ValueError('Submit an object: ' + ', '.join(platform_model.SUBMISSION))
-            if unknown:
-                raise ValueError('A submission has no ' + ' or '.join(unknown) + '; it takes '
-                                 + ', '.join(platform_model.SUBMISSION))
             if procedure:
                 spec['procedure'] = procedure
             preview = spec.pop('preview', False)
@@ -1086,6 +1094,19 @@ class Engine:
                 if previous['kind'] != kind or previous["spec"] != spec or (package is not None and not program and (self.home / "runs" / previous["id"] / "package.zip").read_bytes() != package):
                     raise ValueError("request_id already names a different experiment")
                 return previous
+            if unknown:
+                raise ValueError('A submission has no ' + ' or '.join(unknown) + '; it takes '
+                                 + ', '.join(platform_model.SUBMISSION))
+            if not procedure and (kind == 'workflow' or program):
+                # New graphs and program wrappers are strict. Identical retries and saved procedures retain
+                # their accepted fields; loading an old revision is not a new write.
+                platform_model.fields(spec.get('steps'))
+                if program:
+                    ignored = sorted(spec['steps'][0].keys() - {'id', 'operation', 'arguments', 'after', 'bindings'})
+                    if ignored:
+                        raise ValueError(f"Step {program['step']}: a saved program does not take " + ', '.join(ignored)
+                                         + '; put resources and requirements on the experiment; express its loop '
+                                         'and retries in the program')
             if len(self.runs) >= int(self.config.get('max_active_runs', 10000)):
                 raise QueueFull('The service has reached its configured number of active experiments')
             run_id = identifier("run")
@@ -1112,9 +1133,6 @@ class Engine:
                 run['program_call'] = program
             if kind == 'workflow':
                 # A step without device uses a saved Standard or Workflow Operation; a swept step runs at each point.
-                if not procedure:
-                    # A saved procedure runs as it was saved; its steps were checked then.
-                    platform_model.fields(spec.get("steps"))
                 steps, calls, sweeps = library.expand(spec.get("steps", []), self.library.get, self._described)
                 platform_model.steps(steps)
                 operations = [self._operation(run_id, s) for s in steps]
@@ -1224,10 +1242,6 @@ class Engine:
     def invoke(self, run_id, step):
         with self.lock:
             step = json.loads(dumps({'arguments': {}, **step}))
-            unknown = sorted(step.keys() - set(platform_model.CALL))
-            if unknown:
-                # With argument for arguments, an operation whose parameters all have defaults would run on them.
-                raise ValueError('A call has no ' + ' or '.join(unknown) + '; it takes ' + ', '.join(platform_model.CALL))
             old = self.store.request("operations", step.get("request_id"))
             if old:
                 if old['run_id'] != run_id:
@@ -1239,6 +1253,10 @@ class Engine:
                 if not same:
                     raise ValueError("request_id already names a different operation")
                 return old
+            unknown = sorted(step.keys() - set(platform_model.CALL))
+            if unknown:
+                # With argument for arguments, an operation whose parameters all have defaults would run on them.
+                raise ValueError('A call has no ' + ' or '.join(unknown) + '; it takes ' + ', '.join(platform_model.CALL))
             run = self.runs.get(run_id)
             if self.stopping or not run or not (run['kind'] == 'package' and run['state'] == 'running' or
                                run['kind'] == 'external' and run['state'] in {'queued', 'running'}):
@@ -1800,10 +1818,7 @@ class Engine:
             op = self.operations[op_id]
             # While a pass keeps its conditions, an experiment's operations wait for it; while points in doubt are
             # taken again, its other operations wait for them, except the maintenance those retakes rely on.
-            if rid in maintaining and not op.get('maintenance') or \
-                    self.retaking.get(rid) and not (op.get('retakes') or op.get('maintenance')):
-                continue
-            if 'retry_at' in op and stamp(op['retry_at']) > time.time():
+            if rid in maintaining and not op.get('maintenance') or self._deferred(op):
                 continue
             stop = self._stopping(op) if op.get('continues') else None
             if stop:

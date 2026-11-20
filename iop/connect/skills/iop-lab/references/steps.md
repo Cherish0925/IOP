@@ -59,3 +59,5 @@ The experiment result holds, under each step's id, what the operation returned; 
 ```
 
 `"${name}"` inserts a parameter. `layer` is `standard` for a method, `workflow` for an organization of methods across instruments. `configuration_schema("operation")` gives every field.
+
+Parameter declarations are checked when saved: use `minimum` and `maximum`, not `min` or `max`. Descriptive fields and `x-*` annotations are retained, but annotations do not enforce constraints. The same contract applies to newly written local instrument and model parameters; older records and SDK descriptions remain usable.

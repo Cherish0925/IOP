@@ -10,7 +10,6 @@ import threading
 import time
 import webbrowser
 from pathlib import Path
-from urllib.parse import urlencode
 from .client import Client
 from .config import VERSION, InstanceLock, home_path, initialize, save_json
 
@@ -327,8 +326,7 @@ def main():
                                                         request_id=args.request_id) if args.run_id else
                    client.invoke(args.device, args.operation, json.loads(args.arguments)))
         elif args.command == 'runs':
-            chosen = {'search': args.search, 'state': args.state, 'before': args.before}
-            output(client.request('/v1/runs?' + urlencode({'limit': args.limit, **{k: v for k, v in chosen.items() if v}})))
+            output(client.runs(args.search, state=args.state, limit=args.limit, before=args.before))
         elif args.command == 'result':
             output(client.run(args.run_id).info())
         elif args.command == 'cancel':

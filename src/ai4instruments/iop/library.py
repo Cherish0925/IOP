@@ -15,7 +15,7 @@ import math
 import re
 from collections import deque
 from . import arrays, sweeps as sweeping, views
-from .drivers import parameters, span
+from .drivers import parameter_definitions, parameters, span
 from .platforms import dependencies, fields, name, sources
 
 LAYERS = ('standard', 'workflow')
@@ -75,9 +75,7 @@ def check(definition, lookup):
     requires = definition.get('requires', [])
     if not isinstance(requires, list) or any(not isinstance(c, str) or not c for c in requires) or len(set(requires)) != len(requires):
         raise ValueError('requires names the conditions that must hold when the operation is used')
-    declared = definition.get('parameters', {})
-    if not isinstance(declared, dict) or any(not isinstance(spec, dict) for spec in declared.values()):
-        raise ValueError('Each parameter needs a description object')
+    declared = parameter_definitions(definition.get('parameters', {}), 'Operation ' + definition['id'] + ' parameters')
     if 'program' in definition:
         # A Workflow Operation that decides from results is a saved program; the Runtime runs it.
         if definition['layer'] != 'workflow' or 'steps' in definition or 'result' in definition:

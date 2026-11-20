@@ -1,6 +1,7 @@
 """Device drivers. Model-specific behavior stays in drivers and descriptions."""
 from __future__ import annotations
 import copy
+import difflib
 import importlib
 import math
 import socket
@@ -64,6 +65,65 @@ def parameters(spec, supplied):
             raise ValueError(name + " must be one of " + str(field["enum"]))
         result[name] = value
     return result
+
+
+def parameter_definitions(fields, where='Parameters'):
+    """Check newly saved parameter declarations; reading older descriptions remains permissive."""
+    supported = {'type', 'required', 'default', 'enum', 'minimum', 'maximum', 'items', 'minItems', 'maxItems',
+                 'unit', 'limit', 'description', 'title', 'examples'}
+    if not isinstance(fields, dict):
+        raise ValueError(where + ' maps parameter names to description objects')
+    for name, field in fields.items():
+        label = f'{where}.{name}'
+        if not isinstance(name, str) or not name or not isinstance(field, dict):
+            raise ValueError(where + ' needs nonempty parameter names and description objects')
+        unknown = sorted(key for key in field if key not in supported and not key.startswith('x-'))
+        if unknown:
+            near = difflib.get_close_matches(unknown[0], sorted(supported), 1, 0.5)
+            raise ValueError(label + ': unknown field ' + ', '.join(unknown)
+                             + ('; use ' + near[0] if near else '; fields: ' + ', '.join(sorted(supported)))
+                             + '; extension annotations use x- names and do not enforce constraints')
+        kind = field.get('type')
+        if 'type' in field and kind not in ('number', 'integer', 'string', 'boolean', 'array', 'object'):
+            raise ValueError(label + ': type is number, integer, string, boolean, array or object')
+        if 'required' in field and not isinstance(field['required'], bool):
+            raise ValueError(label + ': required is true or false')
+        for key in ('unit', 'limit', 'description', 'title'):
+            if key in field and not isinstance(field[key], str):
+                raise ValueError(label + ': ' + key + ' is text')
+        if 'examples' in field and not isinstance(field['examples'], list):
+            raise ValueError(label + ': examples is a list')
+        for key in ('minimum', 'maximum'):
+            if key in field and (kind not in ('number', 'integer') or type(field[key]) not in (int, float)
+                                 or not math.isfinite(field[key])):
+                raise ValueError(label + ': ' + key + ' is a finite number with type number or integer')
+        if field.get('minimum', -math.inf) > field.get('maximum', math.inf):
+            raise ValueError(label + ': minimum is above maximum')
+        for key in ('minItems', 'maxItems'):
+            if key in field and (kind != 'array' or type(field[key]) is not int or field[key] < 0):
+                raise ValueError(label + ': ' + key + ' is a nonnegative integer with type array')
+        if field.get('minItems', 0) > field.get('maxItems', 1000000):
+            raise ValueError(label + ': minItems is above maxItems')
+        if 'items' in field:
+            if kind != 'array':
+                raise ValueError(label + ': items belongs to type array')
+            parameter_definitions({'items': field['items']}, label)
+        if 'enum' in field:
+            if not isinstance(field['enum'], list) or not field['enum']:
+                raise ValueError(label + ': enum is a nonempty list of accepted values')
+            for value in field['enum']:
+                parameters({'parameters': {label: {k: v for k, v in field.items() if k != 'enum'}}}, {label: value})
+        if 'default' in field:
+            parameters({'parameters': {label: field}}, {label: field['default']})
+    return fields
+
+
+def operation_parameters(operations, where='Operations'):
+    """Validate parameters of newly written local operations, not descriptions returned by an SDK."""
+    if not isinstance(operations, dict) or any(not isinstance(spec, dict) for spec in operations.values()):
+        raise ValueError(where + ' maps operation names to description objects')
+    for name, spec in operations.items():
+        parameter_definitions(spec.get('parameters', {}), f'{where}.{name} parameters')
 
 
 class UnconfirmedChange(RuntimeError):

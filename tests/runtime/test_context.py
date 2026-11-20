@@ -156,6 +156,7 @@ class MCPCase(unittest.TestCase):
         self.assertEqual(self.client.request('/v1/runs'), [])
         for tool in asyncio.run(server.list_tools()):
             self.assertEqual(server._tool_manager.get_tool(tool.name).fn_metadata.arg_model.model_config['extra'], 'forbid', tool.name)
+            self.assertIs(tool.model_dump(by_alias=True)['inputSchema']['additionalProperties'], False, tool.name)
 
     def test_experiments_are_found_again_by_what_they_were_named_and_used(self):
         import asyncio
@@ -197,6 +198,13 @@ class MCPCase(unittest.TestCase):
                          (scan['id'], ['device:stage']))
         self.assertNotIn('before', call('find_experiments', {'search': 'laser'}))
         self.client.run(held['id']).finish()
+        # Search matches text values, not JSON nulls or escaped punctuation in their serialization.
+        self.assertEqual(found('null'), [])
+        quoted = self.client.submit([{'id': 'read', 'device': 'aux', 'operation': 'position'}],
+                                    name='Line "A"\\B\nscan', project='null detector')
+        quoted.result(10)
+        for search in ('"A"', '\\B', '\nscan', 'null'):
+            self.assertEqual(found(search), [quoted.id])
 
     def test_prompts_start_work_with_the_tools_offered(self):
         import asyncio

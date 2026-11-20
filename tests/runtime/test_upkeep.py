@@ -1,6 +1,8 @@
 """Upkeep: a platform that declares it has its conditions kept by the Runtime while its instruments are idle."""
 import time
+import threading
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timezone
 from ai4instruments.iop import IOPError
 from ai4instruments.iop.conditions import RENEWALS, upkeep
@@ -344,6 +346,69 @@ class UpkeepCase(unittest.TestCase):
         self.assertEqual([op['state'] for op in waiting.operations()['operations'] if op['step'] == 'read'], ['queued'])
         holder.finish()
         self.assertEqual(waiting.result(30)['read']['signal'], 1.0)
+
+    def test_retry_backoff_does_not_exhaust_condition_renewals(self):
+        self.client.configure_platform(chain(SOURCE, PATH, keep=False))
+        driver = self.engine.devices['detector']
+        original, attempts = driver.invoke, []
+
+        def once(operation, arguments, cancelled):
+            if operation == 'integrate':
+                attempts.append(operation)
+                if len(attempts) == 1:
+                    raise ValueError('Transient read failure')
+            return original(operation, arguments, cancelled)
+
+        with patch.object(driver, 'invoke', once):
+            run = self.client.submit([{'id': 'read', 'device': 'detector', 'operation': 'integrate',
+                                       'arguments': {'seconds': 0}, 'retry': {'times': 1, 'after_s': 60}}],
+                                     requires=['path.aligned'], upkeep=True)
+            self.until(lambda: any(op.get('retry_at') for op in run.operations()['operations']))
+            # Renew repeatedly during the backoff, without relying on a subsecond physical validity.
+            for _ in range(RENEWALS + 1):
+                self.client.invalidate(['path.aligned'], 'Renew during retry backoff')
+                self.until(lambda: self.states()['path.aligned'] == 'holds')
+            self.assertEqual(attempts, ['integrate'])
+            with self.engine.lock:
+                op = next(op for op in self.engine.operations.values() if op['run_id'] == run.id and op.get('retry_at'))
+                op['retry_at'] = '1970-01-01T00:00:00+00:00'
+                self.engine.wake.set()
+            self.assertEqual(run.wait(10)['state'], 'completed')
+            self.assertEqual(len(attempts), 2)
+
+    def test_downstream_steps_waiting_for_retakes_do_not_exhaust_condition_renewals(self):
+        self.client.configure_platform({**chain(SOURCE, PATH, keep=False), 'resources': [
+            {'id': 'sample', 'devices': ['detector'], 'operations': {'detector': ['integrate']}}]})
+        started, release = threading.Event(), threading.Event()
+        driver, original = self.engine.devices['aux'], self.engine.devices['aux'].invoke
+
+        def pause(operation, arguments, cancelled):
+            started.set()
+            if not release.wait(10):
+                raise TimeoutError('Test did not release the pause')
+            return original(operation, arguments, cancelled)
+
+        with patch.object(driver, 'invoke', pause):
+            run = self.client.submit([
+                {'id': 'scan', 'device': 'detector', 'operation': 'integrate', 'arguments': {'seconds': 0},
+                 'repeat': 1, 'retake': True},
+                {'id': 'pause', 'device': 'aux', 'operation': 'wait', 'arguments': {'duration': 0}, 'after': ['scan']},
+                {'id': 'tail', 'device': 'source', 'operation': 'read', 'after': ['pause']}],
+                requires=['path.aligned'], upkeep=True)
+            self.assertTrue(started.wait(10))
+            with self.client.start_experiment(resources=['sample']) as holder:
+                try:
+                    WORLD['alignment'] = 0.5
+                    self.client.invalidate(['path.aligned'], 'The table moved')
+                finally:
+                    release.set()
+                self.until(lambda: bool(self.engine.retaking.get(run.id)))
+                for _ in range(RENEWALS + 1):
+                    self.until(lambda: self.states()['path.aligned'] == 'holds')
+                    self.client.invalidate(['path.aligned'], 'Renew while a retake waits for its sample')
+                self.until(lambda: self.states()['path.aligned'] == 'holds')
+                self.assertEqual(next(op for op in run.operations()['operations'] if op['step'] == 'tail')['state'], 'queued')
+            self.assertEqual(run.wait(10)['state'], 'completed')
 
     def test_rejected_operations_do_not_start_instrument_maintenance(self):
         from ai4instruments.iop import batches

@@ -11,7 +11,7 @@ from ai4instruments.iop import Client, Driver, IOPError
 from ai4instruments.iop.config import initialize, InstanceLock
 from ai4instruments.iop.engine import Engine
 from ai4instruments.iop.server import Server
-from ai4instruments.iop.store import Store
+from ai4instruments.iop.store import Store, dumps
 
 
 class SlowDriver(Driver):
@@ -151,6 +151,30 @@ class ServiceCase(unittest.TestCase):
         with self.assertRaisesRegex(IOPError, 'Step move: a step has no wait_s'):
             self.client.configure_platform({'schema_version': 1, 'id': 'bench', 'devices': ['stage'], 'procedures': {
                 'prepare': {'steps': [dict(move, wait_s=1)]}}})
+
+    def test_identical_older_requests_retain_their_accepted_fields(self):
+        run = self.submit([self.step('read', duration=0)], request_id='legacy-graph')
+        run.result(10)
+        old = self.engine.store.get('runs', run.id)
+        old['spec']['note'] = 'Previously accepted annotation'
+        old['spec']['steps'][0]['note'] = 'Read once'
+        self.engine.store.put('runs', old)
+        self.assertEqual(self.client.request('/v1/runs', old['spec'])['id'], run.id)
+        with self.client.start_experiment(resources=['stage']) as session:
+            operation = session.invoke_record('stage', 'position', request_id='legacy-call', timeout=10)
+            old = self.engine.store.get('operations', operation['id'])
+            old['request']['note'] = 'Previously accepted annotation'
+            self.engine.store.put('operations', old)
+            self.assertEqual(self.client.request(f'/v1/runs/{session.id}/operations', old['request'])['id'], operation['id'])
+            session.batch([self.step('read', duration=0)], request_id='legacy-batch')
+            with self.engine.store.lock:
+                row = self.engine.store.db.execute('SELECT body FROM operation_batches WHERE request_id=?', ('legacy-batch',)).fetchone()
+                batch = json.loads(row[0])
+                batch['steps'][0]['note'] = 'Read once'
+                self.engine.store.db.execute('UPDATE operation_batches SET body=? WHERE request_id=?', (dumps(batch), 'legacy-batch'))
+                self.engine.store.db.commit()
+            self.client.request(f'/v1/runs/{session.id}/batches', {'request_id': 'legacy-batch', 'steps': batch['steps']})
+            self.assertEqual(len(session.operations()['operations']), 2)
 
     def test_submission_retry_keeps_one_run(self):
         a=self.submit([self.step('a',duration=0)],request_id='same')

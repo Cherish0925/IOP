@@ -259,7 +259,7 @@ def create_server(client, *, http=False, selection=None):
     @tool()
     def saved_operations(operation: str | None = None, definition: dict | None = None, program: str | None = None,
                          file: str | None = None) -> dict | list:
-        """Standard and Workflow Operations saved in this laboratory: methods built from device (Basic) operations. No arguments: list them. operation returns one with its parameters, steps, named result and record of use; with file, the text of a file of a saved program. definition saves a new revision: id, layer (standard | workflow), description, parameters, steps and result; or, for a workflow that decides from results, program: a directory or ZIP on this computer whose experiment.py reads IOP_PARAMETERS_JSON and saves its result. A step without device uses one by name; a program runs as the only step. guide("steps") has an example."""
+        """List saved Standard and Workflow Operations; operation reads one, with file reads a saved program file. definition saves a revision. program uploads a directory or ZIP from this host for a Workflow Operation that decides from results. A step without device uses a saved method; a program runs alone. guide("steps") gives the definition and examples."""
         if definition is not None:
             return client.save_operation(definition, program=program)
         if operation and file:
@@ -272,7 +272,7 @@ def create_server(client, *, http=False, selection=None):
                              conditions: list[str] | None = None, run_id: str | None = None,
                              request_id: str | None = None, force: bool = False, invalidate: str | None = None,
                              maintenance: str | None = None, wait: float = 0) -> dict | list:
-        """Conditions experiments rely on, each with a verification, a tolerance, corrections and a validity time; an instrument's own are named <device>.<id>. No arguments: all with their state (holds, due, lost, unknown); platform or device narrows it; condition returns one with statistics and records. maintain=true with platform, device or conditions verifies what is due and corrects what drifted, dependencies first: pass request_id, and run_id inside an experiment; force verifies again what holds. The reply returns within wait (up to 25 s); read on with maintenance=<id>. invalidate=<reason> marks conditions due after a disturbance. guide("conditions") tells how experiments rely on them."""
+        """Read conditions and their states; platform/device filters them, condition returns one with records. maintain=true verifies and corrects in dependency order: pass platform, device or conditions, request_id, and run_id inside an experiment. force verifies again what holds. Replies wait up to 25 s; continue with maintenance=<id>. invalidate=<reason> marks conditions due after a disturbance. guide("conditions") explains requires and upkeep."""
         if maintenance:
             return client.request('/v1/maintenance/' + quote(maintenance, safe='') + waiting(wait))
         if invalidate:
@@ -305,7 +305,7 @@ def create_server(client, *, http=False, selection=None):
                           platform: str | None = None, resources: list[str] | None = None,
                           requirements: dict[str, int] | None = None, requires: list[str] | None = None,
                           upkeep: bool = False, preview: bool = False) -> dict:
-        """Submit a graph of steps. A step is {"id", "device", "operation", "arguments"}; without device it uses a saved operation. Steps are independent unless after names the steps they follow, or bindings take an argument from an earlier result. Options of a step: sweep (run at each value; its numbers return as arrays), repeat, until (stop at a limit), seek (find where a reading is largest), retake, retry: guide("sweeps"). requires names conditions that must hold and upkeep=true keeps them while the graph runs: guide("conditions"). preview=true runs nothing and returns operation counts, condition states and estimated_s. Returns immediately with the run ID; reuse request_id only for the identical submission."""
+        """Submit a step graph and return its run ID. Steps are independent unless after or bindings connect them; a step without device uses a saved operation. guide("steps") gives the form and guide("sweeps") its scan and recovery options. requires names conditions; upkeep=true keeps them. preview=true returns counts, condition states and estimated_s without running. Reuse request_id only for an identical submission."""
         if preview:
             return client.preview(steps, platform=platform, resources=resources or [], requirements=requirements,
                                   requires=requires or (), upkeep=upkeep or None)
@@ -338,7 +338,7 @@ def create_server(client, *, http=False, selection=None):
 
     @tool()
     def submit_operations(run_id: str, steps: list[dict], request_id: str, wait: float = 0) -> dict:
-        """Submit a batch of steps within an experiment begun with start_experiment; all are accepted together. Steps run in the order given; after=[] starts an independent branch and after=[IDs] joins branches. Steps take the options of submit_experiment: guide("sweeps"). For a swept step the reply counts its points by state, with stopped and in_doubt when they apply, and read_array(run_id, field, request_id) reads what it gathered. With wait up to 25 seconds the reply includes the results of steps that finish in that time; complete tells whether all did."""
+        """Submit a batch within an open experiment; all steps are accepted together. They run in order; after=[] starts a parallel branch and after=[IDs] joins branches. Step options: guide("sweeps"). Replies include progress and results within wait (up to 25 s); complete says whether all finished. read_array(run_id, field, request_id) reads gathered arrays."""
         batch = client.request('/v1/runs/' + quote(run_id, safe='') + '/batches' + waiting(wait),
                                {'steps':steps, 'request_id':request_id})
         batch = compact(batch)
@@ -458,7 +458,7 @@ def create_server(client, *, http=False, selection=None):
                    points: int | list[int] | None = None, peak: Literal['max', 'min'] | None = None,
                    prominence: float | None = None, level: float | None = None, fit: Literal['line', 'lorentzian', 'gaussian'] | None = None,
                    run_id: str | None = None, stream: str | None = None, request_id: str | None = None) -> dict:
-        """Read what an array says without all its values. Source: operation_id for an array an operation returned; run_id with field for an array of an experiment's result, such as what a sweep gathered (request_id for a batch); run_id with stream for a data stream. Returns a summary (count, min and max with where they lie, mean, std, error), then exact values when there are at most points positions, otherwise the min, max and mean of points buckets (default 32). along is the axis followed, or two axes for a map; at fixes other axes, e.g. {"channel": "x"}; start/stop (positions) or low/high (coordinates) select a window. peak ("max" or "min", with prominence for every line), level (crossings) and fit (a line, or a Lorentzian or Gaussian with errors) read lines, thresholds and widths: guide("arrays")."""
+        """Read arrays as summaries and bounded samples. Choose operation_id, run_id with field (and request_id for a batch), or run_id with stream. along selects one axis or two for a map; at fixes others. start/stop select indices, low/high coordinates. peak/prominence find peaks, level crossings, and fit line/Lorentzian/Gaussian models with errors. guide("arrays") explains results and limits."""
         if points is None:
             points = 16 if isinstance(along, list) and len(along) > 1 else 32
         options = dict(along=along, at=at, start=start, stop=stop, low=low, high=high, points=points, peak=peak,
@@ -543,6 +543,7 @@ def create_server(client, *, http=False, selection=None):
         if arguments is not None:
             arguments.model_config['extra'] = 'forbid'
             arguments.model_rebuild(force=True)
+            registered.parameters['additionalProperties'] = False
 
     def prompt(toolset=None, **options):
         """Register a prompt a person starts work with, offered when the tools it names are."""

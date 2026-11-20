@@ -43,6 +43,8 @@ Copy [scpi-meter.json](../../examples/iop/scpi-meter.json), replace the address 
 }
 ```
 
+New local operation parameters follow the [parameter contract](operations.md): bounds use `minimum` and `maximum`, and unknown constraint fields are refused before a new configuration opens or replaces a driver. Existing stored configurations and SDK descriptions keep their compatibility. / 新写入的本地操作参数遵循[参数格式](operations.md)：界限使用 `minimum` 和 `maximum`，未知约束字段在新配置打开或替换驱动之前被拒绝；已存配置与 SDK 返回的描述保持兼容。
+
 These commands and ranges illustrate the format; use those specified for the actual model. The driver formats named parameters into a command, reads query responses and optionally polls completion. Numeric results include their configured unit and acquisition timestamp. / 示例中的命令和范围需要替换为实际型号的定义。
 
 | Transport / 连接 | `config` fields / 字段 |

@@ -257,10 +257,11 @@ class Store:
         with self.lock:
             where, args = (["run_id=?"], [run_id]) if run_id else ([], [])
             if search:
-                # One reading of each record: the fields searched come out as one JSON text.
-                where.append("instr(lower(id || json_extract(body, '$.name', '$.project', '$.experiment', '$.request_id', "
-                             "'$.involved_resources')), lower(?)) > 0")
-                args.append(str(search))
+                # Search actual text, not JSON escapes, nulls or separators between fields.
+                where.append("(instr(lower(id), lower(?)) > 0 OR EXISTS (SELECT 1 FROM json_tree(json_extract(body, "
+                             "'$.name', '$.project', '$.experiment', '$.request_id', '$.involved_resources')) "
+                             "WHERE type='text' AND instr(lower(atom), lower(?)) > 0))")
+                args.extend([str(search), str(search)])
             if state:
                 where.append('state=?')
                 args.append(state)
