@@ -219,6 +219,8 @@ class MCPCase(unittest.TestCase):
                 self.assertEqual(list(selected['operations']), ['position'])
                 self.assertEqual(context['status']['devices'], 3)
                 self.assertNotIn(self.config['token'], json.dumps(context))
+                # An agent reads the overview without the notes for HTTP clients, which tools and guides replace.
+                self.assertEqual(self.client.context().keys() - context.keys(), {'operation', 'schemas'})
                 definition = {'schema_version':1, 'id':'mcp-bench', 'devices':['stage']}
                 self.assertEqual(call('configure_platform', {'definition':definition})['revision'], 1)
                 self.assertEqual(call('describe_platform', {'platform':'mcp-bench'})['definition']['devices'], ['stage'])
@@ -230,6 +232,13 @@ class MCPCase(unittest.TestCase):
                 self.client.run(run['id']).result(5)
                 inspected = call('experiment', {'run_id':run['id'], 'include_result':True, 'limit':1})
                 self.assertIn('read', inspected['result'])
+                self.assertNotIn('next', inspected)
+                # An experiment that stopped says, where it is read, how it continues.
+                stopped = call('submit_experiment', {'request_id': 'mcp-stopped', 'steps': [
+                    {'id': 'hold', 'device': 'stage', 'operation': 'wait', 'arguments': {'duration': 5}}]})
+                self.client.run(stopped['id']).cancel()
+                self.client.run(stopped['id']).wait(5, details=False)
+                self.assertIn('continue_program', call('experiment', {'run_id': stopped['id']})['next'])
                 self.assertEqual((len(inspected['operations']['operations']), inspected['more_files']), (1, False))
                 external = call('start_experiment', {'request_id':'adaptive-scan', 'resources':['stage']})
                 operation = {'run_id':external['id'], 'device':'stage', 'operation':'position', 'request_id':'adaptive-read'}

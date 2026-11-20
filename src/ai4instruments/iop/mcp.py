@@ -175,7 +175,10 @@ def create_server(client, *, http=False, selection=None):
         """Read a compact laboratory overview. Pass its cursor as after on subsequent reads to receive only changes. Device and platform descriptions are fetched when needed."""
         if device_offset is not None:
             return client.device_page(device_offset)
-        return client.changes(after) if after is not None else client.context(refresh)
+        if after is not None:
+            return client.changes(after)
+        # The overview's notes on HTTP paths are for HTTP clients; the tools and guide() tell an agent the same.
+        return {key: value for key, value in client.context(refresh).items() if key not in ('operation', 'schemas')}
 
     @tool(annotations=read_only)
     def describe_instrument(device: str, operations: list[str] | None = None) -> dict:
@@ -401,6 +404,10 @@ def create_server(client, *, http=False, selection=None):
                   'files': files['files'], 'files_cursor': files['cursor'], 'more_files': files['has_more']}
         if include_result:
             result['result'] = compact(client.request('/v1/runs/' + quote(run_id, safe='') + '/result'))
+        if result['run'].get('can_resume'):
+            # What can be done about an experiment that stopped, said where it is read.
+            result['next'] = ('continue_program(run_id, request_id) continues it from where it stopped once the cause is '
+                              'removed; guide("experiments")')
         return result
 
     @tool()
