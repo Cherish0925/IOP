@@ -45,6 +45,7 @@ iop context --start
 | `lab_context` | 读取实验室现状；可选择重新扫描连接 |
 | `describe_instrument` | 读取单台仪器的操作、参数和单位 |
 | `describe_platform` | 读取单个平台的设备、连接、共享资源、过程和信号时序 |
+| `guide` | 工作方法，或其中一部分及示例，任务需要时再读 |
 | `configuration_schema` | 读取仪器、平台或实验步骤的 JSON 格式 |
 | `register_instrument` | 用已安装驱动登记连接 |
 | `register_instruments` | 批量保存仪器说明，分别返回每项结果；ID 可省略 |
@@ -67,9 +68,13 @@ iop context --start
 
 MCP 资源 `iop://laboratory` 提供相同的实验室说明。提交工具立即返回，不需要等待整个实验结束。操作记录每页最多 100 条，下一次查询使用返回的 cursor；大型数据通过文件获取。
 
+### 指南
+
+工具说明每一轮都会被读取，所以保持简短，细节放在任务需要时才读的指南里。`guide()` 返回工作方法；`guide(topic)` 返回其中一部分及示例：`steps`、`sweeps`、`arrays`、`conditions`、`experiments`、`setup`、`episodes`。同一份文本也是宿主插件安装的技能（`SKILL.md` 及其 `references/`）、MCP 资源 `iop://guides/{topic}`，以及终端里的 `iop guide [topic]`。文本在 [connect/skills/iop-lab](connect/skills/iop-lab/)；指南只提到确实存在的工具和选项，运行用例对此逐一核对。
+
 ### 工具集
 
-对工具数量有上限、或每次请求都携带全部工具说明的宿主，可以只加载一部分：`iop mcp --toolsets experiments,attention`，或在宿主环境中设置 `IOP_MCP_TOOLSETS=experiments,attention`（SSH 连接会把它作为参数传过去）。`lab_context`、`describe_instrument`、`describe_platform` 始终提供。下一步需要未加载的工具时，服务说明会让 Agent 请用户加上对应工具集。`iop mcp-config --toolsets ...` 输出带该选择的启动配置。
+对工具数量有上限、或每次请求都携带全部工具说明的宿主，可以只加载一部分：`iop mcp --toolsets experiments,attention`，或在宿主环境中设置 `IOP_MCP_TOOLSETS=experiments,attention`（SSH 连接会把它作为参数传过去）。`lab_context`、`describe_instrument`、`describe_platform`、`guide` 始终提供。下一步需要未加载的工具时，服务说明会让 Agent 请用户加上对应工具集。`iop mcp-config --toolsets ...` 输出带该选择的启动配置。
 
 | 工具集 | 工具数 | 用途 |
 | --- | --- | --- |
@@ -78,7 +83,7 @@ MCP 资源 `iop://laboratory` 提供相同的实验室说明。提交工具立�
 | `attention` | 5 | 重连和释放仪器、挂起的资源、人工步骤 |
 | `episodes` | 3 | 研究回合与转移记录 |
 
-默认四个全部加载（43 个工具，说明和参数约 29 kB）。已完成配置的实验室用 `experiments,attention`：28 个工具，约 23 kB。
+默认四个全部加载（44 个工具，说明和参数约 23 kB）。已完成配置的实验室用 `experiments,attention`：29 个工具，约 17 kB。
 
 ## 连接远端实验室
 

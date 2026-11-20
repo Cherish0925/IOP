@@ -101,6 +101,38 @@ class MCPCase(unittest.TestCase):
     setUp = fixture.ServiceCase.setUp
     tearDown = fixture.ServiceCase.tearDown
 
+    def test_guides_are_read_when_needed_and_name_what_exists(self):
+        import asyncio
+        import re
+        from ai4instruments.iop import library, mcp
+        from ai4instruments.iop.connector import guides
+        server = mcp.create_server(self.client)
+        tools = asyncio.run(server.list_tools())
+        names = {tool.name for tool in tools}
+        self.assertEqual(sorted(guides()), sorted(mcp.GUIDES))
+        found = asyncio.run(server.call_tool('guide', {'topic': 'sweeps'}))
+        content = found[0] if isinstance(found, tuple) else getattr(found, 'content', found)
+        self.assertEqual(content[0].text, mcp.guide_text('sweeps'))
+        texts = {topic: mcp.guide_text(topic) for topic in ('overview', *mcp.GUIDES)}
+        for topic, text in texts.items():
+            # Each tool a guide calls exists, each topic it points to has a guide, and its examples are JSON.
+            called = set(re.findall(r'`([a-z_]+)\(', text))
+            self.assertEqual(called - names, set(), topic)
+            self.assertLessEqual(set(re.findall(r'guide\("([a-z]+)"\)', text)), set(mcp.GUIDES), topic)
+            for block in re.findall(r'```json\n(.*?)```', text, re.S):
+                example = json.loads(block)
+                for step in example if isinstance(example, list) else [example]:
+                    if isinstance(step, dict) and step.keys() & {'sweep', 'repeat', 'seek'}:
+                        self.assertEqual(len(library.swept(step)), 3, step['id'])
+        # Every tool is named in some guide, so an agent that reads them learns of each.
+        self.assertEqual({name for name in names if not any(f'`{name}' in text for text in texts.values())}, set())
+        with self.assertRaisesRegex(ValueError, 'Unknown guide: wiring; choose from overview, steps'):
+            mcp.guide_text('wiring')
+        # What every turn carries stays small: descriptions point to the guides for the rest.
+        listing = sum(len(json.dumps(tool.model_dump(by_alias=True, exclude_none=True), separators=(',', ':'))) for tool in tools)
+        self.assertLess(listing, 24000)
+        self.assertLess(len(server.instructions), 900)
+
     def test_toolsets_offer_part_of_the_tools(self):
         import asyncio
         from ai4instruments.iop import mcp

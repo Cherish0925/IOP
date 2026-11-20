@@ -5,24 +5,40 @@ description: Use IOP to operate instruments or scientific software, submit exper
 
 # Operate a laboratory
 
-Use the service version and tools reported by the selected connection. Array views and downloads, sweeps, instrument conditions and automatic upkeep require IOP 0.11.0. Operating conditions and maintenance require IOP 0.10.0. Saved operations, manual steps and adapter references require IOP 0.9.0. Continuous experiment, batch and acquisition APIs require IOP 0.8.5; older services use workflow and program submissions until upgraded while idle.
+The laboratory is a service that keeps instruments, platforms, methods, experiments and their records. It goes on working when this connection closes.
 
-Read `lab_context` on the selected connection. Device operations are Basic Operations; `operations` there lists the Standard and Workflow Operations saved in this laboratory. Use one as a step without `device` (`{"id": "s", "operation": name, "arguments": {...}}`) instead of recomposing it, read its steps with `saved_operations(operation)`, and save a method that worked with `saved_operations(definition)`; a workflow that decides from results is saved with `program` (a folder whose experiment.py uses `run.call`) and runs as the only step. Keep its name alongside the run ID: IDs belong to the service that issued them. Reuse the saved platform. Read `describe_instrument` for operation names, arguments and units. A discovered port alone does not identify an instrument, a sample or its wiring.
+## Working method
 
-`describe_platform` returns saved wiring. Use the platform procedure and device requirements for initialization; `timing.arm_order` is a wiring-derived suggestion and is null for feedback connections. When building a platform, use the manufacturer's device description and the observed connections. Ask the operator only for information that cannot be read or a physical change that cannot be performed remotely. Preview and save the platform definition; run its initialization procedure separately if the experiment needs it.
+1. Read `lab_context`: instruments, platforms, saved operations, active experiments, what does not hold, and `next_steps`. Do what `next_steps` asks first. On later reads pass its `cursor` as `after` to receive only changes.
+2. Read `describe_instrument` before choosing operations, arguments and units, and `describe_platform` for wiring. A discovered port alone does not identify an instrument, a sample or its wiring; ask the person only for what cannot be read or done remotely.
+3. Reuse what is saved. Device operations are Basic Operations; `lab_context.operations` lists the Standard and Workflow Operations saved here. Use one as a step without `device` instead of recomposing it, and save a method that worked with `saved_operations(definition)`.
+4. Choose the form of the experiment:
+   - steps known in advance: `submit_experiment`, a step graph; scans, searches and stops are options of a step;
+   - a decision between steps: `start_experiment`, then `submit_operations` or `invoke_operation` with `wait=25`, then `finish_experiment`;
+   - an algorithm: `submit_program`, which runs beside the instruments.
+5. Submit once with a `request_id` you choose, and keep the run ID. After a lost reply, repeat the identical request with the same `request_id`.
+6. Read results where they lie: `experiment_updates`, `experiment`, `operation_result`, `read_array`. Save what was acquired with `save_acquisition`; do not acquire again to save.
+7. When an experiment failed or was interrupted, read why, remove the cause and continue it with `continue_program`: what completed keeps its results.
 
-For adaptive or repeated work, use `start_experiment` once and keep its run ID. Reserve all mutually dependent instruments and shared physical resources up front. Use `submit_operations` for each known sequence: missing `after` means input order, `after=[]` starts an independent branch, and `after=[IDs]` joins dependencies. Pass `wait=25` to `submit_operations` or `invoke_operation` to receive results in the same reply. For longer work, use `experiment_updates(run_id, after=cursor, wait=25)`; keep its cursor and read again while `has_more` is true. Use `operation_result` only for the measurements needed for the next decision. Older services use `experiment`. Finish with `finish_experiment` after operations and file transfers complete.
+## References
 
-Save an acquisition with `save_acquisition` using the completed operation IDs. Analyze those same results; do not acquire again just to save. Include setting readbacks among the operation IDs and put sample or wiring information in `conditions`. Arrays above 64 values arrive as `data` (shape, unit, axes) with the file in `files`; `read_array` tells their extremes and where they lie, mean and spread, and an envelope or exact values in a window you choose; give `along` two axes, with small `points` such as [16, 16], to see an image or a two-parameter sweep as a map. A saved operation can name such a value (`result` with `view`), so later steps and conditions use it without you reading the array. To scan, give a step `sweep` (`{"angle": {"start": -10, "stop": 10, "points": 21}}` or a list of values): it runs at each point in turn and its numbers return as arrays over the sweep; read them with `read_array(run_id, field)`, adding `request_id` for a batch. Analyze whole arrays in a program; request `operation_result(values=true)` only when needed.
+Each is short, with examples. Read one when the task needs it: `guide(topic)`, or the file in `references/` beside this one.
 
-Use the platform's declared conditions (`operating_conditions`) when the task relies on them; an instrument's own conditions are named `<device>.<id>`, often come with its model description, and are part of its platform's pass. A platform with `upkeep` is maintained by the Runtime while idle; `lab_context.setup.upkeep` shows the next observation and what it waits for. For long work, `start_experiment` or `submit_experiment` with `requires=[...]` and `upkeep=true` has the Runtime keep those conditions inside the experiment, between its operations; a continuous experiment reserves the devices maintenance uses, a step graph reserves them itself. Name them in `requires`; maintain before dependent work, or after `conditions_not_held` rejects a submission. Inside an experiment, reserve the devices and shared resources used by observation and correction, finish the current batch, then maintain with `run_id`. Recorded state is checked again before each dependent step; a failed run is not replayed by resubmitting it. Report physical disturbances with `invalidate`. Read detailed conditions only when needed; add or revise them from the experiment's requirements, instrument information and operator knowledge. `tune` is bounded local adjustment, not a global optimizer.
+| Topic | Covers |
+| --- | --- |
+| `steps` | A step, order, bindings, saved operations, options of a step and of a submission |
+| `sweeps` | `sweep`, `adapt`, `repeat`, `until`, `seek`, `retake`, `retry` |
+| `arrays` | `read_array`: summaries, windows, maps, lines, crossings, fits |
+| `conditions` | What an experiment relies on: `requires`, maintenance, `upkeep`, data in doubt |
+| `experiments` | The three forms, following a run, failure and continuation, files, archives |
+| `setup` | Describing an instrument, platforms, limits, manual steps, held resources |
+| `episodes` | Research trajectories for learning |
 
-Follow `next_steps` in `lab_context`, such as `inspect_monitors`, `renew_calibration` or `manual_tasks`. A held resource returns to use only through `resolve_resources` with what was actually observed. Report a manual step with `report_manual_step` only from what the person stated.
+## What keeps the record true
 
-A new instrument is described, not programmed: choose the adapter for its interface — `scpi` for text commands (add `protocol` when they are not SCPI), `modbus`, `http`, `opcua`, `epics`, or `python` for an installed Python package. `available_adapters(adapter)` returns the record fields and an example; take commands, ranges and units from the instrument's manual. To hand an idle instrument to other software, call `release_instrument`; call `reconnect_instrument` to use it again.
-
-Submit an operation graph with `submit_experiment`, or a research program with `submit_program`. Declare dependencies for steps whose order matters and shared resources for operations that cannot overlap. Keep timing that requires a hardware clock or trigger on the instrument. Program paths and download destinations refer to the computer running the MCP bridge.
-
-Choose a request ID before submitting. Save the returned run ID; a receipt means the service accepted the run. If the reply is lost, repeat the identical submission with its original request ID. Use `experiment_files` to page through output files while the experiment runs. The operation-list cursor enumerates newly submitted operations; the update cursor tracks later completion too. Do not use an operation-list cursor as a completion cursor. Closing the client leaves the laboratory service running. Use `cancel_experiment` only when cancellation is intended. Continue an interrupted program through its saved checkpoints when the program supports it.
-
-For research trajectories or learning data on IOP 0.8.6, use `begin_episode` after preparing and observing the initial state. Supply a versioned task, optional policy and the initial observation. `record_transition` saves an explicit sequence, action, next observation, reward or null, terminated/truncated flags and completed operation IDs. Reuse the same sequence and content after a lost response. `research_episodes` reads saved progress. Beginning an episode does not reset a physical instrument. Keep uncertainty or failed operations in their original records rather than labeling them as completed transitions. For repeated numerical decisions, run the research program next to the Runtime and use its SDK.
+- Record what was observed: `resolve_resources` takes the instrument state that was seen, `report_manual_step` what the person stated.
+- A failed or uncertain operation stays as recorded; a continuation runs it again under the same experiment.
+- Timing that needs a hardware clock or trigger stays on the instrument.
+- Paths of programs, downloads and archives are on the computer that runs this connection.
+- A run ID belongs to the service that issued it; keep the method's name beside it.
+- A service older than this connection refuses what it does not know; `lab_context.service.version` gives its version.

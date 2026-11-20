@@ -113,6 +113,9 @@ def parser():
     p.add_argument('--port', type=int, default=8766); p.add_argument('--toolsets', help=toolset_help)
     p = sub.add_parser('mcp-config', help='Print the MCP launcher configuration for this installation')
     p.add_argument('--toolsets', help=toolset_help)
+    p = sub.add_parser('guide', help='Print how to work with a laboratory, or one part of it with examples')
+    p.add_argument('topic', nargs='?', default='overview',
+                   help='overview, steps, sweeps, arrays, conditions, experiments, setup or episodes')
     p = sub.add_parser('register'); p.add_argument('file')
     p = sub.add_parser('reconnect'); p.add_argument('device')
     p = sub.add_parser('release', help='Release an idle instrument connection'); p.add_argument('device')
@@ -177,6 +180,13 @@ def main():
         try:
             output(install(args))
         except (OSError, ValueError) as exc:
+            raise SystemExit(str(exc)) from None
+        return
+    if args.command == 'guide':
+        from .mcp import guide_text
+        try:
+            print(guide_text(args.topic))
+        except ValueError as exc:
             raise SystemExit(str(exc)) from None
         return
     home = home_path(args.home)
