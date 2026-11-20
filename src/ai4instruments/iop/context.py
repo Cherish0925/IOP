@@ -112,6 +112,14 @@ def laboratory(engine, refresh=False, detail='summary'):
         result['next_steps'].append({'action': 'renew_calibration', 'devices': stale})
     for platform_id, missing in result['setup']['missing_platform_devices'].items():
         result['next_steps'].append({'action': 'restore_platform_devices', 'platform': platform_id, 'devices': missing})
+    # Experiments left interrupted that can continue from where they stopped, the latest twenty.
+    with engine.lock:
+        stopped = list(engine.interrupted.values())[-20:]
+    stopped = [run for run in stopped if engine.run_info(run['id'], details=False)['can_resume']]
+    if stopped:
+        held = sorted(engine.resource_holds)
+        result['next_steps'].append({'action': 'continue_experiments', 'runs': stopped, 'submit': '/v1/runs/{id}/resume',
+                                     **({'resolve_first': held, 'resolve': '/v1/resources/resolve'} if held else {})})
     result['operation'] = {
         'device_description': '/v1/devices/{id}',
         'submission': '/v1/runs', 'program_submission': '/v1/packages',
@@ -119,7 +127,7 @@ def laboratory(engine, refresh=False, detail='summary'):
         'batch': '/v1/runs/{id}/batches', 'acquisition': '/v1/runs/{id}/acquisitions',
         'configuration_executes_actions': False,
         'client_disconnect': 'Accepted experiments continue while the service remains running.',
-        'service_restart': 'Queued work is restored. Started work is recorded as interrupted; programs declaring resume:true can continue from saved progress through /v1/runs/{id}/resume.',
+        'service_restart': 'Queued work is restored. Started work is recorded as interrupted; through /v1/runs/{id}/resume a step graph continues from where it stopped and a program declaring resume:true from its saved progress.',
         'physical_setup': 'Reuse saved platform descriptions. Ask only for missing wiring, sample details and experimental requirements.',
         'request_id': 'Reuse the same request_id when retrying the same experiment submission.',
         'changes': '/v1/context/changes?after={cursor}',

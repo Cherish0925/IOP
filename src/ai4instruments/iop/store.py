@@ -354,6 +354,14 @@ class Store:
             rows = self.db.execute("SELECT body FROM runs WHERE state='queued' ORDER BY rowid").fetchall()
             return [json.loads(r[0]) for r in rows]
 
+    def interrupted(self, since):
+        """The experiments left interrupted since a time, oldest first: {id: {id, name, kind, ended}}."""
+        with self.lock:
+            rows = self.db.execute("SELECT body FROM runs WHERE state='interrupted' AND json_extract(body,'$.ended')>=? "
+                                   'ORDER BY rowid', (since,)).fetchall()
+        return {run['id']: {key: run[key] for key in ('id', 'name', 'kind', 'ended') if key in run}
+                for run in (json.loads(row[0]) for row in rows)}
+
     def platforms(self):
         with self.lock:
             rows = self.db.execute('''SELECT p.body FROM platform_versions p JOIN

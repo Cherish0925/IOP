@@ -33,6 +33,7 @@ A platform records the instruments of one setup, their physical connections, sha
 
 | Step | Do |
 | --- | --- |
+| `continue_experiments` | Experiments a stop of the service left interrupted: record what `resolve_first` names with `resolve_resources`, then `continue_program(run_id, request_id)`: `guide("experiments")` |
 | `maintain_conditions` | `operating_conditions(maintain=true, ...)`: `guide("conditions")` |
 | `manual_tasks` | Read `manual_tasks`, tell the person the instruction, report with `report_manual_step` only what they stated |
 | `reconnect` | `reconnect_instrument` once the cause is removed |

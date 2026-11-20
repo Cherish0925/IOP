@@ -124,6 +124,10 @@ class Engine:
             self.operations.update((op['id'], op) for op in self.store.operations(run['id']))
             self._index_run(run)
         self.resource_holds = self.store.resource_holds()
+        # Experiments a stop of the service or an unresolved instrument left interrupted in the last week, until
+        # they are continued: the laboratory overview names them as something to do.
+        self.interrupted = self.store.interrupted(
+            datetime.fromtimestamp(time.time() - 7 * 86400, timezone.utc).isoformat(timespec='microseconds'))
         self.thread = threading.Thread(target=self._loop, name="iop-scheduler", daemon=True)
 
     def start(self):
@@ -1332,6 +1336,8 @@ class Engine:
             self._record_use(call['operation'], call['revision'], run['id'], call['step'], state)
         run.update(state=state, ended=now())
         run.pop("terminate_at", None)
+        if state == 'interrupted':
+            self.interrupted[run['id']] = {key: run[key] for key in ('id', 'name', 'kind', 'ended') if key in run}
         self.allocation.finish(run['id'])
         directory = self.home / "runs" / run["id"]
         save_json(directory / "run.json", run)
