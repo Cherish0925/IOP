@@ -28,7 +28,7 @@ from . import batches, library
 from .engine import SATISFIED
 from .drivers import parameters
 from .errors import RequestError
-from .platforms import name, strings
+from .platforms import closest, name, strings
 from .store import dumps, now
 
 # Suggested labels. Dependencies come from each platform's explicit `after` relationships.
@@ -619,7 +619,7 @@ class Conditions:
         relied, lacking = {}, {}
         for condition_id in names:
             if condition_id not in self.definitions:
-                raise ValueError('Unknown condition: ' + condition_id)
+                raise ValueError('Unknown condition: ' + condition_id + closest(condition_id, self.definitions))
         for condition_id in self.closure(names):
             state = self.state(condition_id)
             (relied if state['state'] == 'holds' else lacking)[condition_id] = state
@@ -772,7 +772,7 @@ class Conditions:
             if conditions:
                 for condition_id in strings(conditions, 'Conditions'):
                     if condition_id not in self.definitions:
-                        raise ValueError('Unknown condition: ' + condition_id)
+                        raise ValueError('Unknown condition: ' + condition_id + closest(condition_id, self.definitions))
                 # An experiment without a platform may reserve several instruments. Its reservation
                 # below is the scope; standalone maintenance still names one platform or instrument.
                 if run is None or platform is not None or device is not None:

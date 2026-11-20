@@ -927,7 +927,7 @@ class SweepCase(unittest.TestCase):
                 ({'id': 's', 'device': 'stage', 'operation': 'move_to',
                   'sweep': {'angle_deg': {'center': 0, 'span': 1, 'points': {'step': 'x'}}}}, 'positive integer'),
                 ({'id': 's', 'device': 'stage', 'operation': 'move_to',
-                  'sweep': {'angle_deg': {'center': {'step': 'nowhere'}, 'span': 1, 'points': 3}}}, 'unknown step'),
+                  'sweep': {'angle_deg': {'center': {'step': 'nowhere'}, 'span': 1, 'points': 3}}}, 'Step s: .* there is no nowhere'),
                 ({'id': 's', 'device': 'stage', 'operation': 'move_to', 'until': {'path': ['angle_actual'], 'above': 1}},
                  'until and retake belong to a sweep'),
                 ({'id': 's', 'device': 'stage', 'operation': 'move_to', 'repeat': 0}, 'from 1 to 10000'),

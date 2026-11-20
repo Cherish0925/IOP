@@ -730,10 +730,10 @@ class Engine:
             record = self.platforms[platform_id]
             procedure = record['definition']['procedures'][procedure_id]
             return self.submit({'name': record['definition']['name'] + ': ' + procedure_id,
-                'platform': platform_id, 'procedure': procedure_id, 'platform_revision': record['revision'],
+                'platform': platform_id, 'platform_revision': record['revision'],
                 'steps': procedure['steps'], 'resources': procedure.get('resources', record['definition']['devices']),
                 'requirements': procedure.get('requirements', {}),
-                'request_id': request_id})
+                'request_id': request_id}, procedure=procedure_id)
 
     def register(self, record, persist=True, enrollment_key=None):
         # SDK startup can take time; it must not hold the experiment scheduler lock.
@@ -945,25 +945,28 @@ class Engine:
     def _operation(self, run_id, step):
         from .errors import RequestError
         device_id, name = step["device"], step["operation"]
+        # A step of a graph or a batch is named in what is refused; a single call has no ID.
+        where = f"Step {step['id']}: " if step.get('id') else ''
         if device_id not in self.devices:
-            raise ValueError("Device is not registered: " + device_id)
+            raise ValueError(where + "Device is not registered: " + device_id + platform_model.closest(device_id, self.devices))
         if device_id in self.reconnecting or device_id in self.offline:
             raise ValueError('Device needs reconnection: ' + device_id)
         if device_id in self.released:
             raise RequestError('device_released', 'Reconnect this instrument before submitting operations.', device_id=device_id)
         specs = self.descriptions[device_id]["operations"]
         if name not in specs:
-            raise ValueError("Unknown operation: " + device_id + "." + name)
+            raise ValueError(where + "Unknown operation: " + device_id + "." + name + platform_model.closest(name, specs))
         if not isinstance(step.get("arguments", {}), dict):
-            raise ValueError("Arguments must be an object")
+            raise ValueError(where + "arguments is an object")
         bindings = step.get('bindings', {})
         if set(bindings) & step.get('arguments', {}).keys() or set(bindings) - specs[name].get('parameters', {}).keys():
-            raise ValueError('Bindings must name operation parameters not supplied in arguments')
+            raise ValueError(where + f'bindings name parameters of {device_id}.{name} not given in arguments')
         static = {**specs[name], 'parameters': {k: v for k, v in specs[name].get('parameters', {}).items() if k not in bindings}}
         try:
             args = parameters(static, step.get("arguments", {}))
         except ValueError as error:
-            raise RequestError('invalid_arguments', str(error), status=400, device_id=device_id, operation=name,
+            text = f"Step {step['id']} ({device_id}.{name}): {error}" if step.get('id') else str(error)
+            raise RequestError('invalid_arguments', text, status=400, device_id=device_id, operation=name,
                                parameters=static.get('parameters', {})) from None
         requirements = {}
         for source in (self.descriptions[device_id], specs[name], step):
@@ -1027,12 +1030,21 @@ class Engine:
                 return self._assembled(run) or None
         return self.store.get('runs', run_id).get('result')
 
-    def submit(self, spec, package=None):
+    def submit(self, spec, package=None, procedure=None):
+        """Accept an experiment. ``procedure`` names the saved platform procedure it carries out."""
         from .errors import RequestError
         with self.lock:
             if self.stopping:
                 raise ValueError("Service is stopping")
             spec = json.loads(dumps(spec))
+            unknown = sorted(spec.keys() - set(platform_model.SUBMISSION)) if isinstance(spec, dict) else None
+            if unknown is None:
+                raise ValueError('Submit an object: ' + ', '.join(platform_model.SUBMISSION))
+            if unknown:
+                raise ValueError('A submission has no ' + ' or '.join(unknown) + '; it takes '
+                                 + ', '.join(platform_model.SUBMISSION))
+            if procedure:
+                spec['procedure'] = procedure
             preview = spec.pop('preview', False)
             if not isinstance(preview, bool):
                 raise ValueError('preview is true to see what a step graph would do without running it')
@@ -1081,6 +1093,9 @@ class Engine:
                 run['program_call'] = program
             if kind == 'workflow':
                 # A step without device uses a saved Standard or Workflow Operation; a swept step runs at each point.
+                if not procedure:
+                    # A saved procedure runs as it was saved; its steps were checked then.
+                    platform_model.fields(spec.get("steps"))
                 steps, calls, sweeps = library.expand(spec.get("steps", []), self.library.get, self._described)
                 platform_model.steps(steps)
                 operations = [self._operation(run_id, s) for s in steps]

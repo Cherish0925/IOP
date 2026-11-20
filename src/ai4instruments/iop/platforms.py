@@ -1,10 +1,20 @@
 """Platform descriptions: device membership, physical connections and procedures."""
 from __future__ import annotations
-from collections import deque
+from collections import Counter, deque
+import difflib
 import json
 import math
 import re
 from . import views
+
+
+# What a submission, a step and a value read from an earlier result hold. Any other field is refused: left out
+# without a word, a misspelt requires or retry would run the experiment without it.
+SUBMISSION = ('name', 'project', 'experiment', 'kind', 'steps', 'platform', 'platform_revision', 'resources',
+              'requirements', 'parameters', 'requires', 'upkeep', 'request_id', 'preview')
+STEP = ('id', 'device', 'operation', 'arguments', 'after', 'bindings', 'sweep', 'repeat', 'until', 'seek', 'retake',
+        'retry', 'resources', 'requirements')
+SOURCE = ('step', 'path', 'view')
 
 
 def name(value, what='ID'):
@@ -21,6 +31,12 @@ def strings(values, what):
     return values
 
 
+def closest(name, names):
+    """The names nearest one that was not found, to say after it."""
+    found = difflib.get_close_matches(name, list(names), 3, 0.6) if isinstance(name, str) else []
+    return '; closest: ' + ', '.join(found) if found else ''
+
+
 def sources(binding):
     """What a binding reads: its source, or the sources of the ends of the range a point of a sweep reads."""
     if isinstance(binding, dict) and isinstance(binding.get('range'), dict):
@@ -33,27 +49,56 @@ def sources(binding):
     return [binding]
 
 
-def dependencies(step):
-    """The steps a step follows: those it names after, and those its bindings and the ranges it sweeps read."""
-    result = list(strings(step.get('after', []), 'Step dependencies'))
+def read(step):
+    """What a step reads from earlier results, each with the words that name it: its bindings, and the ends of the
+    ranges it sweeps or seeks over."""
     bindings = step.get('bindings', {})
-    if not isinstance(bindings, dict):
-        raise ValueError('Bindings must be an object')
     sweep = step.get('sweep') if isinstance(step.get('sweep'), dict) else {}
     seek = step['seek'].get('over') if isinstance(step.get('seek'), dict) else None
-    read = [(field, found) for field, binding in bindings.items() for found in sources(binding)]
-    read += [(f'sweep {field}', found) for field, spec in sweep.items() if isinstance(spec, dict)
-             for found in sources({'range': spec})]
-    read += [(f'seek {field}', found) for field, spec in (seek if isinstance(seek, dict) else {}).items()
-             if isinstance(spec, dict) for found in sources({'range': spec})]
-    for field, binding in read:
+    found = [(field, source) for field, binding in (bindings.items() if isinstance(bindings, dict) else ())
+             for source in sources(binding)]
+    found += [(f'sweep {field}', source) for field, spec in sweep.items() if isinstance(spec, dict)
+              for source in sources({'range': spec})]
+    found += [(f'seek {field}', source) for field, spec in (seek if isinstance(seek, dict) else {}).items()
+              if isinstance(spec, dict) for source in sources({'range': spec})]
+    return found
+
+
+def fields(steps):
+    """Refuse a step, as submitted or saved, that holds a field a step does not take, in itself or in a value it
+    reads from an earlier result; return the steps."""
+    for step in steps if isinstance(steps, list) else []:
+        if not isinstance(step, dict):
+            continue
+        unknown = sorted(step.keys() - set(STEP))
+        if unknown:
+            raise ValueError(f"Step {step.get('id')}: a step has no {' or '.join(unknown)}; it takes " + ', '.join(STEP))
+        for field, source in read(step):
+            unknown = sorted(source.keys() - set(SOURCE)) if isinstance(source, dict) else []
+            if unknown:
+                raise ValueError(f"Step {step.get('id')}: {field} reads an earlier result as " + '{"step": ID, "path": '
+                                 '[keys or indices]}, with view for a number read from an array; it has no '
+                                 + ' or '.join(unknown))
+    return steps
+
+
+def dependencies(step):
+    """The steps a step follows: those it names after, and those its bindings and the ranges it sweeps read."""
+    where = f"Step {step.get('id')}: "
+    after, bindings = step.get('after', []), step.get('bindings', {})
+    if not isinstance(after, list) or any(not isinstance(parent, str) or not parent for parent in after) \
+            or len(set(after)) != len(after):
+        raise ValueError(where + 'after is a list of the IDs of the steps it follows, each once')
+    if not isinstance(bindings, dict):
+        raise ValueError(where + 'bindings is an object: {parameter: {"step": ID, "path": [keys or indices]}}')
+    result = list(after)
+    for field, binding in read(step):
         if not isinstance(field, str) or not isinstance(binding, dict) or not isinstance(binding.get('step'), str):
-            raise ValueError('Each binding needs a parameter name and a source step, as does each end of a range '
-                             'read from an earlier result')
+            raise ValueError(where + f'{field} reads an earlier result as {{"step": ID, "path": [keys or indices]}}')
         if not isinstance(binding.get('path', []), list) or any(type(k) not in (str, int) for k in binding.get('path', [])):
-            raise ValueError('Binding paths contain object keys or array indices')
+            raise ValueError(where + f'the path of {field} holds object keys and array indices')
         if 'view' in binding:
-            views.check(binding['view'], f'Binding {field}')
+            views.check(binding['view'], where + f'binding {field}')
         if binding['step'] not in result:
             result.append(binding['step'])
     return result
@@ -64,12 +109,21 @@ def steps(value):
         raise ValueError('A workflow needs between 1 and 10000 steps')
     if any(not isinstance(s, dict) for s in value):
         raise ValueError('Each step must be an object')
-    ids = strings([s.get('id') for s in value], 'Step IDs')
+    ids = [s.get('id') for s in value]
+    if any(not isinstance(i, str) or not i for i in ids):
+        raise ValueError('Each step needs an id')
+    repeated = sorted(i for i, count in Counter(ids).items() if count > 1)
+    if repeated:
+        raise ValueError('Each step needs its own id; more than one is named ' + ', '.join(repeated))
     children, counts = {i: [] for i in ids}, {}
     for step in value:
         parents = dependencies(step)
-        if not set(parents) <= children.keys():
-            raise ValueError('Step dependencies contain an unknown step')
+        missing = [parent for parent in parents if parent not in children]
+        if missing:
+            # A point of a sweep is named by the step that sweeps, which is the one that was written.
+            written = (step.get('swept_by') or [step['id']])[0]
+            raise ValueError(f"Step {written}: after, bindings and sweeps name steps of this graph; there is no "
+                             + ', '.join(missing) + closest(missing[0], ids))
         counts[step['id']] = len(parents)
         for parent in parents:
             children[parent].append(step['id'])
@@ -144,7 +198,7 @@ def description(value, devices):
         name(procedure_id, 'Procedure ID')
         if not isinstance(procedure, dict):
             raise ValueError('Procedure must be an object')
-        for step in steps(procedure.get('steps')):
+        for step in steps(fields(procedure.get('steps'))):
             # A step without device uses a saved operation; its devices are checked when it is expanded.
             if 'device' in step and step['device'] not in members:
                 raise ValueError('Procedure device must belong to the platform')

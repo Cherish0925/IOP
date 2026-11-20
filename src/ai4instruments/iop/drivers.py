@@ -25,7 +25,8 @@ def parameters(spec, supplied):
     fields = spec.get("parameters", {})
     unknown = set(supplied) - set(fields)
     if unknown:
-        raise ValueError("Unknown parameters: " + ", ".join(sorted(unknown)))
+        raise ValueError("Unknown parameters: " + ", ".join(sorted(unknown)) +
+                         ("; it takes " + ", ".join(fields) if fields else "; it takes none"))
     result = {}
     for name, field in fields.items():
         if name not in supplied:

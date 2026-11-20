@@ -112,6 +112,8 @@ A step runs once unless it carries one of these. They apply to a device operatio
 | `retake` | Take again the points a lost condition put in doubt / 重测因条件不成立而存疑的点 | [Sweeps](#sweeps--扫描), [conditions](conditions.md#experiments-rely-on-conditions--实验依赖条件) |
 | `retry` | Make a failed instrument call again / 仪器调用失败后再调用 | [When a call fails](#when-a-call-fails--调用失败时) |
 
+A step holds `id`, `device`, `operation`, `arguments`, `after`, `bindings`, `resources`, `requirements` and these options. Any other field is refused, so a misspelt option never leaves a step running without it; what is refused names the step and, for a device, operation, condition or step that does not exist, the nearest names that do. / 步骤只包含 `id`、`device`、`operation`、`arguments`、`after`、`bindings`、`resources`、`requirements` 和上述选项；其他字段会被拒绝，拼错的选项不会被悄悄忽略。拒绝时给出步骤名；设备、操作、条件或步骤不存在时，同时给出最接近的现有名称。
+
 A step graph that stopped continues from where it stopped: see [continuing a step graph](../../iop/continuity.md#continuing-a-step-graph). Agents read the same in short form with `guide("steps")` and `guide("sweeps")`. / 停止的步骤图可以从停止处继续，见[步骤图续接](../../iop/continuity.zh-CN.md#步骤图续接)。Agent 用 `guide("steps")`、`guide("sweeps")` 读到同样内容的简短版本。
 
 ## Sweeps / 扫描

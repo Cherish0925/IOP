@@ -1,6 +1,6 @@
 # Steps
 
-A step is one operation. With `device` it is a Basic Operation of that instrument; without, it uses a saved Standard or Workflow Operation by name.
+A step is one operation. With `device` it is a Basic Operation of that instrument; without, it uses a saved Standard or Workflow Operation by name. A step holds `id`, `device`, `operation`, `arguments`, `after`, `bindings`, `resources`, `requirements` and the options `sweep`, `repeat`, `until`, `seek`, `retake`, `retry`; any other field is refused, and what is refused names the step and the nearest names that exist.
 
 ```json
 [{"id": "set", "device": "source", "operation": "set_power", "arguments": {"dbm": -10}},

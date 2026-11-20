@@ -25,6 +25,8 @@ def submit(engine, run_id, steps, request_id, maintenance=False):
         previous = [step['id']]
         if 'request_id' in step:
             raise ValueError('The batch request_id identifies its steps; omit per-step request_id')
+    if not maintenance:
+        platforms.fields(steps)
     submitted = steps
     with engine.lock:
         with engine.store.lock:

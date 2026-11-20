@@ -181,6 +181,12 @@ class LibraryCase(unittest.TestCase):
         self.client.configure_platform({'schema_version': 1, 'id': 'bench', 'devices': ['stage', 'aux', 'meter'], 'procedures': {
             'initialize': {'steps': [{'id': 'home', 'operation': 'axis.position', 'arguments': {'axis': 'stage', 'angle': 0}}]}}})
         self.assertEqual(self.client.procedure('bench').result(10)['home'], {'angle': 0})
+        # A procedure saved before the fields of a step were checked runs as it was saved.
+        self.engine.platforms['bench']['definition']['procedures']['initialize']['steps'][0]['note'] = 'home first'
+        self.assertEqual(self.client.procedure('bench').result(10)['home'], {'angle': 0})
+        with self.assertRaisesRegex(IOPError, 'A submission has no procedure'):
+            self.client.request('/v1/runs', {'procedure': 'initialize', 'steps': [
+                {'id': 'home', 'device': 'stage', 'operation': 'position', 'note': 'home first'}]})
 
 
 SCAN = """import json, os

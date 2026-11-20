@@ -99,6 +99,49 @@ class ServiceCase(unittest.TestCase):
             with self.assertRaises(IOPError):self.submit(steps)
         self.assertEqual(self.client.request('/v1/runs'),[])
 
+    def test_a_wrong_step_is_refused_by_name_with_what_exists(self):
+        move = {'id': 'move', 'device': 'stage', 'operation': 'move_to', 'arguments': {'angle_deg': 10}}
+        for steps, message in (
+                ([dict(move, device='stagee')], 'Step move: Device is not registered: stagee; closest: stage'),
+                ([dict(move, operation='move')], 'Step move: Unknown operation: stage.move; closest: move_to'),
+                ([dict(move, arguments={})], r'Step move \(stage.move_to\): Missing parameter: angle_deg'),
+                ([dict(move, arguments={'angle_deg': 10, 'speed': 3})],
+                 r'Step move \(stage.move_to\): Unknown parameters: speed; it takes angle_deg, duration'),
+                ([dict(move, sweep={'angel': [1, 2]})],
+                 'Step move: sweep moves angel, which move_to does not take; it takes angle_deg, duration'),
+                ([dict(move, after=['prepare'])], 'Step move: after, bindings and sweeps name steps of this graph; there is no prepare'),
+                ([dict(move, after=['mvoe']), dict(move, id='mveo')], 'there is no mvoe; closest: mveo, move'),
+                ([dict(move, arguments={}, bindings={'angle_deg': {'from': 'move'}})],
+                 r'Step move: angle_deg reads an earlier result as \{"step": ID, "path": \[keys or indices\]\}'),
+                ([move, move], 'Each step needs its own id; more than one is named move'),
+                ([{'device': 'stage', 'operation': 'position'}], 'Each step needs an id'),
+                # A misspelt option is refused: left out without a word, the step would run without it.
+                ([dict(move, retries={'times': 2})], 'Step move: a step has no retries; it takes id, device, .*, retry, resources'),
+                ([dict(move, depends_on=['a'], loop=3)], 'Step move: a step has no depends_on or loop; it takes'),
+                ([{'id': 'read', 'device': 'stage', 'operation': 'position'},
+                  dict(move, arguments={}, bindings={'angle_deg': {'step': 'read', 'path': ['angle_actual'], 'veiw': {}}})],
+                 'Step move: angle_deg reads an earlier result as .*; it has no veiw')):
+            with self.assertRaisesRegex(IOPError, message):
+                self.submit(steps)
+        with self.assertRaisesRegex(IOPError, 'Unknown condition: aligend$'):
+            self.submit([move], requires=['aligend'])
+        # So is a misspelt field of the submission: with require for requires, nothing would be required.
+        with self.assertRaisesRegex(IOPError, 'A submission has no require; it takes name, .*, requires, upkeep'):
+            self.client.request('/v1/runs', {'steps': [move], 'require': ['aligned']})
+        self.assertEqual(self.client.request('/v1/runs'), [])
+        with self.client.start_experiment(request_id='by-hand', resources=['stage']) as run:
+            with self.assertRaisesRegex(IOPError, 'Step move: a step has no retries'):
+                run.batch([dict(move, retries={'times': 2})], request_id='misspelt')
+            # A single call has no step to name.
+            with self.assertRaisesRegex(IOPError, '^Unknown parameters: speed; it takes angle_deg, duration$'):
+                run.invoke('stage', 'move_to', {'speed': 3})
+        with self.assertRaisesRegex(IOPError, 'Step move: a step has no retries'):
+            self.client.save_operation({'id': 'stage.go', 'layer': 'standard', 'description': 'Go to an angle',
+                                        'steps': [dict(move, retries={'times': 2})]})
+        with self.assertRaisesRegex(IOPError, 'Step move: a step has no wait_s'):
+            self.client.configure_platform({'schema_version': 1, 'id': 'bench', 'devices': ['stage'], 'procedures': {
+                'prepare': {'steps': [dict(move, wait_s=1)]}}})
+
     def test_submission_retry_keeps_one_run(self):
         a=self.submit([self.step('a',duration=0)],request_id='same')
         b=self.submit([self.step('a',duration=0)],request_id='same')
