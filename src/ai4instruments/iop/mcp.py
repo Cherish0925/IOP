@@ -151,7 +151,8 @@ def create_server(client, *, http=False, selection=None):
         'Read lab_context first and do what its next_steps ask. Read describe_instrument before choosing operations and '
         'arguments. Reuse what is saved: instrument and platform descriptions, and the Standard and Workflow Operations '
         'lab_context lists; a step without device uses one. Submit once with a request_id you choose, keep the run ID and '
-        'read results later; after a lost reply repeat the identical request. guide() gives the working method and '
+        'read results later; after a lost reply repeat the identical request, and find_experiments finds the work of an '
+        'earlier conversation. guide() gives the working method and '
         'guide(topic) one part with examples: ' + ', '.join(GUIDES) + '. Record only what was observed: resolve_resources '
         'takes the instrument state seen, report_manual_step what the person stated.' +
         ('' if len(chosen) == len(TOOLSETS) else
