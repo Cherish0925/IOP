@@ -31,7 +31,12 @@
     },
     "parameters": {
       "type": "object",
-      "description": "name -> {type, minimum, maximum, enum, default, required, unit}"
+      "propertyNames": {
+        "minLength": 1
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/parameter"
+      }
     },
     "steps": {
       "type": "array",
@@ -39,6 +44,7 @@
       "maxItems": 1000,
       "items": {
         "type": "object",
+        "additionalProperties": false,
         "required": [
           "id",
           "operation"
@@ -534,6 +540,125 @@
           "minimum": 0,
           "default": 0,
           "description": "The smallest improvement that counts, above the noise of a reading"
+        }
+      }
+    },
+    "parameter": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Parameter contract for a new local definition. Omit type for an unconstrained JSON value; x-* annotations do not impose constraints.",
+      "patternProperties": {
+        "^x-": {}
+      },
+      "properties": {
+        "type": {
+          "enum": [
+            "number",
+            "integer",
+            "string",
+            "boolean",
+            "array",
+            "object"
+          ]
+        },
+        "required": {
+          "type": "boolean",
+          "default": true
+        },
+        "default": {},
+        "enum": {
+          "type": "array",
+          "minItems": 1
+        },
+        "minimum": {
+          "type": "number"
+        },
+        "maximum": {
+          "type": "number"
+        },
+        "items": {
+          "$ref": "#/$defs/parameter"
+        },
+        "minItems": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxItems": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unit": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "examples": {
+          "type": "array"
+        }
+      },
+      "dependentSchemas": {
+        "minimum": {
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "enum": [
+                "number",
+                "integer"
+              ]
+            }
+          }
+        },
+        "maximum": {
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "enum": [
+                "number",
+                "integer"
+              ]
+            }
+          }
+        },
+        "items": {
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "const": "array"
+            }
+          }
+        },
+        "minItems": {
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "const": "array"
+            }
+          }
+        },
+        "maxItems": {
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "const": "array"
+            }
+          }
         }
       }
     }

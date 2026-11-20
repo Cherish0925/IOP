@@ -165,7 +165,9 @@ def parser():
     p.add_argument('--level', type=float, help='Where the trace crosses this value, rising or falling')
     p.add_argument('--fit', choices=['line', 'lorentzian', 'gaussian'],
                    help='A straight line, or a line of that shape, through the trace by least squares')
-    p = sub.add_parser('runs'); p.add_argument('--limit',type=int,default=20)
+    p = sub.add_parser('runs', help='List experiments newest first, or find them by name, project, label or instrument')
+    p.add_argument('--limit', type=int, default=20); p.add_argument('--search'); p.add_argument('--state')
+    p.add_argument('--before', metavar='RUN_ID', help='List experiments older than this one')
     for name in ['result','cancel','files','finish']:
         p = sub.add_parser(name); p.add_argument('run_id')
     p = sub.add_parser('events'); p.add_argument('--run-id'); p.add_argument('--after',type=int,default=0)
@@ -324,7 +326,7 @@ def main():
                                                         request_id=args.request_id) if args.run_id else
                    client.invoke(args.device, args.operation, json.loads(args.arguments)))
         elif args.command == 'runs':
-            output(client.request('/v1/runs?limit='+str(args.limit)))
+            output(client.runs(args.search, state=args.state, limit=args.limit, before=args.before))
         elif args.command == 'result':
             output(client.run(args.run_id).info())
         elif args.command == 'cancel':

@@ -24,7 +24,7 @@ from pathlib import Path, PurePosixPath
 from .calibration import operation_fields
 from .config import save_json
 from .device_configuration import METADATA, allowed
-from .drivers import make_driver, parameters
+from .drivers import make_driver, operation_parameters, parameters
 from .store import Store, dumps, finite, now
 from . import library, views
 from . import platforms as platform_model
@@ -51,6 +51,10 @@ def relative_path(name):
     if not name or path.is_absolute() or ".." in path.parts or "\\" in name or ":" in name:
         raise ValueError("Expected a relative file path")
     return Path(*path.parts)
+
+
+def week_ago():
+    return datetime.fromtimestamp(time.time() - 7 * 86400, timezone.utc).isoformat(timespec='microseconds')
 
 
 class Engine:
@@ -126,8 +130,7 @@ class Engine:
         self.resource_holds = self.store.resource_holds()
         # Experiments a stop of the service or an unresolved instrument left interrupted in the last week, until
         # they are continued: the laboratory overview names them as something to do.
-        self.interrupted = self.store.interrupted(
-            datetime.fromtimestamp(time.time() - 7 * 86400, timezone.utc).isoformat(timespec='microseconds'))
+        self.interrupted = self.store.interrupted(week_ago())
         self.thread = threading.Thread(target=self._loop, name="iop-scheduler", daemon=True)
 
     def start(self):
@@ -351,9 +354,31 @@ class Engine:
         amounts.update(item.get('requirements', {}))
         return amounts
 
+    def left_interrupted(self):
+        """The experiments left interrupted in the last week and not continued since, oldest first."""
+        since = week_ago()
+        with self.lock:
+            # A service that stays up for months forgets those it named for a week.
+            for run_id in [run_id for run_id, run in self.interrupted.items() if run.get('ended', since) < since]:
+                del self.interrupted[run_id]
+            return list(self.interrupted.values())
+
     def running(self, run_id):
         """Whether an operation of this experiment is in progress."""
         return any(self.operations[oid]['run_id'] == run_id for oid in self.futures)
+
+    def startable(self, run_id):
+        """Whether an operation of this experiment could start now but for the conditions it relies on: it is
+        ready, its retry delay and any retakes have cleared, and its instruments are free."""
+        return any(not self.operations[oid].get('maintenance')
+                   and not self._deferred(self.operations[oid])
+                   and self.allocation.can_claim(run_id, self._amounts(self.operations[oid]))
+                   for oid in self.ready.get(run_id, ()))
+
+    def _deferred(self, op):
+        """A retry delay or pending retakes prevents this operation from starting."""
+        return (bool(self.retaking.get(op['run_id'])) and not (op.get('retakes') or op.get('maintenance'))
+                or 'retry_at' in op and stamp(op['retry_at']) > time.time())
 
     def doubt(self, run_id, condition_id, after, entry):
         """Its data may have been taken while a condition did not hold: mark each operation of this experiment
@@ -730,16 +755,20 @@ class Engine:
             record = self.platforms[platform_id]
             procedure = record['definition']['procedures'][procedure_id]
             return self.submit({'name': record['definition']['name'] + ': ' + procedure_id,
-                'platform': platform_id, 'procedure': procedure_id, 'platform_revision': record['revision'],
+                'platform': platform_id, 'platform_revision': record['revision'],
                 'steps': procedure['steps'], 'resources': procedure.get('resources', record['definition']['devices']),
                 'requirements': procedure.get('requirements', {}),
-                'request_id': request_id})
+                'request_id': request_id}, procedure=procedure_id)
 
     def register(self, record, persist=True, enrollment_key=None):
         # SDK startup can take time; it must not hold the experiment scheduler lock.
         with self.registration_lock:
             from .identification import same_registration
             record = json.loads(dumps(record))
+            if persist and not any((not record.get('id') or old['id'] == record['id']) and same_registration(old, record)
+                                   for old in self.config.get('devices', [])):
+                operation_parameters(record.get('config', {}).get('operations', {}),
+                                     'Instrument ' + record.get('id', '(new)') + ' operations')
             if 'calibration' in record:
                 from .calibration import check
                 check(record['calibration'])
@@ -901,6 +930,7 @@ class Engine:
         from .identification import validate_profile
         profile = json.loads(dumps(profile))
         validate_profile(profile)
+        operation_parameters(profile['config']['operations'], 'Instrument profile ' + profile['id'] + ' operations')
         with self.lock:
             saved = {p['id']:p for p in self.config.get('instrument_profiles', [])}
             saved[profile['id']] = profile
@@ -945,32 +975,35 @@ class Engine:
     def _operation(self, run_id, step):
         from .errors import RequestError
         device_id, name = step["device"], step["operation"]
+        # A step of a graph or a batch is named in what is refused; a single call has no ID.
+        where = f"Step {step['id']}: " if step.get('id') else ''
         if device_id not in self.devices:
-            raise ValueError("Device is not registered: " + device_id)
+            raise ValueError(where + "Device is not registered: " + device_id + platform_model.closest(device_id, self.devices))
         if device_id in self.reconnecting or device_id in self.offline:
             raise ValueError('Device needs reconnection: ' + device_id)
         if device_id in self.released:
             raise RequestError('device_released', 'Reconnect this instrument before submitting operations.', device_id=device_id)
         specs = self.descriptions[device_id]["operations"]
         if name not in specs:
-            raise ValueError("Unknown operation: " + device_id + "." + name)
+            raise ValueError(where + "Unknown operation: " + device_id + "." + name + platform_model.closest(name, specs))
         if not isinstance(step.get("arguments", {}), dict):
-            raise ValueError("Arguments must be an object")
+            raise ValueError(where + "arguments is an object")
         bindings = step.get('bindings', {})
         if set(bindings) & step.get('arguments', {}).keys() or set(bindings) - specs[name].get('parameters', {}).keys():
-            raise ValueError('Bindings must name operation parameters not supplied in arguments')
+            raise ValueError(where + f'bindings name parameters of {device_id}.{name} not given in arguments')
         static = {**specs[name], 'parameters': {k: v for k, v in specs[name].get('parameters', {}).items() if k not in bindings}}
         try:
             args = parameters(static, step.get("arguments", {}))
         except ValueError as error:
-            raise RequestError('invalid_arguments', str(error), status=400, device_id=device_id, operation=name,
+            text = f"Step {step['id']} ({device_id}.{name}): {error}" if step.get('id') else str(error)
+            raise RequestError('invalid_arguments', text, status=400, device_id=device_id, operation=name,
                                parameters=static.get('parameters', {})) from None
         requirements = {}
         for source in (self.descriptions[device_id], specs[name], step):
             for key, count in quantities(source.get('requirements', {}), self.capacities).items():
                 requirements[key] = max(requirements.get(key, 0), count)
         if 'retry' in step:
-            library.retried(step['retry'], f"Step {step.get('id')}")
+            library.retried(step['retry'], f"Step {step['id']}" if step.get('id') else 'A call')
         calibration = self.descriptions[device_id].get('calibration')
         recorded = operation_fields(calibration, name)
         if recorded.get('calibration_expired') and calibration.get('enforce'):
@@ -1027,12 +1060,18 @@ class Engine:
                 return self._assembled(run) or None
         return self.store.get('runs', run_id).get('result')
 
-    def submit(self, spec, package=None):
+    def submit(self, spec, package=None, procedure=None):
+        """Accept an experiment. ``procedure`` names the saved platform procedure it carries out."""
         from .errors import RequestError
         with self.lock:
             if self.stopping:
                 raise ValueError("Service is stopping")
             spec = json.loads(dumps(spec))
+            unknown = sorted(spec.keys() - set(platform_model.SUBMISSION)) if isinstance(spec, dict) else None
+            if unknown is None:
+                raise ValueError('Submit an object: ' + ', '.join(platform_model.SUBMISSION))
+            if procedure:
+                spec['procedure'] = procedure
             preview = spec.pop('preview', False)
             if not isinstance(preview, bool):
                 raise ValueError('preview is true to see what a step graph would do without running it')
@@ -1055,6 +1094,19 @@ class Engine:
                 if previous['kind'] != kind or previous["spec"] != spec or (package is not None and not program and (self.home / "runs" / previous["id"] / "package.zip").read_bytes() != package):
                     raise ValueError("request_id already names a different experiment")
                 return previous
+            if unknown:
+                raise ValueError('A submission has no ' + ' or '.join(unknown) + '; it takes '
+                                 + ', '.join(platform_model.SUBMISSION))
+            if not procedure and (kind == 'workflow' or program):
+                # New graphs and program wrappers are strict. Identical retries and saved procedures retain
+                # their accepted fields; loading an old revision is not a new write.
+                platform_model.fields(spec.get('steps'))
+                if program:
+                    ignored = sorted(spec['steps'][0].keys() - {'id', 'operation', 'arguments', 'after', 'bindings'})
+                    if ignored:
+                        raise ValueError(f"Step {program['step']}: a saved program does not take " + ', '.join(ignored)
+                                         + '; put resources and requirements on the experiment; express its loop '
+                                         'and retries in the program')
             if len(self.runs) >= int(self.config.get('max_active_runs', 10000)):
                 raise QueueFull('The service has reached its configured number of active experiments')
             run_id = identifier("run")
@@ -1201,6 +1253,10 @@ class Engine:
                 if not same:
                     raise ValueError("request_id already names a different operation")
                 return old
+            unknown = sorted(step.keys() - set(platform_model.CALL))
+            if unknown:
+                # With argument for arguments, an operation whose parameters all have defaults would run on them.
+                raise ValueError('A call has no ' + ' or '.join(unknown) + '; it takes ' + ', '.join(platform_model.CALL))
             run = self.runs.get(run_id)
             if self.stopping or not run or not (run['kind'] == 'package' and run['state'] == 'running' or
                                run['kind'] == 'external' and run['state'] in {'queued', 'running'}):
@@ -1762,10 +1818,7 @@ class Engine:
             op = self.operations[op_id]
             # While a pass keeps its conditions, an experiment's operations wait for it; while points in doubt are
             # taken again, its other operations wait for them, except the maintenance those retakes rely on.
-            if rid in maintaining and not op.get('maintenance') or \
-                    self.retaking.get(rid) and not (op.get('retakes') or op.get('maintenance')):
-                continue
-            if 'retry_at' in op and stamp(op['retry_at']) > time.time():
+            if rid in maintaining and not op.get('maintenance') or self._deferred(op):
                 continue
             stop = self._stopping(op) if op.get('continues') else None
             if stop:

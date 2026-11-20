@@ -58,6 +58,7 @@ An individual instrument can operate without a platform. A platform records rela
 | `submit_experiment` | Submit a graph of instrument operations and dependencies |
 | `submit_program` | Upload a directory or ZIP from the MCP host for service execution |
 | `experiment` | Status, paged operations, output files and optional result |
+| `find_experiments` | Experiments newest first, found again by name, project, request ID, instrument or state |
 | `cancel_experiment` | Request cancellation |
 | `reconnect_instrument` | Reconnect a device or a previously unavailable SDK |
 | `resolve_resources` | Record observed instrument state and return interrupted resources to use |
@@ -66,11 +67,26 @@ An individual instrument can operate without a platform. A platform records rela
 | `download_file` | Save an experiment output on the MCP host |
 | `save_experiment` | Save a whole experiment as one ZIP on the MCP host: records, files and an RO-Crate description |
 
+An argument a tool does not take is refused, as is a field a step or a submission does not take: a misspelt `requires` or `retry` never runs an experiment without it.
+
 `iop://laboratory` exposes the same context as an MCP resource. Submissions return immediately. `experiment` returns at most 100 operations per page; pass the returned cursor as `after`. Retrieve large data through output files.
 
 ### Guides
 
 Tool descriptions are read on every turn, so they stay short and point to guides read when a task needs them. `guide()` returns the working method; `guide(topic)` returns one part with examples: `steps`, `sweeps`, `arrays`, `conditions`, `experiments`, `programs`, `setup` or `episodes`. The same texts are the skill a host plugin installs (`SKILL.md` with its `references/`), the MCP resources `iop://guides/{topic}`, `iop guide [topic]` in a terminal, `GET /v1/guides/{topic}`, and `guide(topic)` in the Python and TypeScript clients. The texts are in [connect/skills/iop-lab](connect/skills/iop-lab/); a guide names only tools and options that exist, which the runtime cases verify.
+
+### Prompts
+
+Hosts that list MCP prompts offer four as commands a person starts work with; each names the tools to use and what to report.
+
+| Prompt | Starts |
+|---|---|
+| `begin` | Reading the laboratory: what is ready, what can continue, what needs the person |
+| `measure(goal)` | A measurement from a goal: descriptions, a saved method when one exists, a preview, one submission, the arrays |
+| `report(run_id)` | An account of one experiment from its record alone, with what failed or is in doubt |
+| `keep(run_id)` | Saving an experiment's method as a Standard or Workflow Operation; the steps it was submitted as are placed in the prompt |
+
+`begin` is always offered; the others come with the `experiments` toolset.
 
 ### Toolsets
 
@@ -79,11 +95,11 @@ Hosts that cap the number of tools, or carry every tool description in each requ
 | Toolset | Tools | For |
 | --- | --- | --- |
 | `setup` | 12 | Registering instruments, model descriptions, platforms and resources |
-| `experiments` | 20 | Saved operations, operating conditions, experiments, batches, acquisitions, programs, results and files |
+| `experiments` | 21 | Saved operations, operating conditions, experiments, batches, acquisitions, programs, results and files |
 | `attention` | 5 | Reconnecting and releasing instruments, held resources and manual steps |
 | `episodes` | 3 | Research episodes and transitions |
 
-All four (44 tools, about 23 kB of descriptions and parameters) are the default. `experiments,attention` offers 29 tools in about 17 kB for a laboratory that is already set up.
+All four (45 tools, about 24 kB of descriptions and parameters) are the default. `experiments,attention` offers 30 tools in about 18 kB for a laboratory that is already set up.
 
 ## Remote service
 
@@ -119,8 +135,7 @@ Python and TypeScript `run.invoke()` wait for the target operation and return as
 
 [Instrument setup](instrument-setup.md) · [Measurements](performance/README.md)
 
-
-## 0.8.1 · Identity and automatic setup
+## Identity and automatic setup
 
 Read `lab_context` first. `discover_instruments(refresh=false).instruments` retains identity, source, presence and required setup fields. Use automatically registered instruments directly. `complete_instrument_setup` entries in `next_steps` identify the remaining protocol, communication settings, driver or model operations.
 
@@ -131,10 +146,10 @@ Read `lab_context` first. `discover_instruments(refresh=false).instruments` reta
 
 Python: `identify()`, `instrument_profiles()`, `save_instrument_profile()`, `retry_discovery()`. TypeScript: `identify()`, `instrumentProfiles()`, `saveInstrumentProfile()`, `retryDiscovery()`. Read `configuration_schema("instrument-profile")` for the description format.
 
-## 0.8.2 · Continuing work
+## Continuing work
 
-The default context links to full descriptions; use `lab_context(after=cursor)` for subsequent changes. `instrument_configuration` reads or edits versioned settings. `continue_program` reads progress or continues a program declaring resume support. [Program progress and binary data](continuity.md).
+The default context links to full descriptions; use `lab_context(after=cursor)` for subsequent changes. `instrument_configuration` reads or edits versioned settings. `continue_program` continues an experiment that stopped: a step graph from the operations that completed, a program that declares resume support from the progress it saved. [Program progress and binary data](continuity.md).
 
-## 0.8.3 · Installed model descriptions
+## Installed model descriptions
 
 `instrument_profiles(manufacturer=..., model=...)` returns short pages. Continue with `next_offset`; set `details=true` for operation definitions. Sources include package versions and original documentation. Equally applicable descriptions remain explicit choices applied through existing device configuration. [Instrument support packages](instrument-packages.md).

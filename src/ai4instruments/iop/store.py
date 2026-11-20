@@ -33,6 +33,10 @@ def finite(value):
     return value
 
 
+# The states of an experiment, in the order it goes through them.
+RUN_STATES = ('queued', 'running', 'completed', 'failed', 'cancelled', 'interrupted')
+
+
 class Store:
     def __init__(self, path):
         self.lock = threading.RLock()
@@ -240,11 +244,34 @@ class Store:
         prefix = folder.rstrip('/') + '/'
         self.db.execute('DELETE FROM artifacts WHERE run_id=? AND substr(name,1,?)=?', (run_id, len(prefix), prefix))
 
-    def list(self, table, run_id=None, limit=100, summary=False):
+    def list(self, table, run_id=None, limit=100, summary=False, search=None, state=None, before=None):
+        """Records newest first. Experiments can be found again: ``search`` is text their name, project, experiment
+        label, request ID, ID or an instrument they used contains, ``state`` the state they are in, and ``before``
+        the ID of an experiment to list older ones than."""
         if table not in {"runs", "operations", "artifacts"}:
             raise ValueError(table)
+        if (search or state or before) and table != 'runs':
+            raise ValueError('search, state and before find experiments')
+        if state and state not in RUN_STATES:
+            raise ValueError('state is one of ' + ', '.join(RUN_STATES))
         with self.lock:
-            where, args = (" WHERE run_id=?", [run_id]) if run_id else ("", [])
+            where, args = (["run_id=?"], [run_id]) if run_id else ([], [])
+            if search:
+                # Search actual text, not JSON escapes, nulls or separators between fields.
+                where.append("(instr(lower(id), lower(?)) > 0 OR EXISTS (SELECT 1 FROM json_tree(json_extract(body, "
+                             "'$.name', '$.project', '$.experiment', '$.request_id', '$.involved_resources')) "
+                             "WHERE type='text' AND instr(lower(atom), lower(?)) > 0))")
+                args.extend([str(search), str(search)])
+            if state:
+                where.append('state=?')
+                args.append(state)
+            if before:
+                found = self.db.execute('SELECT rowid FROM runs WHERE id=?', (before,)).fetchone()
+                if found is None:
+                    raise KeyError(before)
+                where.append('rowid<?')
+                args.append(found[0])
+            where = ' WHERE ' + ' AND '.join(where) if where else ''
             args.append(min(max(int(limit), 1), 10000))
             body = "json_remove(body, '$.result', '$.operations', '$.calls', '$.sweeps', '$.definition', '$.manifest', '$.platform.definition', '$.spec', '$.devices', '$.device_configurations')" if summary and table == 'runs' else 'body'
             rows = self.db.execute(f"SELECT {body} FROM {table}{where} ORDER BY rowid DESC LIMIT ?", args)

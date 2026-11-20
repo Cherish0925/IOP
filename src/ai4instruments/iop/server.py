@@ -263,7 +263,9 @@ class Handler(BaseHTTPRequestHandler):
                 result = engine.request_scan() if method == 'POST' else engine.inventory() if query.get('cached') == 'true' else engine.scan()
                 result['registered'] = list(engine.descriptions.values())
             elif parts == ['v1','runs']:
-                result = engine.submit(body) if method == 'POST' else engine.store.list('runs', limit=int(query.get('limit',100)), summary=query.get('details') == 'false')
+                result = engine.submit(body) if method == 'POST' else engine.store.list(
+                    'runs', limit=int(query.get('limit', 100)), summary=query.get('details') == 'false',
+                    search=query.get('search'), state=query.get('state'), before=query.get('before'))
             elif parts == ['v1','packages'] and method == 'POST':
                 data = base64.b64decode(body.pop('archive'), validate=True)
                 result = engine.submit(body, data)
@@ -357,7 +359,11 @@ class Handler(BaseHTTPRequestHandler):
                     if not 0 <= wait <= 25:
                         raise ValueError('Batch wait must be between 0 and 25 seconds')
                     if method == 'POST':
-                        result = batches.submit(engine, run_id, body['steps'], body.get('request_id'))
+                        if body.keys() - {'steps', 'request_id'}:
+                            # maintain is an option of the clients, which maintain and then submit again.
+                            raise ValueError('A batch takes steps and request_id; it has no '
+                                             + ' or '.join(sorted(body.keys() - {'steps', 'request_id'})))
+                        result = batches.submit(engine, run_id, body.get('steps'), body.get('request_id'))
                         if wait:
                             result = batches.describe(engine, run_id, body['request_id'], wait)
                     else:

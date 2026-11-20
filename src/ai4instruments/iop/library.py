@@ -15,8 +15,8 @@ import math
 import re
 from collections import deque
 from . import arrays, sweeps as sweeping, views
-from .drivers import parameters, span
-from .platforms import dependencies, name, sources
+from .drivers import parameter_definitions, parameters, span
+from .platforms import dependencies, fields, name, sources
 
 LAYERS = ('standard', 'workflow')
 PLACEHOLDER = re.compile(r'^\$\{([^{}]+)\}$')
@@ -75,9 +75,7 @@ def check(definition, lookup):
     requires = definition.get('requires', [])
     if not isinstance(requires, list) or any(not isinstance(c, str) or not c for c in requires) or len(set(requires)) != len(requires):
         raise ValueError('requires names the conditions that must hold when the operation is used')
-    declared = definition.get('parameters', {})
-    if not isinstance(declared, dict) or any(not isinstance(spec, dict) for spec in declared.values()):
-        raise ValueError('Each parameter needs a description object')
+    declared = parameter_definitions(definition.get('parameters', {}), 'Operation ' + definition['id'] + ' parameters')
     if 'program' in definition:
         # A Workflow Operation that decides from results is a saved program; the Runtime runs it.
         if definition['layer'] != 'workflow' or 'steps' in definition or 'result' in definition:
@@ -89,6 +87,7 @@ def check(definition, lookup):
     identifiers = [step.get('id') for step in steps]
     if any(not isinstance(i, str) or not i or '.' in i for i in identifiers) or len(set(identifiers)) != len(steps):
         raise ValueError('Each step needs its own id, without dots')
+    fields(steps)
     for step in steps:
         if not isinstance(step.get('operation'), str) or not step['operation']:
             raise ValueError(f"Step {step['id']}: name a device operation, or a saved operation without device")
@@ -244,6 +243,10 @@ def expand(steps, lookup, describe=None):
             spec = (describe(step['device'], step['operation']) if describe else None) if 'device' in step \
                 else lookup(step['operation'])
             described = (spec or {}).get('parameters') or {}
+            unknown = [name for name in step.get('sweep', {}) if spec is not None and name not in described]
+            if unknown:
+                raise ValueError(f"Step {sweep_id}: sweep moves {', '.join(unknown)}, which {step['operation']} does not take"
+                                 + ('; it takes ' + ', '.join(described) if described else ''))
             for axis in axes:
                 unit = described.get(axis['name'], {}).get('unit') if 'seek' not in step else None
                 if isinstance(unit, str) and unit:
@@ -311,7 +314,7 @@ def expand(steps, lookup, describe=None):
             raise ValueError('Saved operations are nested too deeply; one of them uses itself')
         definition = lookup(step['operation'])
         if definition is None:
-            raise ValueError(f"{step['operation']} is not a saved operation; a device operation needs device")
+            raise ValueError(f"Step {call}: {step['operation']} is not a saved operation; a device operation needs device")
         if 'program' in definition:
             raise ValueError(f"{definition['id']} is a program: submit it as the only step of an experiment")
         if len(flat) + len(queue) + len(definition['steps']) > 10000:

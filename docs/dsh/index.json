@@ -12,12 +12,12 @@
       },
       "versions": [
         {
-          "version": "0.12.0",
-          "publishTimestamp": 1795145140,
+          "version": "0.13.0",
+          "publishTimestamp": 1795154791,
           "source": {
             "type": "git",
             "url": "https://github.com/Cherish0925/IOP",
-            "commit": "8f1280fa6cb793795f37d1b3927a51643ba639e6",
+            "commit": "39adc5ab0f688e3df03a5786662094eaf0b82886",
             "path": "iop/connect/deepseek"
           }
         }

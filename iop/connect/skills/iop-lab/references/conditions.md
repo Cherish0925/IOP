@@ -19,8 +19,8 @@ A condition is something an experiment relies on: an alignment, a lock, a warm-u
 
 ## Relying on conditions
 
-- `requires: [...]` on `submit_experiment` or `start_experiment` names what must hold. The submission is refused with `conditions_not_held` while they do not; maintain, then submit again.
-- `upkeep: true` has the Runtime keep them inside the experiment: before an operation starts it renews what is due or about to expire and corrects what drifted, then goes on. Use it for work longer than a validity time. A continuous experiment reserves the instruments maintenance uses; a step graph reserves them itself. A validity too short to last from a verification to the next operation cannot be kept: after three renewals in a row the operation fails and says so; review maintenance and acquisition timing and the `valid_for` setting; extend validity only when observations support it.
+- `requires: [...]` on `submit_experiment`, `start_experiment` or `submit_program` names what must hold. The submission is refused with `conditions_not_held` while they do not; maintain, then submit again.
+- `upkeep: true` has the Runtime keep them inside the experiment: before an operation starts it renews what is due or about to expire and corrects what drifted, then goes on. Use it for work longer than a validity time. A continuous experiment reserves the instruments maintenance uses; a step graph reserves them itself. A validity too short to last from a verification to the next operation cannot be kept: after three renewals in a row that an operation free to start waited for, it fails and says so; review maintenance and acquisition timing and the `valid_for` setting; extend validity only when observations support it. An experiment with nothing to run, or waiting for an instrument, is kept for as long as it stays so.
 - A platform that declares `upkeep` is kept while idle; `lab_context.setup.upkeep` shows the next observation and what it waits for.
 
 ## Data in doubt

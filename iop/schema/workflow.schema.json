@@ -2,12 +2,35 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "IOP Workflow",
   "type": "object",
+  "additionalProperties": false,
   "required": [
     "steps"
   ],
   "properties": {
     "name": {
       "type": "string"
+    },
+    "project": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "A label saved with the run: the line of work it belongs to"
+    },
+    "experiment": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "A label saved with the run: the experiment it is a run of"
+    },
+    "kind": {
+      "const": "workflow",
+      "description": "A graph of steps, which is the default; an external experiment is started without steps"
+    },
+    "preview": {
+      "type": "boolean",
+      "description": "true runs nothing and returns operation counts, condition states and the estimated time"
     },
     "platform": {
       "type": "string"
@@ -38,6 +61,7 @@
       "maxItems": 10000,
       "items": {
         "type": "object",
+        "additionalProperties": false,
         "required": [
           "id",
           "operation"

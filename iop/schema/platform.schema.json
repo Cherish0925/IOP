@@ -176,6 +176,7 @@
             "maxItems": 10000,
             "items": {
               "type": "object",
+              "additionalProperties": false,
               "required": [
                 "id",
                 "operation"

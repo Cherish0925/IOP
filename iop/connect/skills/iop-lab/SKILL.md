@@ -5,7 +5,7 @@ description: Use IOP to operate instruments or scientific software, submit exper
 
 # Operate a laboratory
 
-The laboratory is a service that keeps instruments, platforms, methods, experiments and their records. It goes on working when this connection closes. These guides describe IOP 0.12.0; check `lab_context.service.version` and upgrade an older service while idle before using newer options.
+The laboratory is a service that keeps instruments, platforms, methods, experiments and their records. It goes on working when this connection closes. These guides describe IOP 0.13.0; check `lab_context.service.version` and upgrade an older service while idle before using newer options.
 
 ## Working method
 
@@ -16,7 +16,7 @@ The laboratory is a service that keeps instruments, platforms, methods, experime
    - steps known in advance: `submit_experiment`, a step graph; scans, searches and stops are options of a step;
    - a decision between steps: `start_experiment`, then `submit_operations` or `invoke_operation` with `wait=25`, then `finish_experiment`;
    - an algorithm: `submit_program`, which runs beside the instruments.
-5. Submit once with a `request_id` you choose, and keep the run ID. After a lost reply, repeat the identical request with the same `request_id`.
+5. Submit once with a `request_id` you choose and a `name` that says what it is, and keep the run ID. After a lost reply, repeat the identical request with the same `request_id`; in a later conversation, `find_experiments` finds the experiment again.
 6. Read results where they lie: `experiment_updates`, `experiment`, `operation_result`, `read_array`. Save what was acquired with `save_acquisition`; do not acquire again to save.
 7. When an experiment failed or was interrupted, read why, remove the cause and continue it with `continue_program`: what completed keeps its results.
 
@@ -39,6 +39,7 @@ Each is short, with examples. Read one when the task needs it: `guide(topic)`, o
 
 - Record what was observed: `resolve_resources` takes the instrument state that was seen, `report_manual_step` what the person stated.
 - A failed operation retains its record when continued under the same experiment. An unknown instrument outcome keeps its resources held until the instrument state is observed and resolved; it is not retried automatically.
+- Nothing asked for is left out without a word: a tool argument, a submission field or a step field that does not exist is refused, and what is refused names the step and the nearest names that exist.
 - Timing that needs a hardware clock or trigger stays on the instrument.
 - Paths of programs, downloads and archives are on the computer that runs this connection.
 - A run ID belongs to the service that issued it; keep the method's name beside it.

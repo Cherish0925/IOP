@@ -3,7 +3,7 @@ import copy
 import fnmatch
 import math
 from .config import save_json
-from .drivers import make_driver, span
+from .drivers import make_driver, operation_parameters, span
 from .errors import RequestError
 
 
@@ -91,6 +91,7 @@ def configure(engine, device_id, definition, expected_revision):
                                    current_revision=current['revision'], details_url=f'/v1/devices/{device_id}/history')
             if old == definition:
                 return current
+            operation_parameters(definition.get('config', {}).get('operations', {}), 'Instrument ' + device_id + ' operations')
             driver = engine.devices[device_id]
             worker = getattr(driver, 'worker', None)
             if worker and any(d is not driver and getattr(d, 'worker', None) is worker for d in engine.devices.values()):

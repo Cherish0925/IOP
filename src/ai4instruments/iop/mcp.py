@@ -12,6 +12,8 @@ from urllib.parse import quote, urlencode
 
 # Arrays longer than this reach an agent as their description; the values stay in the operation's file.
 AGENT_VALUES = 64
+# A submitted step graph longer than this is read from the experiment's files rather than placed in a prompt.
+PROMPT_STEPS = 8000
 
 # Hosts that cap or pay for every tool can load only the toolsets a laboratory needs; the three
 # descriptions and the guide are always offered. Every tool belongs to exactly one toolset.
@@ -24,7 +26,8 @@ TOOLSETS = {
               'retry_instrument_discovery', 'available_adapters', 'configure_platform', 'configure_resources'),
     'experiments': ('saved_operations', 'operating_conditions', 'run_procedure', 'submit_experiment', 'start_experiment', 'invoke_operation',
                     'finish_experiment', 'submit_operations', 'save_acquisition', 'submit_program', 'continue_program',
-                    'experiment', 'cancel_experiment', 'experiment_updates', 'experiment_files', 'operation_result', 'read_array',
+                    'experiment', 'find_experiments', 'cancel_experiment', 'experiment_updates', 'experiment_files',
+                    'operation_result', 'read_array',
                     'save_experiment_file', 'download_file', 'save_experiment'),
     'attention': ('reconnect_instrument', 'release_instrument', 'resolve_resources', 'manual_tasks', 'report_manual_step'),
     'episodes': ('begin_episode', 'record_transition', 'research_episodes'),
@@ -61,6 +64,11 @@ def compact(value, values=False):
 # Fields of an operation that an experiment overview needs; operation_result returns the full record.
 OVERVIEW_FIELDS = ('id', 'step', 'device', 'operation', 'arguments', 'state', 'ended', 'error', 'outcome_unknown',
                    'calibration_expired', 'maintenance', 'in_doubt', 'retakes', 'retaken_by', 'attempts', 'result', 'files')
+
+
+# What tells one experiment from another when it is looked for; experiment reads the rest.
+FOUND_FIELDS = ('id', 'name', 'project', 'experiment', 'request_id', 'kind', 'state', 'created', 'ended', 'operation_count',
+                'involved_resources')
 
 
 def drop_titles(schema):
@@ -143,7 +151,8 @@ def create_server(client, *, http=False, selection=None):
         'Read lab_context first and do what its next_steps ask. Read describe_instrument before choosing operations and '
         'arguments. Reuse what is saved: instrument and platform descriptions, and the Standard and Workflow Operations '
         'lab_context lists; a step without device uses one. Submit once with a request_id you choose, keep the run ID and '
-        'read results later; after a lost reply repeat the identical request. guide() gives the working method and '
+        'read results later; after a lost reply repeat the identical request, and find_experiments finds the work of an '
+        'earlier conversation. guide() gives the working method and '
         'guide(topic) one part with examples: ' + ', '.join(GUIDES) + '. Record only what was observed: resolve_resources '
         'takes the instrument state seen, report_manual_step what the person stated.' +
         ('' if len(chosen) == len(TOOLSETS) else
@@ -172,7 +181,7 @@ def create_server(client, *, http=False, selection=None):
     # A refresh lists connections without opening them, so the overview stays a read.
     @tool(annotations=read_only)
     def lab_context(refresh: bool = False, after: int | None = None, device_offset: int | None = None) -> dict:
-        """Read a compact laboratory overview. Pass its cursor as after on subsequent reads to receive only changes. Device and platform descriptions are fetched when needed."""
+        """Read a compact laboratory overview. Pass its cursor as after on later reads to receive only changes."""
         if device_offset is not None:
             return client.device_page(device_offset)
         if after is not None:
@@ -191,7 +200,7 @@ def create_server(client, *, http=False, selection=None):
 
     @tool(annotations=read_only)
     def describe_platform(platform: str) -> dict:
-        """Read a platform's devices, wiring, shared resources, procedures and revision. timing.arm_order is a receiver-before-source suggestion, or null for feedback wiring. Use the platform procedure and device requirements for initialization."""
+        """Read a platform's devices, wiring, shared resources, procedures and revision. timing.arm_order is a receiver-before-source suggestion, or null for feedback wiring."""
         return client.platform(platform)
 
     @tool(annotations=read_only)
@@ -250,7 +259,7 @@ def create_server(client, *, http=False, selection=None):
     @tool()
     def saved_operations(operation: str | None = None, definition: dict | None = None, program: str | None = None,
                          file: str | None = None) -> dict | list:
-        """Standard and Workflow Operations saved in this laboratory: methods built from device (Basic) operations. No arguments: list them. operation returns one with its parameters, steps, named result and record of use; with file, the text of a file of a saved program. definition saves a new revision: id, layer (standard | workflow), description, parameters, steps and result; or, for a workflow that decides from results, program: a directory or ZIP on this computer whose experiment.py reads IOP_PARAMETERS_JSON and saves its result. A step without device uses one by name; a program runs as the only step. guide("steps") has an example."""
+        """List saved Standard and Workflow Operations; operation reads one, with file reads a saved program file. definition saves a revision. program uploads a directory or ZIP from this host for a Workflow Operation that decides from results. A step without device uses a saved method; a program runs alone. guide("steps") gives the definition and examples."""
         if definition is not None:
             return client.save_operation(definition, program=program)
         if operation and file:
@@ -263,7 +272,7 @@ def create_server(client, *, http=False, selection=None):
                              conditions: list[str] | None = None, run_id: str | None = None,
                              request_id: str | None = None, force: bool = False, invalidate: str | None = None,
                              maintenance: str | None = None, wait: float = 0) -> dict | list:
-        """Conditions experiments rely on, each with a verification, a tolerance, corrections and a validity time; an instrument's own are named <device>.<id>. No arguments: all with their state (holds, due, lost, unknown); platform or device narrows it; condition returns one with statistics and records. maintain=true with platform, device or conditions verifies what is due and corrects what drifted, dependencies first: pass request_id, and run_id inside an experiment; force verifies again what holds. The reply returns within wait (up to 25 s); read on with maintenance=<id>. invalidate=<reason> marks conditions due after a disturbance. guide("conditions") tells how experiments rely on them."""
+        """Read conditions and their states; platform/device filters them, condition returns one with records. maintain=true verifies and corrects in dependency order: pass platform, device or conditions, request_id, and run_id inside an experiment. force verifies again what holds. Replies wait up to 25 s; continue with maintenance=<id>. invalidate=<reason> marks conditions due after a disturbance. guide("conditions") explains requires and upkeep."""
         if maintenance:
             return client.request('/v1/maintenance/' + quote(maintenance, safe='') + waiting(wait))
         if invalidate:
@@ -292,25 +301,25 @@ def create_server(client, *, http=False, selection=None):
         return client.procedure(platform, procedure, request_id).info(details=False)
 
     @tool()
-    def submit_experiment(steps: list[dict], request_id: str, name: str = 'Experiment',
+    def submit_experiment(steps: list[dict], request_id: str, name: str = 'Experiment', project: str | None = None,
                           platform: str | None = None, resources: list[str] | None = None,
                           requirements: dict[str, int] | None = None, requires: list[str] | None = None,
                           upkeep: bool = False, preview: bool = False) -> dict:
-        """Submit a graph of steps. A step is {"id", "device", "operation", "arguments"}; without device it uses a saved operation. Steps are independent unless after names the steps they follow, or bindings take an argument from an earlier result. Options of a step: sweep (run at each value; its numbers return as arrays), repeat, until (stop at a limit), seek (find where a reading is largest), retake, retry: guide("sweeps"). requires names conditions that must hold and upkeep=true keeps them while the graph runs: guide("conditions"). preview=true runs nothing and returns operation counts, condition states and estimated_s. Returns immediately with the run ID; reuse request_id only for the identical submission."""
+        """Submit a step graph and return its run ID. Steps are independent unless after or bindings connect them; a step without device uses a saved operation. guide("steps") gives the form and guide("sweeps") its scan and recovery options. requires names conditions; upkeep=true keeps them. preview=true returns counts, condition states and estimated_s without running. Reuse request_id only for an identical submission."""
         if preview:
             return client.preview(steps, platform=platform, resources=resources or [], requirements=requirements,
                                   requires=requires or (), upkeep=upkeep or None)
-        return client.submit(steps, name=name, platform=platform, resources=resources or [],
+        return client.submit(steps, name=name, project=project, platform=platform, resources=resources or [],
                              requirements=requirements, request_id=request_id, requires=requires or (),
                              upkeep=upkeep or None).info(details=False)
 
     @tool()
-    def start_experiment(request_id: str, name: str = 'Experiment', platform: str | None = None,
-                         resources: list[str] | None = None, parameters: dict | None = None,
+    def start_experiment(request_id: str, name: str = 'Experiment', project: str | None = None,
+                         platform: str | None = None, resources: list[str] | None = None, parameters: dict | None = None,
                          requirements: dict[str, int] | None = None, requires: list[str] | None = None,
                          upkeep: bool = False) -> dict:
         """Start one experiment for successive decisions: then submit_operations or invoke_operation, and finish_experiment at the end. Reserve every instrument and shared resource the work depends on in resources. It stays open across connections until finished or cancelled. requires names the conditions it relies on and upkeep=true has the Runtime keep them between operations: guide("conditions")."""
-        return client.start_experiment(request_id=request_id, name=name, platform=platform,
+        return client.start_experiment(request_id=request_id, name=name, project=project, platform=platform,
                                        resources=resources or [], parameters=parameters, requirements=requirements,
                                        requires=requires or (), upkeep=upkeep or None).info(details=False)
 
@@ -329,7 +338,7 @@ def create_server(client, *, http=False, selection=None):
 
     @tool()
     def submit_operations(run_id: str, steps: list[dict], request_id: str, wait: float = 0) -> dict:
-        """Submit a batch of steps within an experiment begun with start_experiment; all are accepted together. Steps run in the order given; after=[] starts an independent branch and after=[IDs] joins branches. Steps take the options of submit_experiment: guide("sweeps"). For a swept step the reply counts its points by state, with stopped and in_doubt when they apply, and read_array(run_id, field, request_id) reads what it gathered. With wait up to 25 seconds the reply includes the results of steps that finish in that time; complete tells whether all did."""
+        """Submit a batch within an open experiment; all steps are accepted together. They run in order; after=[] starts a parallel branch and after=[IDs] joins branches. Step options: guide("sweeps"). Replies include progress and results within wait (up to 25 s); complete says whether all finished. read_array(run_id, field, request_id) reads gathered arrays."""
         batch = client.request('/v1/runs/' + quote(run_id, safe='') + '/batches' + waiting(wait),
                                {'steps':steps, 'request_id':request_id})
         batch = compact(batch)
@@ -359,18 +368,18 @@ def create_server(client, *, http=False, selection=None):
     @tool()
     def begin_episode(run_id: str, episode_id: str, task: dict, observation: Any,
                       policy: dict | None = None, seed: int | None = None, info: dict | None = None) -> dict:
-        """Save a task's initial observation inside an experiment. task and optional policy need id/version. Does not reset instruments. Requires IOP 0.8.6."""
+        """Save a task's initial observation inside an experiment. task and optional policy need id/version. Does not reset instruments."""
         return client.run(run_id).begin_episode(episode_id, task=task, observation=observation,
                                                 policy=policy, seed=seed, info=info).info()
 
     @tool()
     def record_transition(run_id: str, episode_id: str, transition: dict) -> dict:
-        """Save sequence, action, observation, reward (or null), terminated, truncated, operation_ids and optional info. IDs must name completed operations in this run. Repeating an identical sequence returns its saved record. Requires IOP 0.8.6."""
+        """Save sequence, action, observation, reward (or null), terminated, truncated, operation_ids and optional info. IDs must name completed operations in this run. Repeating an identical sequence returns its saved record."""
         return client.request('/v1/runs/' + quote(run_id, safe='') + '/episodes/' + quote(episode_id, safe='') + '/transitions', transition)
 
     @tool(annotations=read_only)
     def research_episodes(run_id: str, episode_id: str | None = None, after: int = -1, offset: int = 0) -> dict:
-        """List research episodes, or read one episode and a page of transitions. Continue from the returned cursor. Requires IOP 0.8.6."""
+        """List research episodes, or read one episode and a page of transitions. Continue from the returned cursor."""
         run = client.run(run_id)
         if episode_id is None:
             return run.episodes(offset=offset)
@@ -387,13 +396,15 @@ def create_server(client, *, http=False, selection=None):
         """Save a UTF-8 result or analysis file, optionally linked to completed operations in this experiment. Use the SDK's binary upload for large measurement arrays."""
         return client.run(run_id).save_file(name, text, operation_ids=operation_ids or [])
 
-    def submit_program(path: str, request_id: str, platform: str | None = None,
-                       resources: list[str] | None = None, parameters: dict | None = None,
-                       requirements: dict[str, int] | None = None) -> dict:
-        """Upload an experiment directory or ZIP from this MCP host to the instrument service. The service executes it independently of the agent connection."""
-        return client.submit_package(Path(path).expanduser(), request_id=request_id, platform=platform,
-                                     resources=resources or [], parameters=parameters,
-                                     requirements=requirements).info(details=False)
+    def submit_program(path: str, request_id: str, name: str | None = None, project: str | None = None,
+                       platform: str | None = None, resources: list[str] | None = None, parameters: dict | None = None,
+                       requirements: dict[str, int] | None = None, requires: list[str] | None = None,
+                       upkeep: bool = False) -> dict:
+        """Upload an experiment directory or ZIP from this MCP host to the instrument service, which runs it independently of this connection. requires and upkeep are those of start_experiment."""
+        return client.submit_package(Path(path).expanduser(), request_id=request_id, name=name, project=project,
+                                     platform=platform, resources=resources or [], parameters=parameters,
+                                     requirements=requirements, requires=requires or (),
+                                     upkeep=upkeep or None).info(details=False)
 
     @tool(annotations=read_only)
     def experiment(run_id: str, after: int = 0, limit: int = 20, include_result: bool = False, in_doubt: bool = False) -> dict:
@@ -410,6 +421,15 @@ def create_server(client, *, http=False, selection=None):
                               'removed; guide("experiments")')
         return result
 
+    @tool(annotations=read_only)
+    def find_experiments(search: str | None = None, state: str | None = None, limit: int = 20,
+                         before: str | None = None) -> dict:
+        """Find experiments, newest first, by text in their name, project, experiment label, request_id or an instrument used, and by state: queued, running, completed, failed, cancelled, interrupted. Pass the returned before for older ones."""
+        limit = max(1, min(int(limit), 100))
+        found = client.runs(search, state=state, limit=limit, before=before)
+        listed = [{key: run[key] for key in FOUND_FIELDS if run.get(key) not in (None, [], {})} for run in found]
+        return {'experiments': listed, **({'before': found[-1]['id']} if len(found) == limit else {})}
+
     @tool()
     def cancel_experiment(run_id: str) -> dict:
         """Request cancellation. In-flight instrument operations finish or report their actual cancellation before their resources are released."""
@@ -417,7 +437,7 @@ def create_server(client, *, http=False, selection=None):
 
     @tool(annotations=read_only)
     def experiment_updates(run_id: str, after: int = 0, limit: int = 100, wait: float = 0) -> dict:
-        """Read changes and operation states since cursor, including completion of previously queued work. Pass wait up to 25 seconds to wait for a change. Arrays stay at operation/result URLs. Continue immediately while has_more is true; retain cursor across reconnects."""
+        """Read what changed in an experiment since a cursor: its state and the operations that started or ended. wait up to 25 seconds waits for a change. Continue at once while has_more is true; keep the cursor across reconnects."""
         return client.run(run_id).updates(after, limit, wait)
 
     @tool(annotations=read_only)
@@ -438,7 +458,7 @@ def create_server(client, *, http=False, selection=None):
                    points: int | list[int] | None = None, peak: Literal['max', 'min'] | None = None,
                    prominence: float | None = None, level: float | None = None, fit: Literal['line', 'lorentzian', 'gaussian'] | None = None,
                    run_id: str | None = None, stream: str | None = None, request_id: str | None = None) -> dict:
-        """Read what an array says without all its values. Source: operation_id for an array an operation returned; run_id with field for an array of an experiment's result, such as what a sweep gathered (request_id for a batch); run_id with stream for a data stream. Returns a summary (count, min and max with where they lie, mean, std, error), then exact values when there are at most points positions, otherwise the min, max and mean of points buckets (default 32). along is the axis followed, or two axes for a map; at fixes other axes, e.g. {"channel": "x"}; start/stop (positions) or low/high (coordinates) select a window. peak ("max" or "min", with prominence for every line), level (crossings) and fit (a line, or a Lorentzian or Gaussian with errors) read lines, thresholds and widths: guide("arrays")."""
+        """Read arrays as summaries and bounded samples. Choose operation_id, run_id with field (and request_id for a batch), or run_id with stream. along selects one axis or two for a map; at fixes others. start/stop select indices, low/high coordinates. peak/prominence find peaks, level crossings, and fit line/Lorentzian/Gaussian models with errors. guide("arrays") explains results and limits."""
         if points is None:
             points = 16 if isinstance(along, list) and len(along) > 1 else 32
         options = dict(along=along, at=at, start=start, stop=stop, low=low, high=high, points=points, peak=peak,
@@ -517,6 +537,59 @@ def create_server(client, *, http=False, selection=None):
         drop_titles(getattr(registered, 'parameters', None))
         if isinstance(getattr(registered, 'parameters', None), dict):
             optional(registered.parameters)
+        # An argument a tool does not take is refused. The SDK leaves it out without a word, so that
+        # submit_experiment with "require" for requires would run without requiring anything.
+        arguments = getattr(getattr(registered, 'fn_metadata', None), 'arg_model', None)
+        if arguments is not None:
+            arguments.model_config['extra'] = 'forbid'
+            arguments.model_rebuild(force=True)
+            registered.parameters['additionalProperties'] = False
+
+    def prompt(toolset=None, **options):
+        """Register a prompt a person starts work with, offered when the tools it names are."""
+        return server.prompt(**options) if toolset is None or toolset in chosen else lambda function: function
+
+    @prompt(title='Begin work in this laboratory')
+    def begin() -> str:
+        """Read the laboratory and say what is ready and what needs the person."""
+        return ('Read `lab_context`. Tell me briefly which instruments and platforms are ready and which are not, which '
+                'saved operations there are, which experiments are open or can continue, and what its next_steps ask, of '
+                'you and of me. Carry out the steps that only read; name the others and wait for my word.')
+
+    @prompt('experiments', title='Plan and run a measurement')
+    def measure(goal: str) -> str:
+        """From a goal to observed numbers: descriptions, saved methods, a preview, one submission, the arrays."""
+        return ('Goal: ' + goal + '\n\nWork as `guide` describes. Read `lab_context`, then `describe_instrument` for each '
+                'instrument involved, and look in `saved_operations` for a method that already does this: use it rather '
+                'than new steps. Build the step graph, name the conditions it relies on in requires, and read it back '
+                'with `submit_experiment` and preview=true: tell me the operation counts, the state of the conditions and '
+                'the estimated time. Then submit it once with a request_id, follow it with `experiment_updates` and read '
+                'what it gathered with `read_array`. Report the numbers observed with units and errors, the points in '
+                'doubt, and what the goal still lacks.')
+
+    @prompt('experiments', title='Report what an experiment observed')
+    def report(run_id: str) -> str:
+        """An account of one experiment from its record alone."""
+        return ('Report on experiment ' + run_id + ' from its record alone. Read it with `experiment` (include_result=true, '
+                'then in_doubt=true), `operation_result` for a failure, and `read_array` for each array: its summary, and '
+                'lines and fits where they apply. Say what ran, on which instruments and relying on which conditions; '
+                'what was observed, with units and errors, and where the files are; what failed or is in doubt, and why; '
+                'and whether it can continue. Where the record does not say, say so.')
+
+    @prompt('experiments', title='Save the method of an experiment for reuse')
+    def keep(run_id: str) -> str:
+        """Turn what an experiment did into a saved Standard or Workflow Operation."""
+        spec = client.run(run_id).info().get('spec', {})
+        steps = json.dumps(spec['steps'], ensure_ascii=False, separators=(',', ':')) if spec.get('steps') else ''
+        return ('The method of experiment ' + run_id + ' is worth keeping. ' + (
+                    'It was submitted as these steps:\n\n' + steps + '\n\n' if steps and len(steps) <= PROMPT_STEPS else
+                    'Its submission is experiment.json among its files (`experiment_files`). ' if steps else
+                    'Read what it did with `experiment`. ') +
+                'Turn the values that will differ next time into parameters and save it with `saved_operations` '
+                '(definition): a Standard Operation when it is one method built on device operations, a Workflow Operation '
+                'when it joins several methods. `guide` with topic steps shows the form. Show me the definition saved, then '
+                'read a step that uses it with `submit_experiment` and preview=true, to see that it expands to the same '
+                'operations.')
 
     @server.resource('iop://guides/operations')
     def operating_guide() -> str:

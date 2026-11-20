@@ -1,4 +1,5 @@
 """Standard and Workflow Operations: saved, used as one step, expanded into Basic Operations and recorded."""
+import copy
 import tempfile
 import time
 import unittest
@@ -60,6 +61,31 @@ class LibraryCase(unittest.TestCase):
     def save_all(self):
         for definition in (POSITION, CAPTURE, MEASURE_AT):
             self.client.save_operation(definition)
+
+    def test_new_parameter_declarations_are_checked_before_saving(self):
+        for field, message in (
+                ({'type': 'number', 'max': 5}, r'parameters.angle: unknown field max; use maximum'),
+                ({'type': 'float'}, 'type is number'),
+                ({'type': 'number', 'minimum': 2, 'maximum': 1}, 'minimum is above maximum'),
+                ({'minimum': 1}, 'minimum is a finite number with type number'),
+                ({'type': 'number', 'required': 'false'}, 'required is true or false'),
+                ({'type': 'number', 'enum': [1, 'two']}, 'must be a finite number'),
+                ({'type': 'number', 'minimum': 0, 'default': -1}, 'below 0'),
+                ({'type': 'array', 'items': {'type': 'number', 'max': 5}}, r'angle.items: unknown field max'),
+                ({'type': 'array', 'minItems': 3, 'maxItems': 2}, 'minItems is above maxItems')):
+            with self.subTest(field=field), self.assertRaisesRegex(IOPError, message):
+                self.client.save_operation({**POSITION, 'parameters': {**POSITION['parameters'], 'angle': field}})
+        self.assertEqual(self.client.saved_operations(), [])
+        # Annotations describe the parameter without becoming constraints. Array item contracts recurse.
+        definition = copy.deepcopy(POSITION)
+        definition['parameters']['angle'].update(description='Settled angle', title='Angle', examples=[0],
+                                                 limit='Mechanical stop', **{'x-display': {'digits': 3}})
+        definition['parameters']['samples'] = {'type': 'array', 'items': {'type': 'number', 'minimum': 0},
+                                                'minItems': 1, 'maxItems': 3, 'default': [1, 2]}
+        saved = self.client.save_operation(definition)
+        self.assertEqual(saved['parameters'], definition['parameters'])
+        self.assertEqual(self.client.submit([{'id': 'go', 'operation': POSITION['id'],
+                                              'arguments': {'axis': 'stage', 'angle': 0}}]).result(10)['go']['angle'], 0)
 
     def test_operations_are_saved_listed_revised_and_shown_to_agents(self):
         self.save_all()
@@ -181,6 +207,12 @@ class LibraryCase(unittest.TestCase):
         self.client.configure_platform({'schema_version': 1, 'id': 'bench', 'devices': ['stage', 'aux', 'meter'], 'procedures': {
             'initialize': {'steps': [{'id': 'home', 'operation': 'axis.position', 'arguments': {'axis': 'stage', 'angle': 0}}]}}})
         self.assertEqual(self.client.procedure('bench').result(10)['home'], {'angle': 0})
+        # A procedure saved before the fields of a step were checked runs as it was saved.
+        self.engine.platforms['bench']['definition']['procedures']['initialize']['steps'][0]['note'] = 'home first'
+        self.assertEqual(self.client.procedure('bench').result(10)['home'], {'angle': 0})
+        with self.assertRaisesRegex(IOPError, 'A submission has no procedure'):
+            self.client.request('/v1/runs', {'procedure': 'initialize', 'steps': [
+                {'id': 'home', 'device': 'stage', 'operation': 'position', 'note': 'home first'}]})
 
 
 SCAN = """import json, os
@@ -222,6 +254,13 @@ class ProgramCase(unittest.TestCase):
                          (1, ['{python}', 'experiment.py'], ['experiment.py']))
         self.assertIn('run.call', self.client.program_file('stage.find_power', 'experiment.py')['text'])
         self.assertTrue(next(o for o in self.client.saved_operations() if o['id'] == 'stage.find_power')['program'])
+        for option, message in (({'retries': {'times': 1}}, 'a step has no retries'),
+                                ({'repeat': 2}, 'a saved program does not take repeat'),
+                                ({'resources': ['stage']}, 'put resources and requirements on the experiment')):
+            with self.assertRaisesRegex(IOPError, message):
+                self.client.submit([{'id': 'scan', 'operation': 'stage.find_power',
+                                     'arguments': {'start': 0, 'stop': 10, 'threshold': 1}, **option}])
+        self.assertEqual(self.client.runs(), [])
         run = self.client.submit([{'id': 'scan', 'operation': 'stage.find_power',
                                    'arguments': {'start': -60, 'stop': 60, 'threshold': 0.85}}], resources=['stage', 'meter'])
         result = run.result(30)['scan']
@@ -280,6 +319,34 @@ class DefinitionCase(unittest.TestCase):
             try:
                 saved = engine.saved_operation('axis.position')
                 self.assertEqual((saved['revision'], saved['uses']['completed']), (1, 1))
+            finally:
+                engine.close()
+
+    def test_old_parameter_and_step_annotations_survive_loading_and_execution(self):
+        with tempfile.TemporaryDirectory() as home:
+            config = initialize(home, True, 0); config['discovery_interval'] = 0
+            engine = Engine(home, config)
+            try:
+                engine.save_operation(POSITION)
+                # A previous release accepted these annotations; loading and using its revision is not a new write.
+                old = copy.deepcopy(engine.library[POSITION['id']])
+                old['revision'] += 1
+                old['parameters']['angle']['max'] = 5
+                old['steps'][0]['note'] = 'Keep the original method'
+                engine.store.save_operation(old)
+            finally:
+                engine.close()
+            engine = Engine(home, config); engine.start()
+            try:
+                self.assertEqual(engine.saved_operation(POSITION['id'])['parameters']['angle']['max'], 5)
+                run = engine.submit({'steps': [{'id': 'go', 'operation': POSITION['id'],
+                                               'arguments': {'axis': 'stage', 'angle': 10}}]})
+                deadline = time.monotonic() + 5
+                while engine.store.get('runs', run['id'])['state'] != 'completed' and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertEqual(engine.run_result(run['id'])['go']['angle'], 10)
+                with self.assertRaisesRegex(ValueError, 'unknown field max'):
+                    engine.save_operation({key: value for key, value in old.items() if key not in ('revision', 'updated')})
             finally:
                 engine.close()
 

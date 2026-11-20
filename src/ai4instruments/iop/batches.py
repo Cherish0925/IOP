@@ -34,6 +34,8 @@ def submit(engine, run_id, steps, request_id, maintenance=False):
             if record['run_id'] != run_id or record['steps'] != submitted:
                 raise ValueError('request_id already names a different operation batch')
             return describe(engine, run_id, request_id)
+        if not maintenance:
+            platforms.fields(steps)
         # A step without device uses a saved Standard or Workflow Operation.
         steps, calls, sweeps = library.expand(submitted, engine.library.get, engine._described)
         platforms.steps(steps)

@@ -1,6 +1,6 @@
 # Steps
 
-A step is one operation. With `device` it is a Basic Operation of that instrument; without, it uses a saved Standard or Workflow Operation by name.
+A step is one operation. With `device` it is a Basic Operation of that instrument; without, it uses a saved Standard or Workflow Operation by name. A step holds `id`, `device`, `operation`, `arguments`, `after`, `bindings`, `resources`, `requirements` and the options `sweep`, `repeat`, `until`, `seek`, `retake`, `retry`; any other field is refused, and what is refused names the step and the nearest names that exist.
 
 ```json
 [{"id": "set", "device": "source", "operation": "set_power", "arguments": {"dbm": -10}},
@@ -59,3 +59,5 @@ The experiment result holds, under each step's id, what the operation returned; 
 ```
 
 `"${name}"` inserts a parameter. `layer` is `standard` for a method, `workflow` for an organization of methods across instruments. `configuration_schema("operation")` gives every field.
+
+Parameter declarations are checked when saved: use `minimum` and `maximum`, not `min` or `max`. Descriptive fields and `x-*` annotations are retained, but annotations do not enforce constraints. The same contract applies to newly written local instrument and model parameters; older records and SDK descriptions remain usable.

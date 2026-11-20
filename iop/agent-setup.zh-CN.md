@@ -58,6 +58,7 @@ iop context --start
 | `submit_experiment` | 提交具有串并行依赖的仪器操作 |
 | `submit_program` | 将 Agent 所在计算机上的目录或 ZIP 上传给服务运行 |
 | `experiment` | 读取状态、分页操作记录、文件和结果 |
+| `find_experiments` | 按名称、项目、请求 ID、仪器或状态重新找到实验，最新的在前 |
 | `cancel_experiment` | 请求取消实验 |
 | `reconnect_instrument` | 重新连接设备或此前无法加载的 SDK |
 | `resolve_resources` | 记录设备当前状态，恢复使用被中断操作占用的资源 |
@@ -66,11 +67,26 @@ iop context --start
 | `download_file` | 将实验文件保存到 Agent 所在计算机 |
 | `save_experiment` | 将整个实验保存为一个 ZIP（记录、文件与 RO-Crate 说明）到 Agent 所在计算机 |
 
+工具不接受的参数会被拒绝，步骤和提交中不存在的字段也一样：拼错的 `requires` 或 `retry` 不会让实验在缺少它的情况下运行。
+
 MCP 资源 `iop://laboratory` 提供相同的实验室说明。提交工具立即返回，不需要等待整个实验结束。操作记录每页最多 100 条，下一次查询使用返回的 cursor；大型数据通过文件获取。
 
 ### 指南
 
 工具说明每一轮都会被读取，所以保持简短，细节放在任务需要时才读的指南里。`guide()` 返回工作方法；`guide(topic)` 返回其中一部分及示例：`steps`、`sweeps`、`arrays`、`conditions`、`experiments`、`programs`、`setup`、`episodes`。同一份文本也是宿主插件安装的技能（`SKILL.md` 及其 `references/`）、MCP 资源 `iop://guides/{topic}`、终端里的 `iop guide [topic]`、`GET /v1/guides/{topic}`，以及 Python 和 TypeScript 客户端的 `guide(topic)`。文本在 [connect/skills/iop-lab](connect/skills/iop-lab/)；指南只提到确实存在的工具和选项，运行用例对此逐一核对。
+
+### 提示
+
+支持 MCP 提示的宿主会把四条提示列为命令，由人用来开始一项工作；每条都写明用哪些工具、汇报什么。
+
+| 提示 | 开始的工作 |
+|---|---|
+| `begin` | 读取实验室现状：哪些已就绪，哪些实验可以继续，哪些事需要人来做 |
+| `measure(goal)` | 从目标到测量结果：读取说明，优先用已保存的方法，先预览，提交一次，再读数组 |
+| `report(run_id)` | 只依据记录说明一次实验，包括失败和存疑的部分 |
+| `keep(run_id)` | 把一次实验的方法保存为 Standard Operation 或 Workflow Operation；提交时的步骤会直接放进提示里 |
+
+`begin` 始终提供；其余三条随 `experiments` 工具集提供。
 
 ### 工具集
 
@@ -79,11 +95,11 @@ MCP 资源 `iop://laboratory` 提供相同的实验室说明。提交工具立�
 | 工具集 | 工具数 | 用途 |
 | --- | --- | --- |
 | `setup` | 12 | 登记仪器、型号描述、平台和资源 |
-| `experiments` | 20 | 已保存的操作、工作条件、实验、批次、采集、程序、结果和文件 |
+| `experiments` | 21 | 已保存的操作、工作条件、实验、批次、采集、程序、结果和文件 |
 | `attention` | 5 | 重连和释放仪器、挂起的资源、人工步骤 |
 | `episodes` | 3 | 研究回合与转移记录 |
 
-默认四个全部加载（44 个工具，说明和参数约 23 kB）。已完成配置的实验室用 `experiments,attention`：29 个工具，约 17 kB。
+默认四个全部加载（45 个工具，说明和参数约 24 kB）。已完成配置的实验室用 `experiments,attention`：30 个工具，约 18 kB。
 
 ## 连接远端实验室
 
@@ -120,7 +136,7 @@ HTTP 接口为 `GET /v1/context` 和 `GET /v1/schemas/{name}`。具体仪器的�
 [仪器接入说明](instrument-setup.zh-CN.md) · [实测方法与结果](performance/README.md)
 
 
-## 0.8.1 · 仪器身份与自动接入
+## 仪器身份与自动接入
 
 先读 `lab_context`；`discover_instruments(refresh=false)` 的 `instruments` 保存身份、来源、当前发现状态和未完成项。已自动登记的设备直接使用，无需重复编写说明。`next_steps` 中的 `complete_instrument_setup` 指出具体缺少的协议、通信参数、驱动或型号操作。
 
@@ -131,10 +147,10 @@ HTTP 接口为 `GET /v1/context` 和 `GET /v1/schemas/{name}`。具体仪器的�
 
 Python 对应 `identify()`、`instrument_profiles()`、`save_instrument_profile()`、`retry_discovery()`；TypeScript 对应 `identify()`、`instrumentProfiles()`、`saveInstrumentProfile()`、`retryDiscovery()`。型号说明格式使用 `configuration_schema("instrument-profile")`。
 
-## 0.8.2 · 连续使用
+## 连续使用
 
-默认概况按需读取完整说明；后续用 `lab_context(after=cursor)` 获取变化。`instrument_configuration` 读取或修改有版本的仪器配置；`continue_program` 读取进度或继续声明支持续接的程序。[持续实验与数据传输](continuity.zh-CN.md)。
+默认概况按需读取完整说明；后续用 `lab_context(after=cursor)` 获取变化。`instrument_configuration` 读取或修改有版本的仪器配置；`continue_program` 继续已停止的实验：步骤图保留已完成的操作，从其余操作继续；声明支持续接的程序从它保存的进度继续。[持续实验与数据传输](continuity.zh-CN.md)。
 
-## 0.8.3 · 已安装的型号说明
+## 已安装的型号说明
 
 `instrument_profiles(manufacturer=..., model=...)` 默认返回简短分页结果；按 `next_offset` 继续读取，使用 `details=true` 获取命令定义。说明附带来源、包版本和资料链接。型号匹配存在同等候选时，通过已有仪器配置选择所需说明。[仪器支持包](instrument-packages.zh-CN.md)。

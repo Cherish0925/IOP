@@ -18,7 +18,26 @@
     },
     "config": {
       "type": "object",
-      "description": "Driver-specific connection settings and named operations."
+      "description": "Driver-specific connection settings and named operations.",
+      "properties": {
+        "operations": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "parameters": {
+                "type": "object",
+                "propertyNames": {
+                  "minLength": 1
+                },
+                "additionalProperties": {
+                  "$ref": "#/$defs/parameter"
+                }
+              }
+            }
+          }
+        }
+      }
     },
     "resources": {
       "type": "array",
@@ -347,6 +366,125 @@
         },
         "note": {
           "type": "string"
+        }
+      }
+    },
+    "parameter": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Parameter contract for a new local definition. Omit type for an unconstrained JSON value; x-* annotations do not impose constraints.",
+      "patternProperties": {
+        "^x-": {}
+      },
+      "properties": {
+        "type": {
+          "enum": [
+            "number",
+            "integer",
+            "string",
+            "boolean",
+            "array",
+            "object"
+          ]
+        },
+        "required": {
+          "type": "boolean",
+          "default": true
+        },
+        "default": {},
+        "enum": {
+          "type": "array",
+          "minItems": 1
+        },
+        "minimum": {
+          "type": "number"
+        },
+        "maximum": {
+          "type": "number"
+        },
+        "items": {
+          "$ref": "#/$defs/parameter"
+        },
+        "minItems": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxItems": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unit": {
+          "type": "string"
+        },
+        "limit": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "examples": {
+          "type": "array"
+        }
+      },
+      "dependentSchemas": {
+        "minimum": {
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "enum": [
+                "number",
+                "integer"
+              ]
+            }
+          }
+        },
+        "maximum": {
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "enum": [
+                "number",
+                "integer"
+              ]
+            }
+          }
+        },
+        "items": {
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "const": "array"
+            }
+          }
+        },
+        "minItems": {
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "const": "array"
+            }
+          }
+        },
+        "maxItems": {
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "const": "array"
+            }
+          }
         }
       }
     }

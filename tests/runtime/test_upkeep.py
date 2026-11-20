@@ -1,9 +1,11 @@
 """Upkeep: a platform that declares it has its conditions kept by the Runtime while its instruments are idle."""
 import time
+import threading
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timezone
 from ai4instruments.iop import IOPError
-from ai4instruments.iop.conditions import upkeep
+from ai4instruments.iop.conditions import RENEWALS, upkeep
 from . import test_service as fixture
 from .test_conditions import PATH, SOURCE, WORLD, Part
 
@@ -161,14 +163,15 @@ class UpkeepCase(unittest.TestCase):
     def test_an_experiment_keeps_what_it_relies_on_before_its_operations(self):
         # Only the operations of the experiment start passes here, not the periodic plan.
         self.engine.config['upkeep_interval_s'] = 3600
-        self.client.configure_platform(chain(SOURCE, {**PATH, 'valid_for': 0.4}, keep=False))
+        # A validity a slow machine can keep: a pass and the start of the next operation fit in it several times.
+        self.client.configure_platform(chain(SOURCE, {**PATH, 'valid_for': 1.5}, keep=False))
         # Not yet observed: the experiment is accepted and its conditions are brought up inside it first.
         experiment = self.client.start_experiment(platform='chain', resources=['source', 'coupler', 'detector'],
                                                   requires=['path.aligned'], upkeep=True)
         read = [{'id': 'read', 'device': 'detector', 'operation': 'read'}]
         self.assertEqual(experiment.batch(read)[0]['result']['signal'], 1.0)
         # The validity ran out and the coupling drifted: the next operation waits while the Runtime restores it.
-        time.sleep(0.45)
+        time.sleep(1.6)
         WORLD['alignment'] = 0.5
         self.assertEqual(experiment.batch(read)[0]['result']['signal'], 1.0)
         info = experiment.info()
@@ -197,12 +200,12 @@ class UpkeepCase(unittest.TestCase):
     def test_a_step_graph_keeps_what_it_relies_on_between_its_operations(self):
         # Only the step graph starts passes here, not the periodic plan.
         self.engine.config['upkeep_interval_s'] = 3600
-        self.client.configure_platform(chain(SOURCE, {**PATH, 'valid_for': 0.3}, keep=False))
-        # Not yet observed, and the coupling fades while the detector integrates: six readings of 0.15 s
-        # outlast the alignment's validity and its tolerance.
+        self.client.configure_platform(chain(SOURCE, {**PATH, 'valid_for': 1.5}, keep=False))
+        # Not yet observed, and the coupling fades while the detector integrates: six readings of 0.75 s
+        # outlast the alignment's validity and its tolerance, which two of them use up.
         WORLD['fade'] = 0.6
         self.addCleanup(WORLD.pop, 'fade')
-        steps = [{'id': 'scan', 'device': 'detector', 'operation': 'integrate', 'arguments': {'seconds': 0.15}, 'repeat': 6}]
+        steps = [{'id': 'scan', 'device': 'detector', 'operation': 'integrate', 'arguments': {'seconds': 0.75}, 'repeat': 6}]
         # One reserves what its steps use, and with it what keeps the alignment; one claims each instrument in turn.
         for resources in (['detector'], []):
             run = self.client.submit(steps, platform='chain', resources=resources, requires=['path.aligned'], upkeep=True)
@@ -229,11 +232,11 @@ class UpkeepCase(unittest.TestCase):
 
     def test_a_sweep_takes_again_the_points_a_drift_put_in_doubt(self):
         self.engine.config['upkeep_interval_s'] = 3600
-        self.client.configure_platform(chain(SOURCE, {**PATH, 'valid_for': 0.3}, keep=False))
+        self.client.configure_platform(chain(SOURCE, {**PATH, 'valid_for': 1.5}, keep=False))
         # The table is bumped during the third of six readings: the coupling halves until upkeep finds it.
         WORLD.update(bump=3, integrations=0)
         self.addCleanup(WORLD.pop, 'bump')
-        run = self.client.submit([{'id': 'scan', 'device': 'detector', 'operation': 'integrate', 'arguments': {'seconds': 0.15},
+        run = self.client.submit([{'id': 'scan', 'device': 'detector', 'operation': 'integrate', 'arguments': {'seconds': 0.5},
                                    'repeat': 6, 'retake': True}], platform='chain', requires=['path.aligned'], upkeep=True)
         info = run.wait(timeout=30)
         self.assertEqual(info['state'], 'completed')
@@ -321,6 +324,91 @@ class UpkeepCase(unittest.TestCase):
         events = self.client.request(f'/v1/events?run_id={run.id}&limit=1000')['events']
         self.assertEqual(sum(event['kind'] == 'upkeep.started' for event in events), 6)
         self.assertNotIn('detector.integrate', WORLD['log'])
+
+    def test_an_experiment_is_kept_for_as_long_as_it_has_nothing_to_start(self):
+        # Renewals are counted against an operation that is free to start. An experiment that is open with nothing
+        # to run, or whose operation waits for something another experiment holds, is kept for any time.
+        self.client.configure_platform(chain(SOURCE, {**PATH, 'valid_for': 1.5}, keep=False))
+
+        def passes(run):
+            events = self.client.request(f'/v1/events?run_id={run.id}&limit=1000')['events']
+            return sum(event['kind'] == 'upkeep.started' for event in events)
+        read = {'id': 'read', 'device': 'detector', 'operation': 'read'}
+        open_ = self.client.start_experiment(platform='chain', resources=['source', 'coupler', 'detector'],
+                                             requires=['path.aligned'], upkeep={'ahead_s': 0.5})
+        self.until(lambda: passes(open_) > RENEWALS, 30)
+        self.assertEqual(open_.batch([read])[0]['result']['signal'], 1.0)
+        open_.finish()
+        holder = self.client.start_experiment(resources=['sample'])
+        waiting = self.client.submit([{**read, 'resources': ['sample']}], platform='chain', requires=['path.aligned'],
+                                     upkeep={'ahead_s': 0.5})
+        self.until(lambda: passes(waiting) > RENEWALS, 30)
+        self.assertEqual([op['state'] for op in waiting.operations()['operations'] if op['step'] == 'read'], ['queued'])
+        holder.finish()
+        self.assertEqual(waiting.result(30)['read']['signal'], 1.0)
+
+    def test_retry_backoff_does_not_exhaust_condition_renewals(self):
+        self.client.configure_platform(chain(SOURCE, PATH, keep=False))
+        driver = self.engine.devices['detector']
+        original, attempts = driver.invoke, []
+
+        def once(operation, arguments, cancelled):
+            if operation == 'integrate':
+                attempts.append(operation)
+                if len(attempts) == 1:
+                    raise ValueError('Transient read failure')
+            return original(operation, arguments, cancelled)
+
+        with patch.object(driver, 'invoke', once):
+            run = self.client.submit([{'id': 'read', 'device': 'detector', 'operation': 'integrate',
+                                       'arguments': {'seconds': 0}, 'retry': {'times': 1, 'after_s': 60}}],
+                                     requires=['path.aligned'], upkeep=True)
+            self.until(lambda: any(op.get('retry_at') for op in run.operations()['operations']))
+            # Renew repeatedly during the backoff, without relying on a subsecond physical validity.
+            for _ in range(RENEWALS + 1):
+                self.client.invalidate(['path.aligned'], 'Renew during retry backoff')
+                self.until(lambda: self.states()['path.aligned'] == 'holds')
+            self.assertEqual(attempts, ['integrate'])
+            with self.engine.lock:
+                op = next(op for op in self.engine.operations.values() if op['run_id'] == run.id and op.get('retry_at'))
+                op['retry_at'] = '1970-01-01T00:00:00+00:00'
+                self.engine.wake.set()
+            self.assertEqual(run.wait(10)['state'], 'completed')
+            self.assertEqual(len(attempts), 2)
+
+    def test_downstream_steps_waiting_for_retakes_do_not_exhaust_condition_renewals(self):
+        self.client.configure_platform({**chain(SOURCE, PATH, keep=False), 'resources': [
+            {'id': 'sample', 'devices': ['detector'], 'operations': {'detector': ['integrate']}}]})
+        started, release = threading.Event(), threading.Event()
+        driver, original = self.engine.devices['aux'], self.engine.devices['aux'].invoke
+
+        def pause(operation, arguments, cancelled):
+            started.set()
+            if not release.wait(10):
+                raise TimeoutError('Test did not release the pause')
+            return original(operation, arguments, cancelled)
+
+        with patch.object(driver, 'invoke', pause):
+            run = self.client.submit([
+                {'id': 'scan', 'device': 'detector', 'operation': 'integrate', 'arguments': {'seconds': 0},
+                 'repeat': 1, 'retake': True},
+                {'id': 'pause', 'device': 'aux', 'operation': 'wait', 'arguments': {'duration': 0}, 'after': ['scan']},
+                {'id': 'tail', 'device': 'source', 'operation': 'read', 'after': ['pause']}],
+                requires=['path.aligned'], upkeep=True)
+            self.assertTrue(started.wait(10))
+            with self.client.start_experiment(resources=['sample']) as holder:
+                try:
+                    WORLD['alignment'] = 0.5
+                    self.client.invalidate(['path.aligned'], 'The table moved')
+                finally:
+                    release.set()
+                self.until(lambda: bool(self.engine.retaking.get(run.id)))
+                for _ in range(RENEWALS + 1):
+                    self.until(lambda: self.states()['path.aligned'] == 'holds')
+                    self.client.invalidate(['path.aligned'], 'Renew while a retake waits for its sample')
+                self.until(lambda: self.states()['path.aligned'] == 'holds')
+                self.assertEqual(next(op for op in run.operations()['operations'] if op['step'] == 'tail')['state'], 'queued')
+            self.assertEqual(run.wait(10)['state'], 'completed')
 
     def test_rejected_operations_do_not_start_instrument_maintenance(self):
         from ai4instruments.iop import batches

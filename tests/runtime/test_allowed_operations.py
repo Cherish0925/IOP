@@ -1,4 +1,5 @@
 """allowed_operations limits what experiments and agents can call on an instrument."""
+import copy
 import unittest
 from ai4instruments.iop import IOPError
 from . import test_service as fixture
@@ -27,6 +28,37 @@ class AllowedOperationsCase(unittest.TestCase):
             self.client.register(self.supply('read_*'))
         with self.assertRaisesRegex(IOPError, 'matches none'):
             self.client.register(self.supply(['nothing']))
+
+    def test_new_local_device_and_model_parameters_reject_ignored_constraints(self):
+        record = self.supply(['set_voltage'])
+        field = record['config']['operations']['set_voltage']['parameters']['volts']
+        field['max'] = field.pop('maximum')
+        with self.assertRaisesRegex(IOPError, r'set_voltage parameters.volts: unknown field max; use maximum'):
+            self.client.register(record)
+        self.assertNotIn('supply', self.engine.devices)
+        profile = {'id': 'supply-model', 'match': {'manufacturer': 'Example', 'model': 'Supply'},
+                   'config': {'operations': record['config']['operations']}}
+        with self.assertRaisesRegex(IOPError, 'unknown field max; use maximum'):
+            self.client.save_instrument_profile(profile)
+        self.assertEqual(self.client.instrument_catalog(id='supply-model')['profiles'], [])
+        self.client.register(self.supply(['set_voltage']))
+        current = self.client.device_history('supply')[0]
+        driver = self.engine.devices['supply']
+        with self.assertRaisesRegex(IOPError, 'unknown field max; use maximum'):
+            self.client.configure_device('supply', record, current['revision'])
+        self.assertIs(self.engine.devices['supply'], driver)
+        self.assertEqual(self.client.device_history('supply')[0], current)
+
+    def test_old_device_parameter_annotations_can_be_loaded_reconnected_and_reused(self):
+        record = self.supply(['set_voltage'])
+        record['config']['operations']['set_voltage']['parameters']['volts']['max'] = 5
+        # Restore the same path used by startup, including its saved configuration.
+        self.engine.config['devices'].append(copy.deepcopy(record))
+        self.engine.register(record, persist=False)
+        self.assertEqual(self.client.register(record)['operations']['set_voltage']['parameters']['volts']['max'], 5)
+        self.client.reconnect('supply')
+        current = self.client.device_history('supply')[0]
+        self.assertEqual(self.client.configure_device('supply', current['definition'], current['revision']), current)
 
     def test_configuration_change_and_reconnect_keep_the_limit(self):
         record = {'id': 'slide', 'driver': 'simulated', 'config': {'kind': 'stage'}, 'allowed_operations': ['position']}

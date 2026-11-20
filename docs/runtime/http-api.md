@@ -98,6 +98,8 @@ Batches default to input order. An explicit `after=[]` starts an independent bra
 
 The result maps step IDs to driver results. Step arguments follow the corresponding instrument description, including defaults, types, ranges and units.
 
+A submission and a step take the fields of the [workflow schema](../../iop/schema/workflow.schema.json) and no others, a single call takes `device`, `operation`, `arguments`, `request_id`, `resources`, `requirements` and `retry`, and a batch takes `steps` and `request_id`: a field that is not one of them is refused, so that a misspelt `requires` or `retry` never runs an experiment without it. What is refused names the step and, for a device, operation, condition or step that does not exist, the nearest names that do.
+
 ## Package
 
 ```json
@@ -191,6 +193,8 @@ The command adapter's operation context and HTTP asynchronous job descriptions a
 An instrument's `id` may be omitted on registration. The service generates and saves it; identical registrations reuse the same driver. `GET /v1/discovery?cached=true` reports the current background scan without starting another. `connections` retains raw interfaces, `groups` combines known aliases, and `summary` separates configurable interfaces from USB inventory. Windows `COMn` and `ASRLn::INSTR` are recognized as the same endpoint. A USB entry alone does not specify the device's command language.
 
 `GET /v1/operations/{id}?wait=25` waits for that operation to finish, or returns its current state after at most 25 seconds. Python and TypeScript clients use this path for calls inside experiment programs; they do not read the experiment's entire event history for each operation.
+
+`GET /v1/runs` lists experiments newest first, `limit` at a time. `search` keeps those whose name, project, experiment label, request ID, run ID or an instrument used contains the text, `state` those in one state (`queued`, `running`, `completed`, `failed`, `cancelled`, `interrupted`), and `before=<run ID>` lists older ones than that experiment. Python `client.runs(search, state=..., limit=..., before=...)`, TypeScript `client.runs({...})`, `iop runs --search ...` and the MCP tool `find_experiments` read the same.
 
 Use `GET /v1/runs?details=false` and `GET /v1/runs/{id}?details=false` for summaries. Results, operation lists, the uses of saved operations and sweeps, experiment definitions and full platform definitions are excluded before the response enters the application; `operation_states` counts the run's operations in each state, which shows how far a long sweep got. Read `/result` and cursor-paged `/operations` only when needed.
 
