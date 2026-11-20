@@ -159,7 +159,7 @@ class SCPI(Driver):
             raise ValueError("A text SCPI termination is required")
         self.protocol_source = None
         self._sync()
-        self.last_sent = 0.0
+        self.last_sent = float('-inf')
         transport = self.config.get('transport', 'tcp')
         required = {'tcp': 'host', 'serial': 'port', 'visa': 'resource'}
         if transport not in required:
@@ -261,8 +261,9 @@ class SCPI(Driver):
             raise ValueError("Use one text command per operation")
         try:
             self.connect()
-            wait = self.protocol['min_interval'] - (time.monotonic() - self.last_sent)
-            if wait > 0:
+            # perf_counter resolves the interval on every system. On Windows before Python 3.13 monotonic advances in
+            # steps of about 16 ms, and a command could leave that much before the interval had passed.
+            while (wait := self.protocol['min_interval'] - (time.perf_counter() - self.last_sent)) > 0:
                 time.sleep(wait)
             kind = self.config.get("transport", "tcp")
             self.transmitted = True
@@ -272,7 +273,7 @@ class SCPI(Driver):
                 self.connection.sendall((command + self.write_termination).encode(self.config.get("encoding", "ascii")))
             else:
                 self.connection.write((command + self.write_termination).encode(self.config.get("encoding", "ascii")))
-            self.last_sent = time.monotonic()
+            self.last_sent = time.perf_counter()
             if self.protocol['echo']:
                 echoed = self._line()
                 if echoed.strip() != command.strip():

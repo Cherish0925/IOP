@@ -25,7 +25,7 @@ class Controller(socketserver.StreamRequestHandler):
                 if not byte:
                     return
                 line += byte
-            server.gaps.append(time.monotonic())
+            server.gaps.append(time.perf_counter())
             command = line.decode().rstrip('\r')
             if server.echo:
                 self.send(command)
