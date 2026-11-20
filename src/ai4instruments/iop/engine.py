@@ -355,6 +355,13 @@ class Engine:
         """Whether an operation of this experiment is in progress."""
         return any(self.operations[oid]['run_id'] == run_id for oid in self.futures)
 
+    def startable(self, run_id):
+        """Whether an operation of this experiment could start now but for the conditions it relies on: it is
+        ready and its instruments are free."""
+        return any(not self.operations[oid].get('maintenance')
+                   and self.allocation.can_claim(run_id, self._amounts(self.operations[oid]))
+                   for oid in self.ready.get(run_id, ()))
+
     def doubt(self, run_id, condition_id, after, entry):
         """Its data may have been taken while a condition did not hold: mark each operation of this experiment
         that relied on the condition and was in progress after that moment, in its record and in memory."""

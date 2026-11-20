@@ -3,7 +3,7 @@ import time
 import unittest
 from datetime import datetime, timezone
 from ai4instruments.iop import IOPError
-from ai4instruments.iop.conditions import upkeep
+from ai4instruments.iop.conditions import RENEWALS, upkeep
 from . import test_service as fixture
 from .test_conditions import PATH, SOURCE, WORLD, Part
 
@@ -321,6 +321,28 @@ class UpkeepCase(unittest.TestCase):
         events = self.client.request(f'/v1/events?run_id={run.id}&limit=1000')['events']
         self.assertEqual(sum(event['kind'] == 'upkeep.started' for event in events), 6)
         self.assertNotIn('detector.integrate', WORLD['log'])
+
+    def test_an_experiment_is_kept_for_as_long_as_it_has_nothing_to_start(self):
+        # Renewals are counted against an operation that is free to start. An experiment that is open with nothing
+        # to run, or whose operation waits for something another experiment holds, is kept for any time.
+        self.client.configure_platform(chain(SOURCE, {**PATH, 'valid_for': 1.5}, keep=False))
+
+        def passes(run):
+            events = self.client.request(f'/v1/events?run_id={run.id}&limit=1000')['events']
+            return sum(event['kind'] == 'upkeep.started' for event in events)
+        read = {'id': 'read', 'device': 'detector', 'operation': 'read'}
+        open_ = self.client.start_experiment(platform='chain', resources=['source', 'coupler', 'detector'],
+                                             requires=['path.aligned'], upkeep={'ahead_s': 0.5})
+        self.until(lambda: passes(open_) > RENEWALS, 30)
+        self.assertEqual(open_.batch([read])[0]['result']['signal'], 1.0)
+        open_.finish()
+        holder = self.client.start_experiment(resources=['sample'])
+        waiting = self.client.submit([{**read, 'resources': ['sample']}], platform='chain', requires=['path.aligned'],
+                                     upkeep={'ahead_s': 0.5})
+        self.until(lambda: passes(waiting) > RENEWALS, 30)
+        self.assertEqual([op['state'] for op in waiting.operations()['operations'] if op['step'] == 'read'], ['queued'])
+        holder.finish()
+        self.assertEqual(waiting.result(30)['read']['signal'], 1.0)
 
     def test_rejected_operations_do_not_start_instrument_maintenance(self):
         from ai4instruments.iop import batches

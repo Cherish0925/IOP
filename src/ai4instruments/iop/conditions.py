@@ -417,7 +417,8 @@ class Conditions:
         self.stopping = threading.Event()
         # Per platform: when each condition was last attempted automatically, and what the last pass found.
         self.attempts, self.waiting = {}, {}
-        # Passes each experiment's upkeep has run in a row since one of its operations last started.
+        # Passes each experiment's upkeep started in a row while one of its operations was free to start and
+        # waited only for its conditions, since one last started.
         self.renewed = {}
         self.wake = threading.Event()
         self.index()
@@ -625,8 +626,9 @@ class Conditions:
             (relied if state['state'] == 'holds' else lacking)[condition_id] = state
         if lacking:
             text = '; '.join(f"{c} is {s['state']}" + (f" ({s['reason']})" if s.get('reason') else '') for c, s in lacking.items())
-            if self.renewed.get(run_id, 0) >= RENEWALS:
+            if self.renewed.pop(run_id, 0) >= RENEWALS:
                 # Upkeep restored them each time, and each time they came due before an operation could start.
+                # The operation after this one starts counting again.
                 raise RequestError('conditions_not_held', f'{text}, again after upkeep renewed what this experiment '
                                    f'requires {RENEWALS} times in a row without one of its operations starting. A validity '
                                    'shorter than the time from a verification to the next operation cannot be kept. '
@@ -1133,8 +1135,11 @@ class Conditions:
         """Inside an experiment that declares upkeep: start or join a pass when what it relies on needs one.
 
         Returns True while its operations wait: a pass runs in the experiment, or one is due and starts once
-        none of its operations is running. After RENEWALS passes in a row with no operation started between
-        them, no further pass starts: the next operation is refused with the reason.
+        none of its operations is running. A pass counts when it starts while an operation of the experiment is
+        free to start and waits only for its conditions. After RENEWALS such passes in a row with no operation
+        started between them, no further pass starts: that operation is refused with the reason. Passes that keep
+        the conditions of an experiment whose operations wait for an instrument, or which has none to run, do
+        not count: it may stay so for any time.
         """
         if not run.get('upkeep') or not names or run['kind'] != 'external' and run['state'] == 'queued':
             return False
@@ -1154,8 +1159,9 @@ class Conditions:
         if self.renewed.get(run['id'], 0) >= RENEWALS:
             return False
         try:
+            waits = self.engine.startable(run['id'])
             self._start(run['id'], list(plan['reasons']), plan, run_id=run['id'])
-            self.renewed[run['id']] = self.renewed.get(run['id'], 0) + 1
+            self.renewed[run['id']] = self.renewed.get(run['id'], 0) + 1 if waits else 0
         except RequestError as error:
             if error.code != 'maintenance_active':
                 self._wait(run['id'], str(error))
