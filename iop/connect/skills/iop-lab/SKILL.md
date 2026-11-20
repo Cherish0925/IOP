@@ -31,6 +31,7 @@ Each is short, with examples. Read one when the task needs it: `guide(topic)`, o
 | `arrays` | `read_array`: summaries, windows, maps, lines, crossings, fits |
 | `conditions` | What an experiment relies on: `requires`, maintenance, `upkeep`, data in doubt |
 | `experiments` | The three forms, following a run, failure and continuation, files, archives |
+| `programs` | Writing a research program: the package, the SDK inside it, saved progress |
 | `setup` | Describing an instrument, platforms, limits, manual steps, held resources |
 | `episodes` | Research trajectories for learning |
 

@@ -63,6 +63,7 @@ serve(p)
     client = new IOP(endpoint,config.token);
     await client.configureResources({cpu:4});
     assert.ok((await client.adapters()).some(item=>item.name==='command'));
+    assert.match(await client.guide('sweeps'), /^# Sweeps/);
     const catalog = await client.instrumentCatalog({model:'SR830'});
     assert.equal(catalog.total, 1);
     assert.ok(catalog.profiles[0].operations.includes('read_x'));

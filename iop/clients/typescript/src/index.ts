@@ -111,6 +111,10 @@ export class IOP {
   devicePage(offset = 0, limit = 100) { return this.request('/v1/context/devices?' + new URLSearchParams({offset:String(offset),limit:String(limit)})); }
   deviceHistory(device: string) { return this.request<{id: string; revision: number; definition: Record<string, unknown>}[]>(`/v1/devices/${encodeURIComponent(device)}/history`); }
   configureDevice(device: string, definition: Record<string, unknown>, expectedRevision: number) { return this.request(`/v1/devices/${encodeURIComponent(device)}/configuration`, { definition, expected_revision: expectedRevision }); }
+  /** How to work with this laboratory, as text: the working method, or one part of it with examples. */
+  async guide(topic: 'overview' | 'steps' | 'sweeps' | 'arrays' | 'conditions' | 'experiments' | 'programs' | 'setup' | 'episodes' = 'overview') {
+    return (await this.request<{ topic: string; text: string }>('/v1/guides/' + topic)).text;
+  }
   schema(name: 'device' | 'platform' | 'workflow' | 'instrument-profile' | 'operation') { return this.request<Record<string, unknown>>('/v1/schemas/' + name); }
   discover() { return this.request<Record<string, unknown>>('/v1/discovery'); }
   startDiscovery() { return this.request<Record<string, unknown>>('/v1/discovery', {}); }

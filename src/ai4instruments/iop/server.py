@@ -150,6 +150,10 @@ class Handler(BaseHTTPRequestHandler):
             elif parts == ['v1', 'context', 'devices'] and method == 'GET':
                 from .context import device_page
                 result = device_page(engine, query.get('offset', 0), query.get('limit', 100))
+            elif parts[:2] == ['v1', 'guides'] and len(parts) in (2, 3) and method == 'GET':
+                from .mcp import GUIDES, guide_text
+                result = {'guides': ['overview', *GUIDES], 'read': '/v1/guides/{topic}'} if len(parts) == 2 else \
+                    {'topic': parts[2], 'text': guide_text(parts[2])}
             elif len(parts) == 3 and parts[:2] == ['v1', 'schemas'] and method == 'GET':
                 from .context import schema_document
                 result = schema_document(parts[2])

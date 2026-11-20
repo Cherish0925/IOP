@@ -128,6 +128,16 @@ class MCPCase(unittest.TestCase):
         self.assertEqual({name for name in names if not any(f'`{name}' in text for text in texts.values())}, set())
         with self.assertRaisesRegex(ValueError, 'Unknown guide: wiring; choose from overview, steps'):
             mcp.guide_text('wiring')
+        # The program guide names what the SDK has, and its program is Python.
+        from ai4instruments.iop.client import Run
+        self.assertEqual({name for name in re.findall(r'run\.([a-z_]+)\(', texts['programs']) if not hasattr(Run, name)}, set())
+        for block in re.findall(r'```python\n(.*?)```', texts['programs'], re.S):
+            compile(block, 'programs guide', 'exec')
+        # Every interface reads the same text.
+        self.assertEqual(self.client.guide('sweeps'), texts['sweeps'])
+        self.assertEqual(self.client.request('/v1/guides')['guides'], ['overview', *mcp.GUIDES])
+        with self.assertRaisesRegex(IOPError, 'Unknown guide: wiring'):
+            self.client.guide('wiring')
         # What every turn carries stays small: descriptions point to the guides for the rest.
         listing = sum(len(json.dumps(tool.model_dump(by_alias=True, exclude_none=True), separators=(',', ':'))) for tool in tools)
         self.assertLess(listing, 24000)

@@ -17,7 +17,7 @@ AGENT_VALUES = 64
 # descriptions and the guide are always offered. Every tool belongs to exactly one toolset.
 ALWAYS = ('lab_context', 'describe_instrument', 'describe_platform', 'guide')
 # What an agent reads when a task needs it, so that tool descriptions, read on every turn, stay short.
-GUIDES = ('steps', 'sweeps', 'arrays', 'conditions', 'experiments', 'setup', 'episodes')
+GUIDES = ('steps', 'sweeps', 'arrays', 'conditions', 'experiments', 'programs', 'setup', 'episodes')
 TOOLSETS = {
     'setup': ('configuration_schema', 'register_instrument', 'instrument_configuration', 'register_instruments',
               'discover_instruments', 'identify_instrument', 'instrument_profiles', 'save_instrument_profile',
@@ -192,8 +192,8 @@ def create_server(client, *, http=False, selection=None):
         return client.platform(platform)
 
     @tool(annotations=read_only)
-    def guide(topic: Literal['overview', 'steps', 'sweeps', 'arrays', 'conditions', 'experiments', 'setup', 'episodes'] = 'overview') -> str:
-        """Read how to work here, with examples, when a task needs it. overview: the working method. steps: a step, order, bindings, saved operations. sweeps: sweep, repeat, until, seek, retry. arrays: what read_array returns. conditions: requires, upkeep, data in doubt. experiments: the three forms, following, continuing, saving. setup: describing instruments and platforms. episodes: research trajectories."""
+    def guide(topic: Literal['overview', 'steps', 'sweeps', 'arrays', 'conditions', 'experiments', 'programs', 'setup', 'episodes'] = 'overview') -> str:
+        """Read how to work here, with examples, when a task needs it. overview: the working method. steps: a step, order, bindings, saved operations. sweeps: sweep, repeat, until, seek, retry. arrays: what read_array returns. conditions: requires, upkeep, data in doubt. experiments: the three forms, following, continuing, saving. programs: writing a research program with the SDK. setup: describing instruments and platforms. episodes: research trajectories."""
         return guide_text(topic)
 
     @tool(annotations=read_only)

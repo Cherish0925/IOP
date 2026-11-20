@@ -134,6 +134,7 @@ def laboratory(engine, refresh=False, detail='summary'):
         'instrument_catalog': '/v1/instrument-catalog',
         'saved_operations': '/v1/library; a step without device uses one by name',
         'conditions': '/v1/conditions; requires names what an experiment relies on',
+        'guides': '/v1/guides lists them; /v1/guides/{topic} gives the working method (overview) or one part with examples',
     }
     # The three roles of operations: device operations are Basic; saved methods are Standard and Workflow.
     saved = engine.saved_operations()
