@@ -519,6 +519,12 @@ def create_server(client, *, http=False, selection=None):
         drop_titles(getattr(registered, 'parameters', None))
         if isinstance(getattr(registered, 'parameters', None), dict):
             optional(registered.parameters)
+        # An argument a tool does not take is refused. The SDK leaves it out without a word, so that
+        # submit_experiment with "require" for requires would run without requiring anything.
+        arguments = getattr(getattr(registered, 'fn_metadata', None), 'arg_model', None)
+        if arguments is not None:
+            arguments.model_config['extra'] = 'forbid'
+            arguments.model_rebuild(force=True)
 
     def prompt(toolset=None, **options):
         """Register a prompt a person starts work with, offered when the tools it names are."""

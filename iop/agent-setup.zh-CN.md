@@ -66,6 +66,8 @@ iop context --start
 | `download_file` | 将实验文件保存到 Agent 所在计算机 |
 | `save_experiment` | 将整个实验保存为一个 ZIP（记录、文件与 RO-Crate 说明）到 Agent 所在计算机 |
 
+工具不接受的参数会被拒绝，步骤和提交中不存在的字段也一样：拼错的 `requires` 或 `retry` 不会让实验在缺少它的情况下运行。
+
 MCP 资源 `iop://laboratory` 提供相同的实验室说明。提交工具立即返回，不需要等待整个实验结束。操作记录每页最多 100 条，下一次查询使用返回的 cursor；大型数据通过文件获取。
 
 ### 指南

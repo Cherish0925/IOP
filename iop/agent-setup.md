@@ -66,6 +66,8 @@ An individual instrument can operate without a platform. A platform records rela
 | `download_file` | Save an experiment output on the MCP host |
 | `save_experiment` | Save a whole experiment as one ZIP on the MCP host: records, files and an RO-Crate description |
 
+An argument a tool does not take is refused, as is a field a step or a submission does not take: a misspelt `requires` or `retry` never runs an experiment without it.
+
 `iop://laboratory` exposes the same context as an MCP resource. Submissions return immediately. `experiment` returns at most 100 operations per page; pass the returned cursor as `after`. Retrieve large data through output files.
 
 ### Guides

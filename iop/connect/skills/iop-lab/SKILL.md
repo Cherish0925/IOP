@@ -39,6 +39,7 @@ Each is short, with examples. Read one when the task needs it: `guide(topic)`, o
 
 - Record what was observed: `resolve_resources` takes the instrument state that was seen, `report_manual_step` what the person stated.
 - A failed operation retains its record when continued under the same experiment. An unknown instrument outcome keeps its resources held until the instrument state is observed and resolved; it is not retried automatically.
+- Nothing asked for is left out without a word: a tool argument, a submission field or a step field that does not exist is refused, and what is refused names the step and the nearest names that exist.
 - Timing that needs a hardware clock or trigger stays on the instrument.
 - Paths of programs, downloads and archives are on the computer that runs this connection.
 - A run ID belongs to the service that issued it; keep the method's name beside it.

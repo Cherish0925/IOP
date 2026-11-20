@@ -143,6 +143,20 @@ class MCPCase(unittest.TestCase):
         self.assertLess(listing, 24000)
         self.assertLess(len(server.instructions), 900)
 
+    def test_an_argument_a_tool_does_not_take_is_refused(self):
+        import asyncio
+        from ai4instruments.iop import mcp
+        server = mcp.create_server(self.client)
+        steps = [{'id': 'read', 'device': 'stage', 'operation': 'position'}]
+        # Left out without a word, require for requires would run the experiment without requiring anything.
+        for tool, arguments, extra in (('submit_experiment', {'steps': steps, 'request_id': 'misspelt', 'require': ['aligned']}, 'require'),
+                                       ('lab_context', {'refesh': True}, 'refesh')):
+            with self.assertRaisesRegex(Exception, extra + r'\s+Extra inputs are not permitted'):
+                asyncio.run(server.call_tool(tool, arguments))
+        self.assertEqual(self.client.request('/v1/runs'), [])
+        for tool in asyncio.run(server.list_tools()):
+            self.assertEqual(server._tool_manager.get_tool(tool.name).fn_metadata.arg_model.model_config['extra'], 'forbid', tool.name)
+
     def test_prompts_start_work_with_the_tools_offered(self):
         import asyncio
         import re
