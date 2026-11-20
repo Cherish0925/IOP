@@ -161,14 +161,15 @@ class UpkeepCase(unittest.TestCase):
     def test_an_experiment_keeps_what_it_relies_on_before_its_operations(self):
         # Only the operations of the experiment start passes here, not the periodic plan.
         self.engine.config['upkeep_interval_s'] = 3600
-        self.client.configure_platform(chain(SOURCE, {**PATH, 'valid_for': 0.4}, keep=False))
+        # A validity a slow machine can keep: a pass and the start of the next operation fit in it several times.
+        self.client.configure_platform(chain(SOURCE, {**PATH, 'valid_for': 1.5}, keep=False))
         # Not yet observed: the experiment is accepted and its conditions are brought up inside it first.
         experiment = self.client.start_experiment(platform='chain', resources=['source', 'coupler', 'detector'],
                                                   requires=['path.aligned'], upkeep=True)
         read = [{'id': 'read', 'device': 'detector', 'operation': 'read'}]
         self.assertEqual(experiment.batch(read)[0]['result']['signal'], 1.0)
         # The validity ran out and the coupling drifted: the next operation waits while the Runtime restores it.
-        time.sleep(0.45)
+        time.sleep(1.6)
         WORLD['alignment'] = 0.5
         self.assertEqual(experiment.batch(read)[0]['result']['signal'], 1.0)
         info = experiment.info()
@@ -197,12 +198,12 @@ class UpkeepCase(unittest.TestCase):
     def test_a_step_graph_keeps_what_it_relies_on_between_its_operations(self):
         # Only the step graph starts passes here, not the periodic plan.
         self.engine.config['upkeep_interval_s'] = 3600
-        self.client.configure_platform(chain(SOURCE, {**PATH, 'valid_for': 0.3}, keep=False))
-        # Not yet observed, and the coupling fades while the detector integrates: six readings of 0.15 s
-        # outlast the alignment's validity and its tolerance.
+        self.client.configure_platform(chain(SOURCE, {**PATH, 'valid_for': 1.5}, keep=False))
+        # Not yet observed, and the coupling fades while the detector integrates: six readings of 0.75 s
+        # outlast the alignment's validity and its tolerance, which two of them use up.
         WORLD['fade'] = 0.6
         self.addCleanup(WORLD.pop, 'fade')
-        steps = [{'id': 'scan', 'device': 'detector', 'operation': 'integrate', 'arguments': {'seconds': 0.15}, 'repeat': 6}]
+        steps = [{'id': 'scan', 'device': 'detector', 'operation': 'integrate', 'arguments': {'seconds': 0.75}, 'repeat': 6}]
         # One reserves what its steps use, and with it what keeps the alignment; one claims each instrument in turn.
         for resources in (['detector'], []):
             run = self.client.submit(steps, platform='chain', resources=resources, requires=['path.aligned'], upkeep=True)
@@ -229,11 +230,11 @@ class UpkeepCase(unittest.TestCase):
 
     def test_a_sweep_takes_again_the_points_a_drift_put_in_doubt(self):
         self.engine.config['upkeep_interval_s'] = 3600
-        self.client.configure_platform(chain(SOURCE, {**PATH, 'valid_for': 0.3}, keep=False))
+        self.client.configure_platform(chain(SOURCE, {**PATH, 'valid_for': 1.5}, keep=False))
         # The table is bumped during the third of six readings: the coupling halves until upkeep finds it.
         WORLD.update(bump=3, integrations=0)
         self.addCleanup(WORLD.pop, 'bump')
-        run = self.client.submit([{'id': 'scan', 'device': 'detector', 'operation': 'integrate', 'arguments': {'seconds': 0.15},
+        run = self.client.submit([{'id': 'scan', 'device': 'detector', 'operation': 'integrate', 'arguments': {'seconds': 0.5},
                                    'repeat': 6, 'retake': True}], platform='chain', requires=['path.aligned'], upkeep=True)
         info = run.wait(timeout=30)
         self.assertEqual(info['state'], 'completed')
