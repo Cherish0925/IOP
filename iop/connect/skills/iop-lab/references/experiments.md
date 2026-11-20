@@ -14,6 +14,8 @@ In a continuous experiment reserve every instrument and shared resource the work
 
 Choose `request_id` before submitting. A reply with a run ID means the service accepted the work; it continues when this connection closes. After a lost reply repeat the identical request with the same `request_id`: the original record returns and nothing runs twice.
 
+Give an experiment a `name` that says what it measures and a `project` for the line of work it belongs to. A run ID lost with the conversation is then found again: `find_experiments(search)` lists experiments newest first whose name, project, `request_id` or an instrument used contains the text; `state` narrows it, e.g. to `interrupted`.
+
 ## Following
 
 - `experiment_updates(run_id, after=cursor, wait=25)` returns what changed, including completion of operations seen earlier; keep its cursor and read again while `has_more` is true.

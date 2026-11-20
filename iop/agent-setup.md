@@ -58,6 +58,7 @@ An individual instrument can operate without a platform. A platform records rela
 | `submit_experiment` | Submit a graph of instrument operations and dependencies |
 | `submit_program` | Upload a directory or ZIP from the MCP host for service execution |
 | `experiment` | Status, paged operations, output files and optional result |
+| `find_experiments` | Experiments newest first, found again by name, project, request ID, instrument or state |
 | `cancel_experiment` | Request cancellation |
 | `reconnect_instrument` | Reconnect a device or a previously unavailable SDK |
 | `resolve_resources` | Record observed instrument state and return interrupted resources to use |
@@ -94,11 +95,11 @@ Hosts that cap the number of tools, or carry every tool description in each requ
 | Toolset | Tools | For |
 | --- | --- | --- |
 | `setup` | 12 | Registering instruments, model descriptions, platforms and resources |
-| `experiments` | 20 | Saved operations, operating conditions, experiments, batches, acquisitions, programs, results and files |
+| `experiments` | 21 | Saved operations, operating conditions, experiments, batches, acquisitions, programs, results and files |
 | `attention` | 5 | Reconnecting and releasing instruments, held resources and manual steps |
 | `episodes` | 3 | Research episodes and transitions |
 
-All four (44 tools, about 23 kB of descriptions and parameters) are the default. `experiments,attention` offers 29 tools in about 17 kB for a laboratory that is already set up.
+All four (45 tools, about 24 kB of descriptions and parameters) are the default. `experiments,attention` offers 30 tools in about 18 kB for a laboratory that is already set up.
 
 ## Remote service
 

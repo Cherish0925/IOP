@@ -263,7 +263,9 @@ class Handler(BaseHTTPRequestHandler):
                 result = engine.request_scan() if method == 'POST' else engine.inventory() if query.get('cached') == 'true' else engine.scan()
                 result['registered'] = list(engine.descriptions.values())
             elif parts == ['v1','runs']:
-                result = engine.submit(body) if method == 'POST' else engine.store.list('runs', limit=int(query.get('limit',100)), summary=query.get('details') == 'false')
+                result = engine.submit(body) if method == 'POST' else engine.store.list(
+                    'runs', limit=int(query.get('limit', 100)), summary=query.get('details') == 'false',
+                    search=query.get('search'), state=query.get('state'), before=query.get('before'))
             elif parts == ['v1','packages'] and method == 'POST':
                 data = base64.b64decode(body.pop('archive'), validate=True)
                 result = engine.submit(body, data)

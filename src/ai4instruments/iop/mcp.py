@@ -26,7 +26,8 @@ TOOLSETS = {
               'retry_instrument_discovery', 'available_adapters', 'configure_platform', 'configure_resources'),
     'experiments': ('saved_operations', 'operating_conditions', 'run_procedure', 'submit_experiment', 'start_experiment', 'invoke_operation',
                     'finish_experiment', 'submit_operations', 'save_acquisition', 'submit_program', 'continue_program',
-                    'experiment', 'cancel_experiment', 'experiment_updates', 'experiment_files', 'operation_result', 'read_array',
+                    'experiment', 'find_experiments', 'cancel_experiment', 'experiment_updates', 'experiment_files',
+                    'operation_result', 'read_array',
                     'save_experiment_file', 'download_file', 'save_experiment'),
     'attention': ('reconnect_instrument', 'release_instrument', 'resolve_resources', 'manual_tasks', 'report_manual_step'),
     'episodes': ('begin_episode', 'record_transition', 'research_episodes'),
@@ -63,6 +64,11 @@ def compact(value, values=False):
 # Fields of an operation that an experiment overview needs; operation_result returns the full record.
 OVERVIEW_FIELDS = ('id', 'step', 'device', 'operation', 'arguments', 'state', 'ended', 'error', 'outcome_unknown',
                    'calibration_expired', 'maintenance', 'in_doubt', 'retakes', 'retaken_by', 'attempts', 'result', 'files')
+
+
+# What tells one experiment from another when it is looked for; experiment reads the rest.
+FOUND_FIELDS = ('id', 'name', 'project', 'experiment', 'request_id', 'kind', 'state', 'created', 'ended', 'operation_count',
+                'involved_resources')
 
 
 def drop_titles(schema):
@@ -174,7 +180,7 @@ def create_server(client, *, http=False, selection=None):
     # A refresh lists connections without opening them, so the overview stays a read.
     @tool(annotations=read_only)
     def lab_context(refresh: bool = False, after: int | None = None, device_offset: int | None = None) -> dict:
-        """Read a compact laboratory overview. Pass its cursor as after on subsequent reads to receive only changes. Device and platform descriptions are fetched when needed."""
+        """Read a compact laboratory overview. Pass its cursor as after on later reads to receive only changes."""
         if device_offset is not None:
             return client.device_page(device_offset)
         if after is not None:
@@ -193,7 +199,7 @@ def create_server(client, *, http=False, selection=None):
 
     @tool(annotations=read_only)
     def describe_platform(platform: str) -> dict:
-        """Read a platform's devices, wiring, shared resources, procedures and revision. timing.arm_order is a receiver-before-source suggestion, or null for feedback wiring. Use the platform procedure and device requirements for initialization."""
+        """Read a platform's devices, wiring, shared resources, procedures and revision. timing.arm_order is a receiver-before-source suggestion, or null for feedback wiring."""
         return client.platform(platform)
 
     @tool(annotations=read_only)
@@ -294,7 +300,7 @@ def create_server(client, *, http=False, selection=None):
         return client.procedure(platform, procedure, request_id).info(details=False)
 
     @tool()
-    def submit_experiment(steps: list[dict], request_id: str, name: str = 'Experiment',
+    def submit_experiment(steps: list[dict], request_id: str, name: str = 'Experiment', project: str | None = None,
                           platform: str | None = None, resources: list[str] | None = None,
                           requirements: dict[str, int] | None = None, requires: list[str] | None = None,
                           upkeep: bool = False, preview: bool = False) -> dict:
@@ -302,17 +308,17 @@ def create_server(client, *, http=False, selection=None):
         if preview:
             return client.preview(steps, platform=platform, resources=resources or [], requirements=requirements,
                                   requires=requires or (), upkeep=upkeep or None)
-        return client.submit(steps, name=name, platform=platform, resources=resources or [],
+        return client.submit(steps, name=name, project=project, platform=platform, resources=resources or [],
                              requirements=requirements, request_id=request_id, requires=requires or (),
                              upkeep=upkeep or None).info(details=False)
 
     @tool()
-    def start_experiment(request_id: str, name: str = 'Experiment', platform: str | None = None,
-                         resources: list[str] | None = None, parameters: dict | None = None,
+    def start_experiment(request_id: str, name: str = 'Experiment', project: str | None = None,
+                         platform: str | None = None, resources: list[str] | None = None, parameters: dict | None = None,
                          requirements: dict[str, int] | None = None, requires: list[str] | None = None,
                          upkeep: bool = False) -> dict:
         """Start one experiment for successive decisions: then submit_operations or invoke_operation, and finish_experiment at the end. Reserve every instrument and shared resource the work depends on in resources. It stays open across connections until finished or cancelled. requires names the conditions it relies on and upkeep=true has the Runtime keep them between operations: guide("conditions")."""
-        return client.start_experiment(request_id=request_id, name=name, platform=platform,
+        return client.start_experiment(request_id=request_id, name=name, project=project, platform=platform,
                                        resources=resources or [], parameters=parameters, requirements=requirements,
                                        requires=requires or (), upkeep=upkeep or None).info(details=False)
 
@@ -361,18 +367,18 @@ def create_server(client, *, http=False, selection=None):
     @tool()
     def begin_episode(run_id: str, episode_id: str, task: dict, observation: Any,
                       policy: dict | None = None, seed: int | None = None, info: dict | None = None) -> dict:
-        """Save a task's initial observation inside an experiment. task and optional policy need id/version. Does not reset instruments. Requires IOP 0.8.6."""
+        """Save a task's initial observation inside an experiment. task and optional policy need id/version. Does not reset instruments."""
         return client.run(run_id).begin_episode(episode_id, task=task, observation=observation,
                                                 policy=policy, seed=seed, info=info).info()
 
     @tool()
     def record_transition(run_id: str, episode_id: str, transition: dict) -> dict:
-        """Save sequence, action, observation, reward (or null), terminated, truncated, operation_ids and optional info. IDs must name completed operations in this run. Repeating an identical sequence returns its saved record. Requires IOP 0.8.6."""
+        """Save sequence, action, observation, reward (or null), terminated, truncated, operation_ids and optional info. IDs must name completed operations in this run. Repeating an identical sequence returns its saved record."""
         return client.request('/v1/runs/' + quote(run_id, safe='') + '/episodes/' + quote(episode_id, safe='') + '/transitions', transition)
 
     @tool(annotations=read_only)
     def research_episodes(run_id: str, episode_id: str | None = None, after: int = -1, offset: int = 0) -> dict:
-        """List research episodes, or read one episode and a page of transitions. Continue from the returned cursor. Requires IOP 0.8.6."""
+        """List research episodes, or read one episode and a page of transitions. Continue from the returned cursor."""
         run = client.run(run_id)
         if episode_id is None:
             return run.episodes(offset=offset)
@@ -389,12 +395,12 @@ def create_server(client, *, http=False, selection=None):
         """Save a UTF-8 result or analysis file, optionally linked to completed operations in this experiment. Use the SDK's binary upload for large measurement arrays."""
         return client.run(run_id).save_file(name, text, operation_ids=operation_ids or [])
 
-    def submit_program(path: str, request_id: str, platform: str | None = None,
-                       resources: list[str] | None = None, parameters: dict | None = None,
+    def submit_program(path: str, request_id: str, name: str | None = None, project: str | None = None,
+                       platform: str | None = None, resources: list[str] | None = None, parameters: dict | None = None,
                        requirements: dict[str, int] | None = None) -> dict:
-        """Upload an experiment directory or ZIP from this MCP host to the instrument service. The service executes it independently of the agent connection."""
-        return client.submit_package(Path(path).expanduser(), request_id=request_id, platform=platform,
-                                     resources=resources or [], parameters=parameters,
+        """Upload an experiment directory or ZIP from this MCP host to the instrument service, which runs it independently of this connection."""
+        return client.submit_package(Path(path).expanduser(), request_id=request_id, name=name, project=project,
+                                     platform=platform, resources=resources or [], parameters=parameters,
                                      requirements=requirements).info(details=False)
 
     @tool(annotations=read_only)
@@ -412,6 +418,15 @@ def create_server(client, *, http=False, selection=None):
                               'removed; guide("experiments")')
         return result
 
+    @tool(annotations=read_only)
+    def find_experiments(search: str | None = None, state: str | None = None, limit: int = 20,
+                         before: str | None = None) -> dict:
+        """Find experiments, newest first, by text in their name, project, experiment label, request_id or an instrument used, and by state: queued, running, completed, failed, cancelled, interrupted. Pass the returned before for older ones."""
+        limit = max(1, min(int(limit), 100))
+        found = client.runs(search, state=state, limit=limit, before=before)
+        listed = [{key: run[key] for key in FOUND_FIELDS if run.get(key) not in (None, [], {})} for run in found]
+        return {'experiments': listed, **({'before': found[-1]['id']} if len(found) == limit else {})}
+
     @tool()
     def cancel_experiment(run_id: str) -> dict:
         """Request cancellation. In-flight instrument operations finish or report their actual cancellation before their resources are released."""
@@ -419,7 +434,7 @@ def create_server(client, *, http=False, selection=None):
 
     @tool(annotations=read_only)
     def experiment_updates(run_id: str, after: int = 0, limit: int = 100, wait: float = 0) -> dict:
-        """Read changes and operation states since cursor, including completion of previously queued work. Pass wait up to 25 seconds to wait for a change. Arrays stay at operation/result URLs. Continue immediately while has_more is true; retain cursor across reconnects."""
+        """Read what changed in an experiment since a cursor: its state and the operations that started or ended. wait up to 25 seconds waits for a change. Continue at once while has_more is true; keep the cursor across reconnects."""
         return client.run(run_id).updates(after, limit, wait)
 
     @tool(annotations=read_only)

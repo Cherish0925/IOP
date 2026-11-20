@@ -58,6 +58,7 @@ iop context --start
 | `submit_experiment` | 提交具有串并行依赖的仪器操作 |
 | `submit_program` | 将 Agent 所在计算机上的目录或 ZIP 上传给服务运行 |
 | `experiment` | 读取状态、分页操作记录、文件和结果 |
+| `find_experiments` | 按名称、项目、请求 ID、仪器或状态重新找到实验，最新的在前 |
 | `cancel_experiment` | 请求取消实验 |
 | `reconnect_instrument` | 重新连接设备或此前无法加载的 SDK |
 | `resolve_resources` | 记录设备当前状态，恢复使用被中断操作占用的资源 |
@@ -94,11 +95,11 @@ MCP 资源 `iop://laboratory` 提供相同的实验室说明。提交工具立�
 | 工具集 | 工具数 | 用途 |
 | --- | --- | --- |
 | `setup` | 12 | 登记仪器、型号描述、平台和资源 |
-| `experiments` | 20 | 已保存的操作、工作条件、实验、批次、采集、程序、结果和文件 |
+| `experiments` | 21 | 已保存的操作、工作条件、实验、批次、采集、程序、结果和文件 |
 | `attention` | 5 | 重连和释放仪器、挂起的资源、人工步骤 |
 | `episodes` | 3 | 研究回合与转移记录 |
 
-默认四个全部加载（44 个工具，说明和参数约 23 kB）。已完成配置的实验室用 `experiments,attention`：29 个工具，约 17 kB。
+默认四个全部加载（45 个工具，说明和参数约 24 kB）。已完成配置的实验室用 `experiments,attention`：30 个工具，约 18 kB。
 
 ## 连接远端实验室
 

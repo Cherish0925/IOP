@@ -365,6 +365,14 @@ class Client:
     def run(self, run_id):
         return Run(self, run_id)
 
+    def runs(self, search=None, *, state=None, limit=20, before=None):
+        """Find experiments, newest first, as summaries. ``search`` is text the name, project, experiment label,
+        request ID, ID or an instrument used contains; ``state`` is queued, running, completed, failed, cancelled
+        or interrupted; ``before`` is the ID of an experiment, to list older ones than."""
+        chosen = {'search': search, 'state': state, 'before': before}
+        return self.request('/v1/runs?' + urlencode({'details': 'false', 'limit': limit,
+                                                    **{key: value for key, value in chosen.items() if value}}))
+
     def current_run(self):
         return Run(self, os.environ['IOP_RUN_ID'])
 

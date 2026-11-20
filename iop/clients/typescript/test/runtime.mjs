@@ -69,6 +69,8 @@ serve(p)
     assert.ok(catalog.profiles[0].operations.includes('read_x'));
     const run = await client.submitPackage(new Uint8Array(await readFile(join(home,'package.zip'))),{resources:['stage']});
     assert.equal((await run.wait()).state, 'failed');
+    assert.deepEqual((await client.runs({search:'device:stage',state:'failed'})).map(found=>found.id), [run.id]);
+    assert.deepEqual(await client.runs({search:'nothing-named-so'}), []);
     assert.equal((await run.checkpoints()).main.state.next, 0);
     assert.equal((await run.resume('next-attempt')).attempt, 2);
     assert.deepEqual(await run.result(),{angle:0});

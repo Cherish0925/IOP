@@ -222,6 +222,12 @@ export class IOP {
     return this.run(record.id);
   }
   run(id: string) { return new Run(this, id); }
+  /** Find experiments, newest first, as summaries: search is text the name, project, experiment label, request ID, ID or an instrument used contains; before is the ID of an experiment, to list older ones than. */
+  runs(options: { search?: string; state?: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted'; limit?: number; before?: string } = {}) {
+    const params = new URLSearchParams({ details: 'false', limit: String(options.limit ?? 20) });
+    for (const key of ['search', 'state', 'before'] as const) if (options[key]) params.set(key, options[key]);
+    return this.request<RunRecord[]>('/v1/runs?' + params);
+  }
   events(after = 0, runId?: string, wait = 0, signal?: AbortSignal) {
     const params = new URLSearchParams({ after: String(after), wait: String(wait) });
     if (runId) params.set('run_id', runId);

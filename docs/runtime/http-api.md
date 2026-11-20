@@ -194,6 +194,8 @@ An instrument's `id` may be omitted on registration. The service generates and s
 
 `GET /v1/operations/{id}?wait=25` waits for that operation to finish, or returns its current state after at most 25 seconds. Python and TypeScript clients use this path for calls inside experiment programs; they do not read the experiment's entire event history for each operation.
 
+`GET /v1/runs` lists experiments newest first, `limit` at a time. `search` keeps those whose name, project, experiment label, request ID, run ID or an instrument used contains the text, `state` those in one state (`queued`, `running`, `completed`, `failed`, `cancelled`, `interrupted`), and `before=<run ID>` lists older ones than that experiment. Python `client.runs(search, state=..., limit=..., before=...)`, TypeScript `client.runs({...})`, `iop runs --search ...` and the MCP tool `find_experiments` read the same.
+
 Use `GET /v1/runs?details=false` and `GET /v1/runs/{id}?details=false` for summaries. Results, operation lists, the uses of saved operations and sweeps, experiment definitions and full platform definitions are excluded before the response enters the application; `operation_states` counts the run's operations in each state, which shows how far a long sweep got. Read `/result` and cursor-paged `/operations` only when needed.
 
 ## Instrument discovery records

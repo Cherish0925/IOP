@@ -16,7 +16,7 @@ The laboratory is a service that keeps instruments, platforms, methods, experime
    - steps known in advance: `submit_experiment`, a step graph; scans, searches and stops are options of a step;
    - a decision between steps: `start_experiment`, then `submit_operations` or `invoke_operation` with `wait=25`, then `finish_experiment`;
    - an algorithm: `submit_program`, which runs beside the instruments.
-5. Submit once with a `request_id` you choose, and keep the run ID. After a lost reply, repeat the identical request with the same `request_id`.
+5. Submit once with a `request_id` you choose and a `name` that says what it is, and keep the run ID. After a lost reply, repeat the identical request with the same `request_id`; in a later conversation, `find_experiments` finds the experiment again.
 6. Read results where they lie: `experiment_updates`, `experiment`, `operation_result`, `read_array`. Save what was acquired with `save_acquisition`; do not acquire again to save.
 7. When an experiment failed or was interrupted, read why, remove the cause and continue it with `continue_program`: what completed keeps its results.
 

@@ -157,6 +157,47 @@ class MCPCase(unittest.TestCase):
         for tool in asyncio.run(server.list_tools()):
             self.assertEqual(server._tool_manager.get_tool(tool.name).fn_metadata.arg_model.model_config['extra'], 'forbid', tool.name)
 
+    def test_experiments_are_found_again_by_what_they_were_named_and_used(self):
+        import asyncio
+        from ai4instruments.iop import mcp
+        server = mcp.create_server(self.client)
+
+        def call(name, arguments):
+            found = asyncio.run(server.call_tool(name, arguments))
+            return json.loads((found[0] if isinstance(found, tuple) else getattr(found, 'content', found))[0].text)
+        scan = call('submit_experiment', {'steps': [{'id': 'scan', 'device': 'stage', 'operation': 'move_to',
+                                                     'sweep': {'angle_deg': [1, 2]}}],
+                                          'request_id': 'linewidth-a', 'name': 'Linewidth scan', 'project': 'laser'})
+        named = self.client.submit([{'id': 'read', 'device': 'aux', 'operation': 'position'}], name='线宽扫描', project='激光器')
+        self.client.run(scan['id']).result(10), named.result(10)
+        held = call('start_experiment', {'request_id': 'by-hand', 'project': 'laser', 'resources': ['stage']})
+
+        def found(*args, **kwargs):
+            return [run['id'] for run in self.client.runs(*args, **kwargs)]
+        # Newest first; text in the name, project, request ID, ID or an instrument used, whatever its case.
+        self.assertEqual(found(), [held['id'], named.id, scan['id']])
+        self.assertEqual((found('LINEWIDTH'), found('线宽'), found('激光')), ([scan['id']], [named.id], [named.id]))
+        self.assertEqual((found('laser'), found('device:aux'), found(scan['id'][4:14])),
+                         ([held['id'], scan['id']], [named.id], [scan['id']]))
+        self.assertEqual((found(state='completed'), found('laser', state='running'), found(before=named.id)),
+                         ([named.id, scan['id']], [held['id']], [scan['id']]))
+        self.assertNotIn('result', self.client.runs('linewidth')[0])
+        with self.assertRaisesRegex(IOPError, 'state is one of queued, running, completed, failed, cancelled, interrupted'):
+            self.client.runs(state='done')
+        with self.assertRaisesRegex(IOPError, 'run_missing'):
+            self.client.runs(before='run_missing')
+        # An agent reads what tells one from another, and the ID to pass for older ones.
+        listed = call('find_experiments', {'search': 'laser', 'limit': 1})
+        self.assertEqual({key: listed['experiments'][0].get(key) for key in ('id', 'name', 'project', 'request_id', 'kind', 'state')},
+                         {'id': held['id'], 'name': 'Experiment', 'project': 'laser', 'request_id': 'by-hand',
+                          'kind': 'external', 'state': 'running'})
+        self.assertEqual(listed['before'], held['id'])
+        older = call('find_experiments', {'search': 'laser', 'limit': 1, 'before': listed['before']})
+        self.assertEqual((older['experiments'][0]['id'], older['experiments'][0]['involved_resources']),
+                         (scan['id'], ['device:stage']))
+        self.assertNotIn('before', call('find_experiments', {'search': 'laser'}))
+        self.client.run(held['id']).finish()
+
     def test_prompts_start_work_with_the_tools_offered(self):
         import asyncio
         import re
@@ -372,6 +413,12 @@ class MCPCase(unittest.TestCase):
                 self.assertEqual(call('operating_conditions', {'condition':'aux.in_range'})['statistics']['verifications'], 1)
                 due = call('operating_conditions', {'invalidate':'the mount was touched', 'conditions':['aux.in_range']})
                 self.assertEqual((due[0]['state'], due[0]['reason']), ('due', 'the mount was touched'))
+                # A program is named as the other forms of experiment are, and found by it.
+                with tempfile.TemporaryDirectory() as folder:
+                    Path(folder, 'experiment.py').write_bytes(b'')
+                    program = {'path': folder, 'request_id': 'mcp-program', 'name': 'Dark count', 'project': 'detector'}
+                    submitted = call('submit_program', program)
+                self.assertEqual(call('find_experiments', {'search': 'detector'})['experiments'][0]['id'], submitted['id'])
                 accepted = call('submit_experiment', {'steps':[{'id':'wait', 'device':'aux', 'operation':'wait',
                                  'arguments':{'duration':0.5}}], 'request_id':'continue-after-agent'})
                 process.stdin.close()
