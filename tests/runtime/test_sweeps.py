@@ -779,6 +779,13 @@ class SweepCase(unittest.TestCase):
             self.assertEqual(gathered['angle']['data']['axes'], [{'name': 'angle', 'start': 10.0, 'step': 10.0, 'unit': 'deg'}])
             seen = run.read_array('call.power', request_id='two-angles')
             self.assertEqual((seen['request_id'], seen['summary']['min_at']), ('two-angles', 20.0))
+            # The other options of a step apply to a use too: three readings at each angle, and a search for the best.
+            thrice = run.call('axis.measure', {'axis': 'stage'}, sweep={'angle': [10, 20]}, repeat=3)
+            self.assertEqual(thrice['power']['data']['shape'], [2, 3])
+            sought = run.call('axis.measure', {'axis': 'stage'}, retry={'times': 1},
+                              seek={'maximize': ['power'], 'over': {'angle': {'minimum': -60, 'maximum': 30, 'step': 8, 'start': 20}}})
+            self.assertEqual((sought['best']['at'], sought['best']['reading']), ({'angle': 0}, 1.0))
+            self.assertEqual(sought['positions']['angle']['values'][:4], [20, 28, 12, 4])
 
     def test_an_experiment_is_saved_as_one_archive(self):
         with self.client.start_experiment(name='Two angles', resources=['stage', 'meter']) as run:

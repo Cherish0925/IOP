@@ -305,9 +305,12 @@ export class Run {
     return this.client.maintain({ conditions, runId: this.id, ...options });
   }
   /** Use a saved operation and return its named result; with sweep, at each point, its named results gathered into arrays, stopping early with until. */
-  async call(operation: string, args: Record<string, unknown> = {}, options: { requestId?: string; signal?: AbortSignal; sweep?: Sweep; until?: Until } = {}) {
+  /** Use a saved operation in this experiment and return its named result; the options of a step apply: sweep, repeat, until, seek and retry. */
+  async call(operation: string, args: Record<string, unknown> = {}, options: { requestId?: string; signal?: AbortSignal } & Pick<Step, 'sweep' | 'repeat' | 'until' | 'seek' | 'retry'> = {}) {
     const requestId = options.requestId ?? crypto.randomUUID();
-    await this.batch([{ id: 'call', operation, arguments: args, ...(options.sweep ? { sweep: options.sweep } : {}), ...(options.until ? { until: options.until } : {}) }], { requestId, signal: options.signal });
+    const { sweep, repeat, until, seek, retry } = options;
+    const given = Object.fromEntries(Object.entries({ sweep, repeat, until, seek, retry }).filter(([, value]) => value !== undefined));
+    await this.batch([{ id: 'call', operation, arguments: args, ...given }], { requestId, signal: options.signal });
     const batch = await this.client.request<{ results: Record<string, Record<string, unknown>> }>(
       `/v1/runs/${encodeURIComponent(this.id)}/batches?` + new URLSearchParams({ request_id: requestId }), undefined, options.signal);
     return batch.results.call;

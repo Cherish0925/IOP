@@ -330,7 +330,7 @@ def create_server(client, *, http=False, selection=None):
         batch = client.request('/v1/runs/' + quote(run_id, safe='') + '/batches' + waiting(wait),
                                {'steps':steps, 'request_id':request_id})
         batch = compact(batch)
-        swept = [step['id'] for step in steps if isinstance(step, dict) and ('sweep' in step or 'repeat' in step)
+        swept = [step['id'] for step in steps if isinstance(step, dict) and step.keys() & {'sweep', 'repeat', 'seek'}
                  and isinstance(step.get('id'), str)]
         points = {name: [op for op in batch.get('operations', []) if op['step'].startswith(name + '.')] for name in swept}
         inside = {op['id'] for ops in points.values() for op in ops}

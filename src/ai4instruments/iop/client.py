@@ -504,15 +504,20 @@ class Run:
             raise IOPError('Operation batch did not complete', details=result)
         return result['operations']
 
-    def call(self, operation, arguments=None, *, sweep=None, until=None, request_id=None, timeout=None, maintain=False):
-        """Use a saved Standard or Workflow Operation in this experiment and return its named result. With
-        ``sweep``, such as {"angle": {"start": -10, "stop": 10, "points": 21}}, it is used at each point and
-        its named results return gathered into arrays over the sweep; with ``until``, such as
-        {"path": ["current"], "above": 0.001}, the sweep stops after a point whose named result there is beyond
-        that limit."""
+    def call(self, operation, arguments=None, *, sweep=None, repeat=None, until=None, seek=None, retry=None,
+             request_id=None, timeout=None, maintain=False):
+        """Use a saved Standard or Workflow Operation in this experiment and return its named result. The options
+        of a step apply. With ``sweep``, such as {"angle": {"start": -10, "stop": 10, "points": 21}}, it is used
+        at each point and its named results return gathered into arrays over the sweep; ``repeat`` uses it that
+        many times at each point; with ``until``, such as {"path": ["current"], "above": 0.001}, the sweep stops
+        after a point whose named result there is beyond that limit. With ``seek``, such as {"maximize": ["power"],
+        "over": {"angle": {"minimum": -60, "maximum": 30, "step": 4}}}, it is used where a search places it, and
+        what returns holds the readings, the places under positions and the best. ``retry``, such as {"times": 2},
+        makes a failed instrument call of its steps again."""
         request_id = request_id or uuid.uuid4().hex
+        options = {'sweep': sweep, 'repeat': repeat, 'until': until, 'seek': seek, 'retry': retry}
         step = {'id': 'call', 'operation': operation, 'arguments': arguments or {},
-                **({'sweep': sweep} if sweep else {}), **({'until': until} if until else {})}
+                **{key: value for key, value in options.items() if value is not None}}
         self.batch([step], request_id=request_id, timeout=timeout, maintain=maintain)
         return self.client.request('/v1/runs/' + self.id + '/batches?' + urlencode({'request_id': request_id}))['results']['call']
 
