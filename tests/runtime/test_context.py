@@ -143,6 +143,33 @@ class MCPCase(unittest.TestCase):
         self.assertLess(listing, 24000)
         self.assertLess(len(server.instructions), 900)
 
+    def test_prompts_start_work_with_the_tools_offered(self):
+        import asyncio
+        import re
+        from ai4instruments.iop import mcp
+        server = mcp.create_server(self.client)
+        names = {tool.name for tool in asyncio.run(server.list_tools())}
+        run = self.client.submit([{'id': 'read', 'device': 'stage', 'operation': 'position'}])
+        run.result(5)
+
+        def text(name, **arguments):
+            return asyncio.run(server.get_prompt(name, arguments)).messages[0].content.text
+        texts = {'begin': text('begin'), 'measure': text('measure', goal='the linewidth at 1550 nm'),
+                 'report': text('report', run_id=run.id), 'keep': text('keep', run_id=run.id)}
+        self.assertEqual(sorted(prompt.name for prompt in asyncio.run(server.list_prompts())), sorted(texts))
+        for name, body in texts.items():
+            self.assertEqual(set(re.findall(r'`([a-z_]+)`', body)) - names, set(), name)
+        self.assertTrue(texts['measure'].startswith('Goal: the linewidth at 1550 nm\n'))
+        # The steps submitted are in front of the agent that turns them into a saved operation.
+        self.assertIn('[{"id":"read","device":"stage","operation":"position"}]', texts['keep'])
+        with patch.object(mcp, 'PROMPT_STEPS', 10):
+            self.assertIn('experiment.json among its files', text('keep', run_id=run.id))
+        with self.client.start_experiment(request_id='by-hand', resources=['stage']) as session:
+            self.assertIn('Read what it did with `experiment`', text('keep', run_id=session.id))
+        # A connection without the experiment tools offers the prompt that needs none of them.
+        partial = mcp.create_server(self.client, selection='setup')
+        self.assertEqual([prompt.name for prompt in asyncio.run(partial.list_prompts())], ['begin'])
+
     def test_toolsets_offer_part_of_the_tools(self):
         import asyncio
         from ai4instruments.iop import mcp

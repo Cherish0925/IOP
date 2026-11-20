@@ -72,6 +72,19 @@ MCP 资源 `iop://laboratory` 提供相同的实验室说明。提交工具立�
 
 工具说明每一轮都会被读取，所以保持简短，细节放在任务需要时才读的指南里。`guide()` 返回工作方法；`guide(topic)` 返回其中一部分及示例：`steps`、`sweeps`、`arrays`、`conditions`、`experiments`、`programs`、`setup`、`episodes`。同一份文本也是宿主插件安装的技能（`SKILL.md` 及其 `references/`）、MCP 资源 `iop://guides/{topic}`、终端里的 `iop guide [topic]`、`GET /v1/guides/{topic}`，以及 Python 和 TypeScript 客户端的 `guide(topic)`。文本在 [connect/skills/iop-lab](connect/skills/iop-lab/)；指南只提到确实存在的工具和选项，运行用例对此逐一核对。
 
+### 提示
+
+支持 MCP 提示的宿主会把四条提示列为命令，由人用来开始一项工作；每条都写明用哪些工具、汇报什么。
+
+| 提示 | 开始的工作 |
+|---|---|
+| `begin` | 读取实验室现状：哪些已就绪，哪些实验可以继续，哪些事需要人来做 |
+| `measure(goal)` | 从目标到测量结果：读取说明，优先用已保存的方法，先预览，提交一次，再读数组 |
+| `report(run_id)` | 只依据记录说明一次实验，包括失败和存疑的部分 |
+| `keep(run_id)` | 把一次实验的方法保存为 Standard Operation 或 Workflow Operation；提交时的步骤会直接放进提示里 |
+
+`begin` 始终提供；其余三条随 `experiments` 工具集提供。
+
 ### 工具集
 
 对工具数量有上限、或每次请求都携带全部工具说明的宿主，可以只加载一部分：`iop mcp --toolsets experiments,attention`，或在宿主环境中设置 `IOP_MCP_TOOLSETS=experiments,attention`（SSH 连接会把它作为参数传过去）。`lab_context`、`describe_instrument`、`describe_platform`、`guide` 始终提供。下一步需要未加载的工具时，服务说明会让 Agent 请用户加上对应工具集。`iop mcp-config --toolsets ...` 输出带该选择的启动配置。

@@ -12,6 +12,8 @@ from urllib.parse import quote, urlencode
 
 # Arrays longer than this reach an agent as their description; the values stay in the operation's file.
 AGENT_VALUES = 64
+# A submitted step graph longer than this is read from the experiment's files rather than placed in a prompt.
+PROMPT_STEPS = 8000
 
 # Hosts that cap or pay for every tool can load only the toolsets a laboratory needs; the three
 # descriptions and the guide are always offered. Every tool belongs to exactly one toolset.
@@ -517,6 +519,52 @@ def create_server(client, *, http=False, selection=None):
         drop_titles(getattr(registered, 'parameters', None))
         if isinstance(getattr(registered, 'parameters', None), dict):
             optional(registered.parameters)
+
+    def prompt(toolset=None, **options):
+        """Register a prompt a person starts work with, offered when the tools it names are."""
+        return server.prompt(**options) if toolset is None or toolset in chosen else lambda function: function
+
+    @prompt(title='Begin work in this laboratory')
+    def begin() -> str:
+        """Read the laboratory and say what is ready and what needs the person."""
+        return ('Read `lab_context`. Tell me briefly which instruments and platforms are ready and which are not, which '
+                'saved operations there are, which experiments are open or can continue, and what its next_steps ask, of '
+                'you and of me. Carry out the steps that only read; name the others and wait for my word.')
+
+    @prompt('experiments', title='Plan and run a measurement')
+    def measure(goal: str) -> str:
+        """From a goal to observed numbers: descriptions, saved methods, a preview, one submission, the arrays."""
+        return ('Goal: ' + goal + '\n\nWork as `guide` describes. Read `lab_context`, then `describe_instrument` for each '
+                'instrument involved, and look in `saved_operations` for a method that already does this: use it rather '
+                'than new steps. Build the step graph, name the conditions it relies on in requires, and read it back '
+                'with `submit_experiment` and preview=true: tell me the operation counts, the state of the conditions and '
+                'the estimated time. Then submit it once with a request_id, follow it with `experiment_updates` and read '
+                'what it gathered with `read_array`. Report the numbers observed with units and errors, the points in '
+                'doubt, and what the goal still lacks.')
+
+    @prompt('experiments', title='Report what an experiment observed')
+    def report(run_id: str) -> str:
+        """An account of one experiment from its record alone."""
+        return ('Report on experiment ' + run_id + ' from its record alone. Read it with `experiment` (include_result=true, '
+                'then in_doubt=true), `operation_result` for a failure, and `read_array` for each array: its summary, and '
+                'lines and fits where they apply. Say what ran, on which instruments and relying on which conditions; '
+                'what was observed, with units and errors, and where the files are; what failed or is in doubt, and why; '
+                'and whether it can continue. Where the record does not say, say so.')
+
+    @prompt('experiments', title='Save the method of an experiment for reuse')
+    def keep(run_id: str) -> str:
+        """Turn what an experiment did into a saved Standard or Workflow Operation."""
+        spec = client.run(run_id).info().get('spec', {})
+        steps = json.dumps(spec['steps'], ensure_ascii=False, separators=(',', ':')) if spec.get('steps') else ''
+        return ('The method of experiment ' + run_id + ' is worth keeping. ' + (
+                    'It was submitted as these steps:\n\n' + steps + '\n\n' if steps and len(steps) <= PROMPT_STEPS else
+                    'Its submission is experiment.json among its files (`experiment_files`). ' if steps else
+                    'Read what it did with `experiment`. ') +
+                'Turn the values that will differ next time into parameters and save it with `saved_operations` '
+                '(definition): a Standard Operation when it is one method built on device operations, a Workflow Operation '
+                'when it joins several methods. `guide` with topic steps shows the form. Show me the definition saved, then '
+                'read a step that uses it with `submit_experiment` and preview=true, to see that it expands to the same '
+                'operations.')
 
     @server.resource('iop://guides/operations')
     def operating_guide() -> str:

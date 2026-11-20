@@ -72,6 +72,19 @@ An individual instrument can operate without a platform. A platform records rela
 
 Tool descriptions are read on every turn, so they stay short and point to guides read when a task needs them. `guide()` returns the working method; `guide(topic)` returns one part with examples: `steps`, `sweeps`, `arrays`, `conditions`, `experiments`, `programs`, `setup` or `episodes`. The same texts are the skill a host plugin installs (`SKILL.md` with its `references/`), the MCP resources `iop://guides/{topic}`, `iop guide [topic]` in a terminal, `GET /v1/guides/{topic}`, and `guide(topic)` in the Python and TypeScript clients. The texts are in [connect/skills/iop-lab](connect/skills/iop-lab/); a guide names only tools and options that exist, which the runtime cases verify.
 
+### Prompts
+
+Hosts that list MCP prompts offer four as commands a person starts work with; each names the tools to use and what to report.
+
+| Prompt | Starts |
+|---|---|
+| `begin` | Reading the laboratory: what is ready, what can continue, what needs the person |
+| `measure(goal)` | A measurement from a goal: descriptions, a saved method when one exists, a preview, one submission, the arrays |
+| `report(run_id)` | An account of one experiment from its record alone, with what failed or is in doubt |
+| `keep(run_id)` | Saving an experiment's method as a Standard or Workflow Operation; the steps it was submitted as are placed in the prompt |
+
+`begin` is always offered; the others come with the `experiments` toolset.
+
 ### Toolsets
 
 Hosts that cap the number of tools, or carry every tool description in each request, can load part of them: `iop mcp --toolsets experiments,attention`, or `IOP_MCP_TOOLSETS=experiments,attention` in the host's environment (an SSH connection passes it on as the argument). `lab_context`, `describe_instrument`, `describe_platform` and `guide` are always offered. When a next step needs a tool that is left out, the server instructions tell the agent to ask for its toolset. `iop mcp-config --toolsets ...` prints the launcher with the choice.
