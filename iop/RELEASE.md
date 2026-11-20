@@ -1,25 +1,23 @@
-# IOP 0.11.0
+# IOP 0.12.0
 
-IOP now reads recorded arrays and streams as bounded summaries, traces and maps. Exact windows, coordinate axes, complex modulus/phase/power, peak or dip centers and half-height widths are available through the browser, HTTP, Python, TypeScript, CLI and MCP. Whole arrays download as NumPy files. The native executor reads large files; the Python implementation provides the same view within its documented size limit. Peak refinement uses physical coordinates, including unevenly spaced samples.
+IOP adds result-driven scans and recovery to its existing operation model. Adaptive sweeps refine the sampled range, `repeat` gathers repeated readings, `until` stops on a reading or an estimated uncertainty, and `seek` searches for a local optimum within declared bounds. Nested saved operations retain their gathered results when an inner sweep stops early.
 
-A step can sweep one or several parameters, including ranges derived from earlier results. The runtime gathers scalar and array results into arrays with sweep axes, preserving file-backed data across nested saved operations. Later steps can bind to those results and refine a scan. Array views and downloads also work while an experiment or stream is still producing results. Bounded sweep expansion rejects oversized requests before allocating their points, and batch waiting reads each completed operation once.
+Step graphs can preview their operations and estimated duration, retry explicitly selected failed calls and continue after interruption while retaining completed work. Unknown instrument outcomes keep their resource holds and are not retried automatically. Step-graph upkeep uses the existing condition and resource scheduler; optional retakes replace doubtful sweep readings while preserving the originals. Declared bindings record their inputs, so doubtful measurements also mark results that consumed them. Those downstream physical actions are not replayed automatically.
 
-Instrument records and model descriptions can supply their own operating conditions. Platforms can maintain conditions while their instruments are idle; continuous experiments and programs can declare `upkeep` to maintain required conditions inside their existing reservation. Program upkeep starts after its reservation is acquired. A batch that adds conditions outside an active maintenance pass receives `maintenance_active` before acceptance and can retry with the same request ID after that pass completes. Invalid operations cannot start maintenance.
+Array views add multiple spectral peaks, threshold crossings, straight-line and Lorentzian/Gaussian fits, standard errors and analysis along rows of a map. Python and the native executor share the result format. The browser draws fitted curves and correctly displays scans that revisit coordinates. Task-specific guides are available through MCP, HTTP, both SDKs and the CLI, with the same references included in connector packages. Upkeep stops after three consecutive maintenance passes without an experiment operation starting, and continuation starts a fresh attempt. Whole experiments can be exported as streamed ZIP archives containing records, saved-operation revisions, files and RO-Crate metadata.
 
-IOP Connect **1.5.0** includes the updated agent instructions and guides. The runtime, native executor, TypeScript SDK and DeepSeek connector are **0.11.0**. Existing configurations, run IDs, operation records and storage directories remain valid. Upgrade the service while idle, then update its clients; ongoing work continues to use the existing scheduler, resource ownership and saved-operation revisions.
+IOP Connect is **1.6.0**. The service, native executor, TypeScript SDK and DeepSeek connector are **0.12.0**. Existing configurations, imports, experiment IDs and data directories remain valid. Upgrade the service while idle and update clients to use the new capabilities.
 
-Validation covers simulated instruments, local protocol servers, native/Python array parity, client APIs and browser workflows. Instrument-specific maintenance still requires commissioning on the intended hardware. A fitted peak and observed condition describe the acquired data; they do not establish continuous physical validity or a global optimum.
-
-[Operating conditions](https://github.com/Cherish0925/IOP/blob/main/docs/runtime/conditions.md) · [Install and connect](https://github.com/Cherish0925/IOP/blob/main/iop/connect/README.md)
+[Operations](https://github.com/Cherish0925/IOP/blob/main/docs/runtime/operations.md) · [Operating conditions](https://github.com/Cherish0925/IOP/blob/main/docs/runtime/conditions.md) · [Install and connect](https://github.com/Cherish0925/IOP/blob/main/iop/connect/README.md)
 
 ---
 
 ## 中文
 
-IOP 0.11.0 将记录中的数组与数据流展示为有大小限制的摘要、曲线和二维图，支持精确区间、物理坐标、复数幅值/相位/功率、峰或谷的位置及半高宽，完整数组可下载为 NumPy 文件。网页、HTTP、Python、TypeScript、命令行和 MCP 共用这些能力。原生执行器读取大文件，Python 在规定大小范围内提供一致结果；非均匀采样的峰值拟合使用实际物理坐标。
+IOP 0.12.0 在原有操作模型中加入根据结果推进的扫描与恢复能力。自适应扫描细化取样区间，`repeat` 汇集重复测量，`until` 按读数或估计的不确定度停止，`seek` 在声明的范围内搜索局部极值。嵌套方法中的内层扫描提前停止后，外层仍可读取其汇集结果。
 
-步骤可扫描一个或多个参数，也可用前序结果确定后续扫描区间。运行服务把各点的标量和数组汇集成带扫描轴的数组；嵌套方法保留文件分段及各段长度，共同坐标轴不会因其他轴变化而丢失。后续操作可绑定这些结果继续细化扫描，运行中的实验和数据流也可读取已有结果。扫描在分配点之前检查数量限制，批次等待按完成顺序读取记录。
+步骤图可以预览操作数量和预计耗时，对显式指定的失败调用重试，并在中断后保留已完成的工作继续运行。仪器执行结果未知时仍保留资源占用，不自动重试。步骤图的自动维护复用已有条件系统和资源调度；可选重测以新读数替换扫描中存疑的点，同时保留原记录。声明的绑定记录数据来源，存疑测量也会标记已经消费其结果的下游操作，不会自动重放下游物理动作。
 
-仪器记录和型号说明可以携带工作条件；平台空闲时可自动维护，连续实验与程序可用 `upkeep` 在自身预留资源内保持所需条件。程序取得资源后才开始维护。已有维护进行时，新增尚未覆盖条件的批次会在受理前返回 `maintenance_active`，结束后可用同一请求 ID 重试；无效操作不会提前触发设备维护。
+数组视图新增多谱线、阈值穿越、直线与洛伦兹/高斯拟合、标准误和逐行分析，Python 与原生执行器共用结果格式。网页可绘制拟合曲线，并正确显示往返扫描。MCP、HTTP、两种 SDK 和命令行按需提供同一套任务指南，连接包也携带这些参考资料。连续三轮维护仍无法启动实验操作时会停止并说明原因，续跑从新的尝试开始。完整实验可流式导出为 ZIP，包含记录、已使用方法的版本、文件和 RO-Crate 元数据。
 
-IOP Connect 升级为 **1.5.0**，运行服务、原生执行器、TypeScript SDK 与 DeepSeek 连接包统一为 **0.11.0**。已有配置、实验和操作 ID、数据目录保持兼容。服务空闲时升级，再更新客户端。验证覆盖模拟仪器、协议服务器、原生与 Python 数组结果一致性、接口及网页流程；具体仪器的维护方法仍需在目标设备上调试确认。
+IOP Connect 为 **1.6.0**；运行服务、原生执行器、TypeScript SDK 和 DeepSeek 连接包统一为 **0.12.0**。已有配置、导入路径、实验 ID 和数据目录保持兼容。服务空闲时升级，并更新客户端以使用新增能力。

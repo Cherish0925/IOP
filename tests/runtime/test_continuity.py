@@ -128,6 +128,26 @@ run.save_result({'measurements':3})
         self.assertEqual(run.checkpoints()['main']['state']['next'], 3)
         self.assertTrue(any(f['name']=='attempts/1/stderr.txt' for f in run.files()))
 
+    def test_a_step_graph_interrupted_by_a_restart_is_named_and_continues(self):
+        run = self.client.submit([{'id': 'hold', 'device': 'stage', 'operation': 'wait',
+                                   'sweep': {'duration': [0.05, 1.5, 0.05]}}], name='Three holds')
+        deadline = time.monotonic() + 5
+        while run.info(details=False)['operation_states'].get('completed', 0) < 1 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.server.shutdown(); self.server.server_close(); self.engine.close()
+        self.engine = Engine(self.temp.name, self.config)
+        self.server = Server(('127.0.0.1', 0), self.engine)
+        self.engine.start()
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.client.endpoint = self.engine.endpoint
+        # The overview names what the stop interrupted; continued, the graph keeps its first point and runs the rest.
+        step = next(s for s in self.client.context()['next_steps'] if s['action'] == 'continue_experiments')
+        self.assertEqual([(r['id'], r['name'], r['kind']) for r in step['runs']], [(run.id, 'Three holds', 'workflow')])
+        self.assertEqual(run.info(details=False)['operation_states'].get('completed'), 1)
+        run.resume('after-restart')
+        self.assertEqual(run.wait(10, details=False)['operation_states'], {'completed': 3})
+        self.assertFalse([s for s in self.client.context()['next_steps'] if s['action'] == 'continue_experiments'])
+
     def test_progress_cannot_be_saved_while_instrument_action_is_in_flight(self):
         run = self.program('''import time
 from ai4instruments.iop import Client

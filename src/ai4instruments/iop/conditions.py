@@ -11,8 +11,10 @@ conditions may depend on them.
 
 A platform that declares ``upkeep`` has its conditions kept by the Runtime: when its instruments
 are idle, a pass starts for what is unknown, due, about to expire, forecast to leave its tolerance,
-or lost and due for another attempt. Each pass is recorded like any other, with ``automatic`` and
-its reasons, and never runs a step that asks a person.
+or lost and due for another attempt. An experiment that declares it, a step graph, a continuous
+experiment or a program, has the conditions it requires kept inside it, between its operations.
+Each pass is recorded like any other, with ``automatic`` and its reasons, and never runs a step
+that asks a person.
 """
 import copy
 import math
@@ -23,6 +25,7 @@ import uuid
 from collections import deque
 from datetime import datetime, timezone
 from . import batches, library
+from .engine import SATISFIED
 from .drivers import parameters
 from .errors import RequestError
 from .platforms import name, strings
@@ -34,6 +37,8 @@ OUTCOMES = ('holds', 'drifted', 'unusable')
 FIELDS = {'id', 'description', 'kind', 'after', 'verify', 'accept', 'usable', 'reference', 'correct', 'settle',
           'valid_for', 'note'}
 RECORDS = 20
+# Passes an experiment's upkeep runs in a row without one of its operations starting, before it gives up.
+RENEWALS = 3
 LOCAL = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,47}')
 
 
@@ -226,7 +231,7 @@ def upkeep(value, names):
 
 
 def experiment_upkeep(value):
-    """The upkeep a continuous experiment or program declares for the conditions it requires."""
+    """The upkeep an experiment declares for the conditions it requires."""
     if value is True:
         value = {}
     if not isinstance(value, dict) or 'conditions' in value:
@@ -412,6 +417,8 @@ class Conditions:
         self.stopping = threading.Event()
         # Per platform: when each condition was last attempted automatically, and what the last pass found.
         self.attempts, self.waiting = {}, {}
+        # Passes each experiment's upkeep has run in a row since one of its operations last started.
+        self.renewed = {}
         self.wake = threading.Event()
         self.index()
 
@@ -618,10 +625,21 @@ class Conditions:
             (relied if state['state'] == 'holds' else lacking)[condition_id] = state
         if lacking:
             text = '; '.join(f"{c} is {s['state']}" + (f" ({s['reason']})" if s.get('reason') else '') for c, s in lacking.items())
+            if self.renewed.get(run_id, 0) >= RENEWALS:
+                # Upkeep restored them each time, and each time they came due before an operation could start.
+                raise RequestError('conditions_not_held', f'{text}, again after upkeep renewed what this experiment '
+                                   f'requires {RENEWALS} times in a row without one of its operations starting. A validity '
+                                   'shorter than the time from a verification to the next operation cannot be kept. '
+                                   'Review maintenance and acquisition timing and the valid_for setting; extend validity '
+                                   'only when observations support it.', conditions=lacking, run_id=run_id)
             raise RequestError('conditions_not_held', text + '. Maintain these conditions, then submit again.',
                                conditions=lacking, maintain='/v1/conditions/maintain',
                                **({'run_id': run_id} if run_id else {}))
         return {c: {k: s[k] for k in ('accepted', 'value', 'reference') if k in s} for c, s in relied.items()}
+
+    def lapsed(self, names):
+        """Whether a condition these rest on has come due or is unknown: what a pass of upkeep renews."""
+        return any(self.state(condition_id)['state'] in ('due', 'unknown') for condition_id in self.closure(names))
 
     def rely(self, run_id, names):
         """Remember that this experiment's data depend on these conditions from now on."""
@@ -652,13 +670,17 @@ class Conditions:
                 saved.update(accepted=time, reference=kept)
                 saved.pop('invalidated', None)
             else:
-                # Data taken since the last accepted verification relied on a condition now found lost.
+                # Data taken since the last accepted verification relied on a condition now found lost: the
+                # experiment keeps the first such interval, and each operation in progress since then is marked.
+                entry = {'since': saved.get('accepted'), 'found': time, 'outcome': result}
                 for other in relying:
                     run = engine.runs.get(other) or engine.store.get('runs', other)
                     if run and condition_id not in run.setdefault('in_doubt', {}):
-                        run['in_doubt'][condition_id] = {'since': saved.get('accepted'), 'found': time, 'outcome': result}
+                        run['in_doubt'][condition_id] = entry
                         engine.store.put('runs', run)
                         doubtful.append(other)
+                    if saved.get('accepted'):
+                        engine.doubt(other, condition_id, saved['accepted'], entry)
             saved['relying'] = [other for other in relying if other in engine.runs]
             saved.update(verified=time, outcome=result, value=value, error=error)
             saved.pop('forecast', None)
@@ -705,11 +727,14 @@ class Conditions:
                 saved['invalidated'] = reason if condition_id in names else 'dependency disturbed: ' + reason
                 saved.pop('forecast', None)
                 time = now()
+                entry = {'since': time, 'found': time, 'outcome': 'disturbed', 'reason': reason}
                 for run_id in saved.get('relying', []):
                     run = self.engine.runs.get(run_id)
                     if run and condition_id not in run.setdefault('in_doubt', {}):
-                        run['in_doubt'][condition_id] = {'since': time, 'found': time, 'outcome': 'disturbed', 'reason': reason}
+                        run['in_doubt'][condition_id] = entry
                         self.engine.store.put('runs', run)
+                    # An operation in progress took data through the disturbance.
+                    self.engine.doubt(run_id, condition_id, time, entry)
                 self.engine.store.record_condition(condition_id, saved, {'type': 'invalidated', 'time': time, 'reason': reason},
                                                    'condition.invalidated', reason=reason)
             return [row for row in self.listing() if row['id'] in names]
@@ -789,15 +814,16 @@ class Conditions:
                                                'request_id': job['id']})['id']
             else:
                 run = engine.runs.get(run_id)
-                if not run or not (run['kind'] == 'external' and run['state'] in {'queued', 'running'} or
-                                   run['kind'] == 'package' and run['state'] == 'running'):
-                    raise ValueError('Maintenance inside an experiment requires an active experiment program')
-                if engine.remaining.get(run_id, 0):
-                    raise RequestError('maintenance_busy', 'Wait for this experiment\'s current operations before maintenance.',
+                if not run or not (run['state'] == 'running' or run['kind'] == 'external' and run['state'] == 'queued'):
+                    raise ValueError('Maintenance inside an experiment requires an active experiment')
+                # A pass starts between the experiment's operations; those queued meanwhile wait for it.
+                if engine.running(run_id):
+                    raise RequestError('maintenance_busy', 'Wait for this experiment\'s operations in progress before maintenance.',
                                        run_id=run_id)
                 reserved = engine._amounts(run, reserve=True)
                 missing = {k: n for k, n in amounts.items() if n > reserved.get(k, 0)}
-                if missing:
+                # A step graph without a reservation claims each instrument when a step uses it, as its own steps do.
+                if missing and (reserved or run['kind'] != 'workflow'):
                     raise RequestError('maintenance_resources',
                         'Reserve the devices and resource quantities used by maintenance when starting this experiment.',
                         resources=missing, run_id=run_id)
@@ -996,7 +1022,7 @@ class Conditions:
                         self.keep(run, run.get('requires', []))
                     except (ValueError, KeyError) as error:
                         self._wait(run['id'], str(error))
-                for store in (self.waiting, self.attempts):
+                for store in (self.waiting, self.attempts, self.renewed):
                     for key in [k for k in store if k not in self.engine.platforms and k not in self.engine.runs]:
                         del store[key]
 
@@ -1106,9 +1132,11 @@ class Conditions:
     def keep(self, run, names):
         """Inside an experiment that declares upkeep: start or join a pass when what it relies on needs one.
 
-        Returns True while a pass runs in the experiment; its other operations wait for that pass.
+        Returns True while its operations wait: a pass runs in the experiment, or one is due and starts once
+        none of its operations is running. After RENEWALS passes in a row with no operation started between
+        them, no further pass starts: the next operation is refused with the reason.
         """
-        if not run.get('upkeep') or not names or run['kind'] == 'package' and run['state'] == 'queued':
+        if not run.get('upkeep') or not names or run['kind'] != 'external' and run['state'] == 'queued':
             return False
         for job in self.jobs.values():
             if job['state'] == 'running' and job['run_id'] == run['id']:
@@ -1117,14 +1145,24 @@ class Conditions:
                     raise RequestError('maintenance_active', 'Wait for this maintenance before submitting operations '
                                        'that require additional conditions.', maintenance=job['id'], conditions=uncovered)
                 return True
-        if self.engine.remaining.get(run['id'], 0):
-            return False
         plan = self._plan(self.closure(names), run['upkeep'], run['id'])
         if not plan['reasons']:
             self._wait(run['id'], None)
             return False
+        if self.engine.running(run['id']):
+            return True
+        if self.renewed.get(run['id'], 0) >= RENEWALS:
+            return False
         try:
             self._start(run['id'], list(plan['reasons']), plan, run_id=run['id'])
+            self.renewed[run['id']] = self.renewed.get(run['id'], 0) + 1
+        except RequestError as error:
+            if error.code != 'maintenance_active':
+                self._wait(run['id'], str(error))
+                return False
+            # Another pass keeps these conditions; the experiment waits for it.
+            self._wait(run['id'], 'waiting for maintenance ' + error.details['maintenance'])
+            return True
         except (ValueError, KeyError) as error:
             self._wait(run['id'], str(error))
             return False
@@ -1246,7 +1284,7 @@ class Conditions:
             if not run or run['state'] not in {'queued', 'running'}:
                 raise Stopped() from None
             raise StepFailed(str(error)) from None
-        failed = [op for op in receipt['operations'] if op['state'] != 'completed']
+        failed = [op for op in receipt['operations'] if op['state'] not in SATISFIED]
         if failed:
             run = engine.runs.get(job['run_id'])
             if not run or run['state'] not in {'queued', 'running'}:

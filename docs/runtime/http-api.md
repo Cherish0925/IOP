@@ -13,6 +13,7 @@ Base URL: `http://127.0.0.1:8765`. API bodies are JSON objects. Requests to `/v1
 | POST | `/v1/ui/desktop` | `{"view":"devices"}` | Open a native window on the service computer; local requests only |
 | GET | `/v1/context` | `refresh=true` for a new connection scan | Compact laboratory description: instruments, platforms, drivers, resources and remaining setup |
 | GET | `/v1/schemas/{name}` | `device`, `platform`, `workflow`, `instrument-profile` | Packaged JSON schema |
+| GET | `/v1/guides`, `/v1/guides/{topic}` | `overview`, `steps`, `sweeps`, `arrays`, `conditions`, `experiments`, `programs`, `setup`, `episodes` | The topics; `{"topic": ..., "text": ...}`: the working method, or one part of it with examples, as agents read it |
 | GET | `/v1/adapters` | `name=python` for one adapter | Built-in and installed driver entries; with `name`, the fields of that adapter's device record and operations with an example |
 | GET | `/v1/resources` | — | Configured capacities and current allocation |
 | POST | `/v1/resources` | `{"capacities":{"cpu":16,"solver":2}}` | Replace named capacities; accepted work must still fit |
@@ -28,11 +29,11 @@ Base URL: `http://127.0.0.1:8765`. API bodies are JSON objects. Requests to `/v1
 | POST | `/v1/discovery` | `{}` | Start or join a background scan; returns cached inventory and `scanning` immediately |
 | POST | `/v1/devices` | Device record | Registered description; persists configuration; identical retries reuse the device |
 | GET | `/v1/discovery` | `cached=true` to reuse the last scan | Current scan, provider availability and registered devices |
-| POST | `/v1/runs` | Workflow below, or `kind: "external"` with `request_id` and optional name/resources/platform | Accepted run record |
+| POST | `/v1/runs` | Workflow below, or `kind: "external"` with `request_id` and optional name/resources/platform; a workflow with `preview: true` is not run | Accepted run record; with `preview`, `operations`, `by_operation` (count, and the median seconds each kind took over the most recent 5000 completed operations, `from` how many), `estimated_s` one after another (null while a kind has no history) and the state of each condition in `requires` |
 | POST | `/v1/packages` | Package below | Accepted run record |
 | GET | `/v1/runs` | `limit=100&details=false` for compact summaries | Most recent runs first |
-| GET | `/v1/runs/{run_id}` | `details=false` for a compact state | Run; detailed response includes recent `operation_records` |
-| GET | `/v1/runs/{run_id}/operations` | `after=0&limit=200` | `{"operations":[...],"cursor":N}`; ordered operation history |
+| GET | `/v1/runs/{run_id}` | `details=false` for a compact state; `wait=0..25` answers once the state is no longer `state`, or once the run ends | Run; detailed response includes recent `operation_records`; a running step graph gives `estimated_end` at its pace so far |
+| GET | `/v1/runs/{run_id}/operations` | `after=0&limit=200`, `in_doubt=true` | `{"operations":[...],"cursor":N}`; ordered operation history; with `in_doubt`, only the operations marked in doubt |
 | POST | `/v1/runs/{run_id}/operations` | Operation below; optional `wait=0..25` query | Operation in an external experiment or running package; identical request IDs return existing operations |
 | GET | `/v1/operations/{operation_id}` | `wait=0..25` | State, times, result or error |
 | GET | `/v1/operations/{operation_id}/array` | `field`, `along`, `at` (JSON object), `start`/`stop` or `low`/`high`, `points=64`; along two axes, JSON lists with one value per axis | What an array the operation returned says: summary, then exact values or an envelope, a map along two axes; see [Reading arrays](drivers.md#reading-arrays--读取数组) |
@@ -43,6 +44,7 @@ Base URL: `http://127.0.0.1:8765`. API bodies are JSON objects. Requests to `/v1
 | POST | `/v1/devices/{device_id}/release` | `{}` | Release idle connections; retain descriptions until explicit reconnection |
 | POST | `/v1/runs/{run_id}/cancel` | `{}` | Current run, cancellation requested |
 | POST | `/v1/runs/{run_id}/finish` | `{}` | Finish an external experiment with no pending operations; release its reservation |
+| GET | `/v1/runs/{run_id}/archive` | — | The whole experiment as one ZIP, sent in chunks: records, files and `ro-crate-metadata.json`. See [records and restart](README.md#records-and-restart) |
 | GET | `/v1/runs/{run_id}/result` | — | Saved result without operation history; while a step graph runs, what its completed operations give so far |
 | POST | `/v1/runs/{run_id}/result` | `{"result": ...}` | Saved result; run must be running |
 | POST | `/v1/runs/{run_id}/artifacts` | `{"name":"scan.csv","data":"<base64>","operation_ids":["op_..."]}` | Saved output file; optional links must name completed operations in this run |
@@ -131,7 +133,7 @@ The response contains `id`, `run_id` and `state`; poll `/v1/operations/{id}`. Pr
 
 ## States and repeated requests
 
-Runs: `queued → running → completed`, or `failed`, `cancelled`, `interrupted`. `cancelling` means the service is ending pending/process work and waiting for active driver calls to return. Operations: `queued → running → completed`, or `failed`, `cancelled`, `interrupted`.
+Runs: `queued → running → completed`, or `failed`, `cancelled`, `interrupted`. `cancelling` means the service is ending pending/process work and waiting for active driver calls to return. Operations: `queued → running → completed`, or `failed`, `cancelled`, `interrupted`; `queued → skipped` for the points of a sweep after its `until` stopped it, which never reach an instrument and let the steps after the sweep run.
 
 A failed operation ends its run and cancels dependent work. Device calls already executing retain their resources until they return. Cancellation requests do not imply that a physical instrument has instantly stopped; the driver implements the instrument's stop/completion behavior.
 
@@ -178,6 +180,8 @@ A step's `bindings` maps parameter names to `{ "step": "source-step", "path": ["
 
 `operation.progress` events contain `operation_id` and `progress` with `fraction`, `message` and optional driver fields. Progress is also available on the operation record. Completed package operations remain in SQLite; `operation_count` counts all submitted calls while a running package's `operations` list contains only its unfinished calls. Detailed run responses include up to 10,000 recent operation records; use the cursor endpoint for full history.
 
+A step with `retry` makes a failed instrument call again: the operation stays `queued` until the time its `retry_at` gives, its record lists the failed calls under `attempts`, and each gives an `operation.retrying` event with `operation_id`, `attempt` and `error`. See [operations](operations.md#when-a-call-fails--调用失败时).
+
 HTTP 503 indicates that the configured active-work capacity has been reached and includes `retry_after` in seconds. Submission retries should retain their request identifier. Queued work and accepted experiments continue while new work waits at the caller.
 
 The command adapter's operation context and HTTP asynchronous job descriptions are documented in [software extensions](../../iop/software.md). The schemas for [platforms](../../iop/schema/platform.schema.json) and [workflows](../../iop/schema/workflow.schema.json) are shipped with the source and installation archives.
@@ -188,7 +192,7 @@ An instrument's `id` may be omitted on registration. The service generates and s
 
 `GET /v1/operations/{id}?wait=25` waits for that operation to finish, or returns its current state after at most 25 seconds. Python and TypeScript clients use this path for calls inside experiment programs; they do not read the experiment's entire event history for each operation.
 
-Use `GET /v1/runs?details=false` and `GET /v1/runs/{id}?details=false` for summaries. Results, operation lists, the uses of saved operations and sweeps, experiment definitions and full platform definitions are excluded before the response enters the application. Read `/result` and cursor-paged `/operations` only when needed.
+Use `GET /v1/runs?details=false` and `GET /v1/runs/{id}?details=false` for summaries. Results, operation lists, the uses of saved operations and sweeps, experiment definitions and full platform definitions are excluded before the response enters the application; `operation_states` counts the run's operations in each state, which shows how far a long sweep got. Read `/result` and cursor-paged `/operations` only when needed.
 
 ## Instrument discovery records
 
@@ -207,7 +211,7 @@ The list of required fields uses `protocol`, `communication_parameters`, `contro
 | POST | `/v1/devices/{id}/configuration` | `definition`, `expected_revision` | New configuration revision, applied while the instrument is idle |
 | GET | `/v1/runs/{id}/checkpoints` | — | Named program progress, state and revisions |
 | POST | `/v1/runs/{id}/checkpoints` | `name` (default `main`), `state` | Saved progress after this program's instrument operations finish |
-| POST | `/v1/runs/{id}/resume` | `request_id` | Requeue the same run with a new attempt; requires package `resume:true` and saved progress |
+| POST | `/v1/runs/{id}/resume` | `request_id` | Requeue the same run with a new attempt: a program declaring `resume:true` from its saved progress; a step graph keeps its completed operations and runs the others again. See [continuing a step graph](../../iop/continuity.md#continuing-a-step-graph) |
 | GET | `/v1/runs/{id}/array` | `field`, optional `request_id`, view options | An array the experiment's result holds, or with `request_id` one in that batch's results, such as what a sweep gathered |
 | GET | `/v1/runs/{id}/array.npy` | `field`, optional `request_id` | That whole array as a NumPy `.npy` file |
 | GET | `/v1/runs/{id}/streams` | — | The experiment's streams with description, bytes and chunk count |

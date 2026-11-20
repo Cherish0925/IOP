@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+import statistics
 import threading
 import time
 from datetime import datetime, timezone
@@ -192,16 +193,52 @@ class Store:
                     return record
                 self.changed.wait(remaining)
 
+    def wait_run(self, run_id, wait=0, state=None):
+        """Wait until an experiment's state is no longer the one given or, without one, until it ends."""
+        wait = float(wait)
+        if not 0 <= wait <= 25:
+            raise ValueError('Experiment wait must be between 0 and 25 seconds')
+        deadline = time.monotonic() + wait
+        with self.changed:
+            while True:
+                row = self.db.execute('SELECT state FROM runs WHERE id=?', (run_id,)).fetchone()
+                if row is None:
+                    raise KeyError(run_id)
+                remaining = deadline - time.monotonic()
+                if (row[0] != state if state else row[0] in {'completed', 'failed', 'cancelled', 'interrupted'}) \
+                        or remaining <= 0:
+                    return
+                self.changed.wait(remaining)
+
     def artifact_named(self, run_id, name):
         with self.lock:
             row = self.db.execute('SELECT body FROM artifacts WHERE run_id=? AND name=?', (run_id, name)).fetchone()
             return json.loads(row[0]) if row else None
 
-    def operation_page(self, run_id, after=0, limit=200):
+    def operation_page(self, run_id, after=0, limit=200, in_doubt=False):
+        """A page of an experiment's operations in order; with in_doubt, only those marked in doubt."""
+        where = " AND json_extract(body,'$.in_doubt') IS NOT NULL" if in_doubt else ''
         with self.lock:
-            rows = self.db.execute('SELECT rowid,body FROM operations WHERE run_id=? AND rowid>? ORDER BY rowid LIMIT ?',
+            rows = self.db.execute(f'SELECT rowid,body FROM operations WHERE run_id=? AND rowid>?{where} ORDER BY rowid LIMIT ?',
                                   (run_id, int(after), min(max(int(limit), 1), 1000))).fetchall()
         return {'operations':[json.loads(body) for _, body in rows], 'cursor':rows[-1][0] if rows else int(after)}
+
+    def operations(self, run_id):
+        """Every operation of an experiment, in the order it was submitted."""
+        with self.lock:
+            return [json.loads(row[0]) for row in
+                    self.db.execute('SELECT body FROM operations WHERE run_id=? ORDER BY rowid', (run_id,))]
+
+    def batches(self, run_id):
+        """The operation batches an experiment accepted, in order."""
+        with self.lock:
+            return [json.loads(row[0]) for row in
+                    self.db.execute('SELECT body FROM operation_batches WHERE run_id=? ORDER BY rowid', (run_id,))]
+
+    def forget_files(self, run_id, folder):
+        """Drop the records of an experiment's files under a folder of its own, inside a transaction."""
+        prefix = folder.rstrip('/') + '/'
+        self.db.execute('DELETE FROM artifacts WHERE run_id=? AND substr(name,1,?)=?', (run_id, len(prefix), prefix))
 
     def list(self, table, run_id=None, limit=100, summary=False):
         if table not in {"runs", "operations", "artifacts"}:
@@ -212,6 +249,14 @@ class Store:
             body = "json_remove(body, '$.result', '$.operations', '$.calls', '$.sweeps', '$.definition', '$.manifest', '$.platform.definition', '$.spec', '$.devices', '$.device_configurations')" if summary and table == 'runs' else 'body'
             rows = self.db.execute(f"SELECT {body} FROM {table}{where} ORDER BY rowid DESC LIMIT ?", args)
             return [json.loads(r[0]) for r in rows]
+
+    def operation_states(self, run_id):
+        """How many of an experiment's operations are in each state, in the order a run goes through them."""
+        with self.lock:
+            counts = dict(self.db.execute('SELECT state, COUNT(*) FROM operations WHERE run_id=? GROUP BY state',
+                                          (run_id,)).fetchall())
+        order = ('queued', 'running', 'completed', 'skipped', 'cancelled', 'failed', 'interrupted')
+        return {state: counts.pop(state) for state in order if state in counts} | counts
 
     def event(self, kind, run_id=None, **data):
         self.db.execute("INSERT INTO events(time,run_id,kind,body) VALUES(?,?,?,?)",
@@ -309,6 +354,14 @@ class Store:
             rows = self.db.execute("SELECT body FROM runs WHERE state='queued' ORDER BY rowid").fetchall()
             return [json.loads(r[0]) for r in rows]
 
+    def interrupted(self, since):
+        """The experiments left interrupted since a time, oldest first: {id: {id, name, kind, ended}}."""
+        with self.lock:
+            rows = self.db.execute("SELECT body FROM runs WHERE state='interrupted' AND json_extract(body,'$.ended')>=? "
+                                   'ORDER BY rowid', (since,)).fetchall()
+        return {run['id']: {key: run[key] for key in ('id', 'name', 'kind', 'ended') if key in run}
+                for run in (json.loads(row[0]) for row in rows)}
+
     def platforms(self):
         with self.lock:
             rows = self.db.execute('''SELECT p.body FROM platform_versions p JOIN
@@ -359,6 +412,13 @@ class Store:
                                    (condition, min(max(int(limit), 1), 10000))).fetchall()
             return [json.loads(row[0]) for row in reversed(rows)]
 
+    def condition_history(self, condition, since, until):
+        """The records of one condition between two times, oldest first."""
+        with self.lock:
+            return [json.loads(row[0]) for row in self.db.execute(
+                "SELECT body FROM condition_records WHERE condition=? AND json_extract(body,'$.time') BETWEEN ? AND ? "
+                'ORDER BY sequence', (condition, since, until))]
+
     def record_condition(self, condition, state, record, event, **data):
         """Save what was observed or done for a condition together with its resulting state."""
         with self.transaction():
@@ -367,6 +427,52 @@ class Store:
                 self.db.execute('INSERT INTO condition_records(condition,body) VALUES(?,?)', (condition, dumps(record)))
             if event:
                 self.event(event, data.pop('run_id', None), condition=condition, **data)
+
+    def durations(self, limit=5000):
+        """How long each device operation took, the median over the most recent completed operations, and from how
+        many: {"device.operation": (seconds, count)}."""
+        with self.lock:
+            rows = self.db.execute("SELECT json_extract(body,'$.device'), json_extract(body,'$.operation'), "
+                                   "json_extract(body,'$.started'), json_extract(body,'$.ended') FROM operations "
+                                   "WHERE state='completed' ORDER BY rowid DESC LIMIT ?", (limit,)).fetchall()
+        taken = {}
+        for device, operation, started, ended in rows:
+            if started and ended:
+                taken.setdefault(f'{device}.{operation}', []).append(
+                    datetime.fromisoformat(ended).timestamp() - datetime.fromisoformat(started).timestamp())
+        return {key: (statistics.median(values), len(values)) for key, values in taken.items()}
+
+    def doubt(self, run_id, condition, after, entry):
+        """Mark the operations of an experiment that relied on a condition and were in progress after a moment,
+        and the operations that consumed their results; return the entries that changed."""
+        with self.lock:
+            rows = self.db.execute("SELECT id,body FROM operations WHERE run_id=? AND "
+                                   "(state='running' OR json_extract(body,'$.ended')>?)", (run_id, after)).fetchall()
+            records = {identifier: json.loads(body) for identifier, body in rows}
+            consumers, pending, marked = {}, [], {}
+            for identifier, item in records.items():
+                for source in item.get('input_operations', []):
+                    consumers.setdefault(source, []).append(identifier)
+                if condition in item.get('conditions', {}) and condition not in item.get('in_doubt', {}):
+                    item.setdefault('in_doubt', {})[condition] = dict(entry)
+                    marked[identifier] = item['in_doubt'][condition]
+                if condition in item.get('in_doubt', {}):
+                    pending.append(identifier)
+            visited = set()
+            while pending:
+                source = pending.pop()
+                if source in visited:
+                    continue
+                visited.add(source)
+                for identifier in consumers.get(source, []):
+                    item = records[identifier]
+                    found = item.setdefault('in_doubt', {}).setdefault(condition, dict(entry))
+                    found['source_operations'] = sorted(set(found.get('source_operations', [])) | {source})
+                    marked[identifier] = found
+                    pending.append(identifier)
+            for identifier in marked:
+                self.db.execute('UPDATE operations SET body=? WHERE id=?', (dumps(records[identifier]), identifier))
+            return marked
 
     def maintenance(self, identifier=None, request_id=None):
         with self.lock:

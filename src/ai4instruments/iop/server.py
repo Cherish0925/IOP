@@ -150,6 +150,10 @@ class Handler(BaseHTTPRequestHandler):
             elif parts == ['v1', 'context', 'devices'] and method == 'GET':
                 from .context import device_page
                 result = device_page(engine, query.get('offset', 0), query.get('limit', 100))
+            elif parts[:2] == ['v1', 'guides'] and len(parts) in (2, 3) and method == 'GET':
+                from .mcp import GUIDES, guide_text
+                result = {'guides': ['overview', *GUIDES], 'read': '/v1/guides/{topic}'} if len(parts) == 2 else \
+                    {'topic': parts[2], 'text': guide_text(parts[2])}
             elif len(parts) == 3 and parts[:2] == ['v1', 'schemas'] and method == 'GET':
                 from .context import schema_document
                 result = schema_document(parts[2])
@@ -276,6 +280,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_pieces(*views.operation_npy(engine, parts[2], query.get('field')),
                                          (query.get('field') or 'array') + '.npy')
             elif len(parts) == 3 and parts[:2] == ['v1','runs'] and method == 'GET':
+                if query.get('wait'):
+                    engine.store.wait_run(parts[2], query['wait'], query.get('state'))
                 result = engine.run_info(parts[2], details=query.get('details', 'true') != 'false')
             elif len(parts) in (4, 5, 6) and parts[:2] == ['v1', 'runs'] and parts[3] == 'episodes':
                 from . import episodes
@@ -314,6 +320,21 @@ class Handler(BaseHTTPRequestHandler):
                     result = describe(engine, parts[2], parts[4], body['definition'] if method == 'POST' else None)
                 else:
                     raise KeyError(url.path)
+            elif len(parts) == 4 and parts[:2] == ['v1', 'runs'] and parts[3] == 'archive' and method == 'GET':
+                from .archive import write
+                engine.store.get('runs', parts[2], summary=True)
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/zip')
+                self.send_header('Content-Disposition', 'attachment; filename="%s.zip"' % parts[2].replace('"', ''))
+                self.send_header('Transfer-Encoding', 'chunked')
+                self.end_headers()
+                try:
+                    write(engine, parts[2], lambda data: self.wfile.write(b'%x\r\n%s\r\n' % (len(data), data)))
+                    self.wfile.write(b'0\r\n\r\n')
+                except Exception:
+                    # The response has begun: it ends without its last chunk, so the client knows it is incomplete.
+                    self.close_connection = True
+                return
             elif len(parts) == 4 and parts[:2] == ['v1','runs']:
                 run_id, action = parts[2:]
                 if action == 'operations' and method == 'POST':
@@ -324,7 +345,8 @@ class Handler(BaseHTTPRequestHandler):
                     if wait:
                         result = engine.store.wait_operation(result['id'], wait)
                 elif action == 'operations' and method == 'GET':
-                    result = engine.store.operation_page(run_id, query.get('after', 0), query.get('limit', 200))
+                    result = engine.store.operation_page(run_id, query.get('after', 0), query.get('limit', 200),
+                                                         query.get('in_doubt') == 'true')
                 elif action == 'updates' and method == 'GET':
                     result = engine.store.run_updates(run_id, query.get('after', 0), query.get('limit', 100), query.get('wait', 0))
                 elif action == 'file-page' and method == 'GET':

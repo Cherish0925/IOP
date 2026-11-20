@@ -101,6 +101,48 @@ class MCPCase(unittest.TestCase):
     setUp = fixture.ServiceCase.setUp
     tearDown = fixture.ServiceCase.tearDown
 
+    def test_guides_are_read_when_needed_and_name_what_exists(self):
+        import asyncio
+        import re
+        from ai4instruments.iop import library, mcp
+        from ai4instruments.iop.connector import guides
+        server = mcp.create_server(self.client)
+        tools = asyncio.run(server.list_tools())
+        names = {tool.name for tool in tools}
+        self.assertEqual(sorted(guides()), sorted(mcp.GUIDES))
+        found = asyncio.run(server.call_tool('guide', {'topic': 'sweeps'}))
+        content = found[0] if isinstance(found, tuple) else getattr(found, 'content', found)
+        self.assertEqual(content[0].text, mcp.guide_text('sweeps'))
+        texts = {topic: mcp.guide_text(topic) for topic in ('overview', *mcp.GUIDES)}
+        for topic, text in texts.items():
+            # Each tool a guide calls exists, each topic it points to has a guide, and its examples are JSON.
+            called = set(re.findall(r'`([a-z_]+)\(', text))
+            self.assertEqual(called - names, set(), topic)
+            self.assertLessEqual(set(re.findall(r'guide\("([a-z]+)"\)', text)), set(mcp.GUIDES), topic)
+            for block in re.findall(r'```json\n(.*?)```', text, re.S):
+                example = json.loads(block)
+                for step in example if isinstance(example, list) else [example]:
+                    if isinstance(step, dict) and step.keys() & {'sweep', 'repeat', 'seek'}:
+                        self.assertEqual(len(library.swept(step)), 3, step['id'])
+        # Every tool is named in some guide, so an agent that reads them learns of each.
+        self.assertEqual({name for name in names if not any(f'`{name}' in text for text in texts.values())}, set())
+        with self.assertRaisesRegex(ValueError, 'Unknown guide: wiring; choose from overview, steps'):
+            mcp.guide_text('wiring')
+        # The program guide names what the SDK has, and its program is Python.
+        from ai4instruments.iop.client import Run
+        self.assertEqual({name for name in re.findall(r'run\.([a-z_]+)\(', texts['programs']) if not hasattr(Run, name)}, set())
+        for block in re.findall(r'```python\n(.*?)```', texts['programs'], re.S):
+            compile(block, 'programs guide', 'exec')
+        # Every interface reads the same text.
+        self.assertEqual(self.client.guide('sweeps'), texts['sweeps'])
+        self.assertEqual(self.client.request('/v1/guides')['guides'], ['overview', *mcp.GUIDES])
+        with self.assertRaisesRegex(IOPError, 'Unknown guide: wiring'):
+            self.client.guide('wiring')
+        # What every turn carries stays small: descriptions point to the guides for the rest.
+        listing = sum(len(json.dumps(tool.model_dump(by_alias=True, exclude_none=True), separators=(',', ':'))) for tool in tools)
+        self.assertLess(listing, 24000)
+        self.assertLess(len(server.instructions), 900)
+
     def test_toolsets_offer_part_of_the_tools(self):
         import asyncio
         from ai4instruments.iop import mcp
@@ -177,6 +219,8 @@ class MCPCase(unittest.TestCase):
                 self.assertEqual(list(selected['operations']), ['position'])
                 self.assertEqual(context['status']['devices'], 3)
                 self.assertNotIn(self.config['token'], json.dumps(context))
+                # An agent reads the overview without the notes for HTTP clients, which tools and guides replace.
+                self.assertEqual(self.client.context().keys() - context.keys(), {'operation', 'schemas'})
                 definition = {'schema_version':1, 'id':'mcp-bench', 'devices':['stage']}
                 self.assertEqual(call('configure_platform', {'definition':definition})['revision'], 1)
                 self.assertEqual(call('describe_platform', {'platform':'mcp-bench'})['definition']['devices'], ['stage'])
@@ -188,6 +232,13 @@ class MCPCase(unittest.TestCase):
                 self.client.run(run['id']).result(5)
                 inspected = call('experiment', {'run_id':run['id'], 'include_result':True, 'limit':1})
                 self.assertIn('read', inspected['result'])
+                self.assertNotIn('next', inspected)
+                # An experiment that stopped says, where it is read, how it continues.
+                stopped = call('submit_experiment', {'request_id': 'mcp-stopped', 'steps': [
+                    {'id': 'hold', 'device': 'stage', 'operation': 'wait', 'arguments': {'duration': 5}}]})
+                self.client.run(stopped['id']).cancel()
+                self.client.run(stopped['id']).wait(5, details=False)
+                self.assertIn('continue_program', call('experiment', {'run_id': stopped['id']})['next'])
                 self.assertEqual((len(inspected['operations']['operations']), inspected['more_files']), (1, False))
                 external = call('start_experiment', {'request_id':'adaptive-scan', 'resources':['stage']})
                 operation = {'run_id':external['id'], 'device':'stage', 'operation':'position', 'request_id':'adaptive-read'}

@@ -25,6 +25,11 @@ def sources(binding):
     """What a binding reads: its source, or the sources of the ends of the range a point of a sweep reads."""
     if isinstance(binding, dict) and isinstance(binding.get('range'), dict):
         return [found for end in binding['range'].values() if isinstance(end, dict) for found in sources(end)]
+    if isinstance(binding, dict) and isinstance(binding.get('seek'), dict):
+        # A place a seek reads comes from its own earlier points; the numbers bounding its search may be read.
+        over = binding['seek'].get('over')
+        return [found for item in (over.values() if isinstance(over, dict) else []) if isinstance(item, dict)
+                for end in item.values() if isinstance(end, dict) for found in sources(end)]
     return [binding]
 
 
@@ -35,9 +40,12 @@ def dependencies(step):
     if not isinstance(bindings, dict):
         raise ValueError('Bindings must be an object')
     sweep = step.get('sweep') if isinstance(step.get('sweep'), dict) else {}
+    seek = step['seek'].get('over') if isinstance(step.get('seek'), dict) else None
     read = [(field, found) for field, binding in bindings.items() for found in sources(binding)]
     read += [(f'sweep {field}', found) for field, spec in sweep.items() if isinstance(spec, dict)
              for found in sources({'range': spec})]
+    read += [(f'seek {field}', found) for field, spec in (seek if isinstance(seek, dict) else {}).items()
+             if isinstance(spec, dict) for found in sources({'range': spec})]
     for field, binding in read:
         if not isinstance(field, str) or not isinstance(binding, dict) or not isinstance(binding.get('step'), str):
             raise ValueError('Each binding needs a parameter name and a source step, as does each end of a range '

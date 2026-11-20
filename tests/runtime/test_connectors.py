@@ -39,6 +39,12 @@ class InstallCase(unittest.TestCase):
                 replacement = connector.install(args(root))
             self.assertNotEqual(first["revision"], replacement["revision"])
             self.assertTrue(Path(first["mcp"]).is_file())
+            # A host with skills receives the references its skill points to.
+            for host in ("portable", "research_os"):
+                skill = Path(first[host]) / "skills/iop-lab"
+                self.assertEqual(
+                    sorted(p.stem for p in (skill / "references").glob("*.md")), sorted(connector.guides())
+                )
             for manifest in [".agents/plugins/marketplace.json", ".claude-plugin/marketplace.json"]:
                 self.assertIn(
                     replacement["revision"], (Path(first["marketplace"]) / manifest).read_text()
@@ -255,7 +261,7 @@ class ConnectedCase(unittest.TestCase):
             self.assertEqual(hello["serverInfo"]["name"], "IOP Runtime")
             tools = {t["name"] for t in post("tools/list", {}, "gateway-test")["tools"]}
             self.assertIn("submit_experiment", tools)
-            self.assertFalse(tools.intersection({"download_file", "submit_program"}))
+            self.assertFalse(tools.intersection({"download_file", "save_experiment", "submit_program"}))
             result = post("tools/call", {"name": "lab_context", "arguments": {}}, "gateway-test")
             self.assertFalse(result.get("isError"))
         finally:

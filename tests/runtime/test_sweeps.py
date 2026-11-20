@@ -4,9 +4,12 @@ import asyncio
 import importlib.util
 import json
 import math
+import statistics
 import struct
 import time
 import unittest
+import zipfile
+from datetime import datetime
 from unittest.mock import patch
 from ai4instruments.iop import Driver, IOPError, arrays, library, sweeps
 from . import test_service as fixture
@@ -48,10 +51,201 @@ class Spectrometer(Driver):
         return {'line': line, 'spectrum': arrays.result(counts.tobytes(), spec, context, 'spectrum')}
 
 
+class Resonance(Driver):
+    """A line 3 MHz wide at 1.0613 GHz, seen one frequency at a time."""
+    def describe(self):
+        return {'operations': {'probe': {'parameters': {'hz': {'type': 'number', 'unit': 'Hz'}}, 'effect': 'observe'}}}
+
+    def invoke(self, operation, arguments, context):
+        return {'power': 1 / (1 + ((arguments['hz'] - 1.0613e9) / 1.5e6) ** 2), 'unit': 'W'}
+
+
+class Diode(Driver):
+    """A source across a diode, which keeps the voltages it was given."""
+    given = []
+
+    def describe(self):
+        return {'operations': {'source': {'parameters': {'volts': {'type': 'number', 'unit': 'V'}}}}}
+
+    def invoke(self, operation, arguments, context):
+        Diode.given.append(arguments['volts'])
+        return {'current': 1e-12 * math.expm1(arguments['volts'] / 0.02585), 'unit': 'A'}
+
+
+class Counter(Driver):
+    """A reading that grows by one each time it is taken."""
+    count = 0
+
+    def describe(self):
+        return {'operations': {'read': {'parameters': {}, 'effect': 'observe'}}}
+
+    def invoke(self, operation, arguments, context):
+        Counter.count += 1
+        return {'count': Counter.count}
+
+
+class Noisy(Driver):
+    """A power of 1 mW, and a line 3 MHz wide at 1.0613 GHz, read with noise spread evenly over ±50 µW and ±0.02
+    from a fixed sequence."""
+    seed = 12345
+
+    def describe(self):
+        return {'operations': {'read': {'parameters': {}, 'effect': 'observe'},
+                               'probe': {'parameters': {'hz': {'type': 'number', 'unit': 'Hz'}}, 'effect': 'observe'}}}
+
+    def invoke(self, operation, arguments, context):
+        return self.read(operation, arguments)
+
+    @staticmethod
+    def read(operation, arguments):
+        Noisy.seed = (Noisy.seed * 6364136223846793005 + 1442695040888963407) % 2 ** 64
+        noise = (Noisy.seed >> 11) / 2 ** 53 - 0.5
+        if operation == 'read':
+            return {'power': 1e-3 + 1e-4 * noise, 'unit': 'W'}
+        return {'power': 1 / (1 + ((arguments['hz'] - 1.0613e9) / 1.5e6) ** 2) + 0.04 * noise, 'unit': 'W'}
+
+
+class Flaky(Driver):
+    """A meter whose readings get no reply when failing says so of their number; by default every other one."""
+    calls = 0
+
+    @staticmethod
+    def failing(call):
+        return call % 2
+
+    def describe(self):
+        return {'operations': {'read': {'parameters': {'x': {'type': 'number', 'default': 0}}, 'effect': 'observe'}}}
+
+    def invoke(self, operation, arguments, context):
+        Flaky.calls += 1
+        if Flaky.failing(Flaky.calls):
+            context.file('partial.txt').write_text('cut off')
+            raise TimeoutError('no reply within 5 s')
+        return {'value': arguments['x']}
+
+
+class Fiber(Driver):
+    """Power coupled into a fiber, largest with its end at x 0.37 mm, y -0.81 mm."""
+
+    def describe(self):
+        mm = {'type': 'number', 'minimum': -5, 'maximum': 5, 'unit': 'mm'}
+        return {'operations': {'couple': {'parameters': {'x': mm, 'y': mm}, 'effect': 'observe'}}}
+
+    def invoke(self, operation, arguments, context):
+        x, y = arguments['x'], arguments['y']
+        return {'power': math.exp(-((x - 0.37) ** 2 + (y + 0.81) ** 2) / 0.5), 'unit': 'mW'}
+
+
 class GatherCase(unittest.TestCase):
     """What a sweep returns, from what its points returned."""
 
+    def test_seek_rejects_discrete_parameters_before_expanding_instrument_calls(self):
+        seek = {'maximize': ['power'], 'over': {'angle': {'minimum': 0, 'maximum': 80, 'step': 4}}}
+        for field in ({'type': 'integer'}, {'type': 'string'}, {'type': 'number', 'enum': [0, 40, 80]}):
+            for saved in (False, True):
+                step = {'id': 'scan', 'operation': 'axis.measure', 'arguments': {'axis': 'stage'}, 'seek': seek}
+                if not saved:
+                    step.update(device='stage', operation='move_to')
+                with self.subTest(field=field, saved=saved), self.assertRaisesRegex(ValueError, 'Use a fixed sweep'):
+                    library.expand([step], lambda name: {**MEASURE, 'parameters': {'angle': field}, 'revision': 1},
+                                   lambda device, operation: {'parameters': {'angle': field}})
+
+    def test_adaptive_and_seek_provenance_grows_linearly_in_the_number_of_points(self):
+        from ai4instruments.iop.engine import Engine
+        for saved in (False, True):
+            base = {'id': 'scan', 'operation': 'axis.measure', 'arguments': {'axis': 'stage'}} if saved else {
+                'id': 'scan', 'device': 'sensor', 'operation': 'read'}
+            for kind in ('adaptive', 'seek'):
+                options = {'sweep': {'angle': {'start': 0.0, 'stop': 89.0, 'points': 1000, 'adapt': ['power']}}} \
+                    if kind == 'adaptive' else {'seek': {'maximize': ['power'], 'points': 1000,
+                                                       'over': {'angle': {'minimum': 0, 'maximum': 89, 'step': 1}}}}
+                flat, _, _ = library.expand([{**base, **options}], lambda name: {**MEASURE, 'revision': 1},
+                                             lambda device, operation: {'parameters': {'angle': {'type': 'number'}}})
+                operations = [{**step, 'id': f'op-{index}', 'step': step['id'], 'state': 'completed',
+                               'bindings': step.get('bindings', {})} for index, step in enumerate(flat)]
+                Engine._locate(operations)
+                records = {op['id']: op for op in operations}
+                for op in operations:
+                    op['input_operations'] = sorted({oid for source in op['bindings'].values()
+                                                     for oid in library.input_operations(source, records.__getitem__)})
+                with self.subTest(saved=saved, kind=kind):
+                    self.assertEqual(sum(len(op['input_operations']) for op in operations), 1998 if saved else 999)
+                    last = operations[-2] if saved else operations[-1]
+                    pending, ancestors = list(last['input_operations']), set()
+                    while pending:
+                        identifier = pending.pop()
+                        if identifier not in ancestors:
+                            ancestors.add(identifier)
+                            pending.extend(records[identifier]['input_operations'])
+                    self.assertIn(operations[1 if saved else 0]['id'], ancestors)
+
+    def test_a_step_repeats_at_each_point_over_a_last_axis(self):
+        self.assertEqual(sweeps.grid({}, 3), ([{}, {}, {}], [3], [{'name': 'repeat', 'start': 0, 'step': 1}]))
+        points, shape, axes = sweeps.grid({'axis': ['x', 'y']}, 2)
+        self.assertEqual((points, shape, [axis['name'] for axis in axes]),
+                         ([{'axis': 'x'}, {'axis': 'x'}, {'axis': 'y'}, {'axis': 'y'}], [2, 2], ['axis', 'repeat']))
+        for sweep, repeat, message in (({}, 0, 'from 1 to 10000'), ({}, True, 'from 1 to 10000'),
+                                       ({'repeat': [1, 2]}, 2, 'named repeat'),
+                                       ({'x': {'start': 0, 'stop': 8, 'points': 5, 'adapt': ['power']}}, 2, 'does not repeat'),
+                                       ({'x': list(range(101))}, 100, 'at most 10000 points')):
+            with self.subTest(sweep=sweep, repeat=repeat), self.assertRaisesRegex(ValueError, message):
+                sweeps.grid(sweep, repeat)
+
+    def test_until_stops_a_sweep_beyond_its_limits_or_without_a_number(self):
+        until = sweeps.limits({'path': ['current'], 'above': 1e-3, 'below': -1e-3})
+        self.assertEqual([sweeps.beyond(until, value) for value in (0, 1e-3, 2e-3, -2e-3, None, math.nan)],
+                         [False, False, True, True, True, True])
+        for until, message in (({'path': ['current']}, 'above, below, or both'), ({'path': 'current', 'above': 1}, 'path'),
+                               ({'path': ['current'], 'above': '1'}, 'number'), ({'path': ['i'], 'above': 1, 'over': 2}, 'path'),
+                               ({'path': ['current'], 'above': 1, 'below': 1}, 'below is less than above'),
+                               ({'path': ['fit', 'center'], 'below': 1, 'view': {'fit': 'voigt'}}, 'fit is line'),
+                               ({'path': ['current'], 'above': 1, 'points': 0}, 'points is how many')):
+            with self.subTest(until=until), self.assertRaisesRegex(ValueError, message):
+                sweeps.limits(until)
+        # A view of what the sweep gathered is read before each point, of at most 1000.
+        step = {'id': 'mean', 'operation': 'read', 'repeat': 1001,
+                'until': {'view': {'field': 'power'}, 'path': ['summary', 'error'], 'below': 1e-6, 'points': 10}}
+        with self.assertRaisesRegex(ValueError, 'at most 1000 points'):
+            library.swept(step)
+        self.assertEqual(library.swept({**step, 'repeat': 1000})[1], [1000])
+
+    def test_an_adaptive_range_places_each_point_from_the_readings_before_it(self):
+        spec = {'start': 0, 'stop': 8, 'points': 5, 'adapt': ['power']}
+        self.assertEqual(sweeps.taken('x', spec), ([{'range': spec, 'index': i} for i in range(5)], {'name': 'x', 'range': spec}))
+        # The ends first, then the middle of the interval whose ends differ most; integer ends give integers.
+        self.assertEqual(sweeps.adapted(spec, []), [0])
+        self.assertEqual(sweeps.adapted(spec, [0.0, 0.0]), [0, 8, 4])
+        self.assertEqual(sweeps.adapted(spec, [0.0, 0.0, 1.0, 1.0]), [0, 8, 4, 2, 6])
+        # A difference counts by how far it exceeds twice the median one: a step that stands out draws the next
+        # point; differences like the others, as from noise, do not, and the widest interval, here the first, does.
+        finer = {**spec, 'stop': 8.0, 'points': 9}
+        self.assertEqual(sweeps.adapted(finer, [0.0, 3.0, 0.0, 0.0, 0.0], [0, 8, 4, 2, 6])[5], 7.0)
+        self.assertEqual(sweeps.adapted(finer, [0.0, 0.0, 0.0, 0.1, 0.1], [0, 8, 4, 2, 6])[5], 1.0)
+        # Values already found are kept; a reading that is not a number counts only by its spacing.
+        self.assertEqual(sweeps.adapted(spec, [0.0, None, 1.0], [0, 8, 4]), [0, 8, 4, 2])
+        for sweep, message in (({'x': {**spec, 'adapt': 'power'}}, 'path to the number'),
+                               ({'x': {**spec, 'points': 1}}, '2 to 1000 points'),
+                               ({'x': {**spec, 'points': 10}}, 'do not fit between 0 and 8'),
+                               ({'x': {**spec, 'stop': 0}}, 'ends of an adaptive range differ'),
+                               ({'x': spec, 'y': [1, 2]}, 'varies one parameter')):
+            with self.subTest(sweep=sweep), self.assertRaisesRegex(ValueError, message):
+                sweeps.grid(sweep)
+
+    def test_an_adaptive_range_finds_a_narrow_line_through_noise(self):
+        # A line 3% of the range wide under noise of 2% of its height: 40 adaptive points put some on it from each
+        # of ten noise sequences, then gather there, as spacing alone would not.
+        spec = {'start': 1.0e9, 'stop': 1.1e9, 'points': 40, 'adapt': ['power']}
+        for seed in range(1, 11):
+            Noisy.seed, readings, values = seed, [], []
+            for index in range(40):
+                values = sweeps.adapted(spec, readings, values)
+                readings.append(Noisy.read('probe', {'hz': values[index]})['power'])
+            with self.subTest(seed=seed):
+                self.assertGreaterEqual(sum(abs(f - 1.0613e9) < 1.5e6 for f in values), 4)
+
     def test_values_and_axes_of_a_sweep(self):
+        self.assertEqual(sweeps.taken('mode', ['adapt', 'fixed']),
+                         (['adapt', 'fixed'], {'name': 'mode', 'labels': ['adapt', 'fixed']}))
         points, shape, axes = sweeps.grid({'axis': ['x', 'y'], 'volts': {'start': 0, 'stop': 1, 'points': 3}})
         self.assertEqual((shape, len(points), points[:2]), ([2, 3], 6, [{'axis': 'x', 'volts': 0.0}, {'axis': 'x', 'volts': 0.5}]))
         self.assertEqual(axes, [{'name': 'axis', 'labels': ['x', 'y']}, {'name': 'volts', 'start': 0, 'stop': 1}])
@@ -249,13 +443,338 @@ class SweepCase(unittest.TestCase):
             'result': {'power': {'step': 'scan', 'path': ['power']}}})
         run = self.submit([{'id': 'find', 'operation': 'axis.find'},
                            {'id': 'around', 'operation': 'axis.around', 'bindings': {'center': {'step': 'find', 'path': ['angle']}}}])
-        result = run.result(20)
+        result = run.result(60)
         self.assertEqual(result['find']['angle'], 0)
         self.assertEqual(result['around']['power']['data']['axes'], [{'name': 'angle', 'start': -2, 'stop': 2, 'unit': 'deg'}])
         self.assertAlmostEqual(result['around']['power']['values'][2], 1)
         # Given as an argument, the same parameter is a number before anything runs.
         given = self.submit([{'id': 'around', 'operation': 'axis.around', 'arguments': {'center': 10}}]).result(10)
         self.assertEqual(given['around.scan']['angle']['values'], [8, 9, 10, 11, 12])
+
+    def test_an_adaptive_sweep_puts_its_points_on_the_line(self):
+        self.client.register({'id': 'analyzer', 'driver': Resonance.__module__ + ':Resonance'})
+        line = {'view': {'field': 'power', 'peak': 'max'}, 'path': ['peak', 'center']}
+        run = self.submit([
+            {'id': 'adaptive', 'device': 'analyzer', 'operation': 'probe',
+             'sweep': {'hz': {'start': 1.0e9, 'stop': 1.1e9, 'points': 40, 'adapt': ['power']}}},
+            {'id': 'even', 'device': 'analyzer', 'operation': 'probe', 'sweep': {'hz': {'start': 1.0e9, 'stop': 1.1e9, 'points': 40}}},
+            # A coarse look, then 20 points placed around the line it shows.
+            {'id': 'coarse', 'device': 'analyzer', 'operation': 'probe', 'sweep': {'hz': {'start': 1.0e9, 'stop': 1.1e9, 'points': 11}}},
+            {'id': 'fine', 'device': 'analyzer', 'operation': 'probe', 'sweep': {'hz': {
+                'center': {'step': 'coarse', **line}, 'span': 20e6, 'points': 20, 'adapt': ['power']}}}])
+        result = run.result(20)
+        hz = result['adaptive']['power']['data']['axes'][0]
+        self.assertEqual((hz['name'], hz['unit'], len(hz['coordinates'])), ('hz', 'Hz', 40))
+        self.assertEqual(hz['coordinates'], sorted(hz['coordinates']))
+        # 16 of the 40 points lie within a line width of the center; spaced evenly, three do.
+        near = [f for f in hz['coordinates'] if abs(f - 1.0613e9) < 3e6]
+        self.assertEqual((len(near) >= 15, sum(abs(1e9 + 1e8 * i / 39 - 1.0613e9) < 3e6 for i in range(40))), (True, 3))
+        adaptive, even = (run.read_array(f'{name}.power', peak='max')['peak'] for name in ('adaptive', 'even'))
+        self.assertAlmostEqual(adaptive['center'], 1.0613e9, delta=2e4)
+        self.assertAlmostEqual(adaptive['width'], 3e6, delta=6e4)
+        self.assertGreater(abs(even['width'] - 3e6), 4 * abs(adaptive['width'] - 3e6))
+        self.assertAlmostEqual(run.read_array('fine.power', peak='max')['peak']['center'], 1.0613e9, delta=5e4)
+        # Each point records the frequency it was given; the first two are the ends.
+        given = {op['step']: op['arguments']['hz'] for op in run.info()['operation_records']}
+        self.assertEqual((given['adaptive.0'], given['adaptive.1'], given['adaptive.2']), (1.0e9, 1.1e9, 1.05e9))
+        self.assertEqual(sorted(given[f'adaptive.{i}'] for i in range(40)), hz['coordinates'])
+
+    def test_a_running_adaptive_sweep_holds_the_points_finished_so_far_in_order(self):
+        run = self.submit([{'id': 'turn', 'device': 'stage', 'operation': 'move_to', 'arguments': {'duration': 0.3},
+                            'sweep': {'angle_deg': {'start': -40, 'stop': 40, 'points': 6, 'adapt': ['angle_actual']}}}])
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            partial = (self.client.request(f'/v1/runs/{run.id}/result') or {}).get('turn')
+            if partial and 3 <= len(partial['angle_actual']['values']) < 6:
+                break
+            time.sleep(0.05)
+        values, axis = partial['angle_actual']['values'], partial['angle_actual']['data']['axes'][0]
+        placed = axis.get('coordinates') or [axis['start'] + i * axis['step'] for i in range(len(values))]
+        self.assertEqual((values, placed), (sorted(values), sorted(values)))
+        self.assertEqual(run.result(10)['turn']['angle_actual']['values'], [-40, -30, -20, 0, 20, 40])
+
+    def test_an_adaptive_sweep_of_a_saved_operation_reads_its_named_result(self):
+        run = self.submit([{'id': 'scan', 'operation': 'axis.measure', 'arguments': {'axis': 'stage'},
+                            'sweep': {'angle': {'start': -45, 'stop': 45, 'points': 9, 'adapt': ['power']}}}])
+        found = run.result(10)['scan']
+        angles = found['power']['data']['axes'][0]['coordinates']
+        self.assertEqual((angles[0], angles[-1], angles, found['angle']['values']), (-45, 45, sorted(angles), angles))
+        for got, angle in zip(found['power']['values'], angles):
+            self.assertAlmostEqual(got, power(angle))
+
+    def test_an_adaptive_sweep_gathers_saved_operations_that_stop_their_inner_sweeps(self):
+        self.client.register({'id': 'flaky', 'driver': Flaky.__module__ + ':Flaky'})
+        self.client.save_operation({
+            'id': 'limited.read', 'layer': 'standard', 'description': 'Read until above the limit',
+            'parameters': {'x': {'type': 'number'}},
+            'steps': [{'id': 'scan', 'device': 'flaky', 'operation': 'read', 'arguments': {'x': '${x}'},
+                       'repeat': 3, 'until': {'path': ['value'], 'above': -1}}],
+            'result': {'value': {'step': 'scan', 'view': {'field': 'value'}, 'path': ['summary', 'max']}}})
+        with patch.object(Flaky, 'failing', lambda call: False):
+            result = self.submit([{'id': 'outer', 'operation': 'limited.read',
+                                   'sweep': {'x': {'start': 0, 'stop': 4, 'points': 5, 'adapt': ['value']}}}]).result(10)
+        self.assertEqual(result['outer']['value']['values'], [0, 1, 2, 3, 4])
+
+    def test_a_ramp_stops_at_compliance_and_the_steps_after_it_run(self):
+        self.client.register({'id': 'smu', 'driver': Diode.__module__ + ':Diode'})
+        Diode.given = []
+        run = self.submit([
+            {'id': 'ramp', 'device': 'smu', 'operation': 'source', 'sweep': {'volts': {'start': 0, 'stop': 1, 'points': 101}},
+             'until': {'path': ['current'], 'above': 1e-3}},
+            {'id': 'zero', 'device': 'smu', 'operation': 'source', 'arguments': {'volts': 0}, 'after': ['ramp']}])
+        current = run.result(20)['ramp']['current']
+        # The current first exceeds 1 mA at 0.54 V: the source is given no higher voltage, then returns to zero.
+        self.assertEqual((run.info(details=False)['state'], max(Diode.given), Diode.given[-1], len(Diode.given)),
+                         ('completed', 0.54, 0, 56))
+        self.assertEqual(run.info(details=False)['operation_states'], {'completed': 56, 'skipped': 46})
+        self.assertEqual((current['data']['shape'], current['data']['unit'], current['values'][55:]), ([101], 'A', [None] * 46))
+        self.assertAlmostEqual(current['values'][54], 1.18e-3, delta=1e-5)
+        ops = {op['step']: op for op in run.info()['operation_records']}
+        self.assertEqual([ops[f'ramp.{i}']['state'] for i in (54, 55, 100)], ['completed', 'skipped', 'skipped'])
+        self.assertNotIn('started', ops['ramp.55'])
+        stopped = {'point': 54, 'reading': current['values'][54]}
+        self.assertEqual(ops['ramp.100']['gathers']['ramp']['stopped'], stopped)
+        events = self.client.request(f'/v1/events?run_id={run.id}&limit=1000')['events']
+        self.assertEqual([{key: e[key] for key in ('sweep', 'point', 'reading', 'skipped')} for e in events
+                          if e['kind'] == 'sweep.stopped'], [{'sweep': 'ramp', 'skipped': 46, **stopped}])
+        # Between the last two points, the current reaches 1 mA at 0.5352 V; on the diode's curve, at 0.5357 V.
+        crossing = run.read_array('ramp.current', level=1e-3)['crossings']
+        self.assertEqual((len(crossing), crossing[0]['rising'], crossing[0]['index']), (1, True, 53))
+        self.assertAlmostEqual(crossing[0]['at'], 0.5352, delta=1e-4)
+        # A reading that is not a number does not show that the limit holds: the sweep stops after its first point.
+        run = self.submit([{'id': 'ramp', 'device': 'smu', 'operation': 'source', 'sweep': {'volts': [0, 0.1, 0.2]},
+                            'until': {'path': ['curent'], 'above': 1e-3}}])
+        self.assertEqual(run.result(10)['ramp']['current']['values'], [0, None, None])
+
+    def test_saved_operations_stop_their_sweeps_at_the_limits_they_are_given(self):
+        self.client.register({'id': 'smu', 'driver': Diode.__module__ + ':Diode'})
+        self.client.save_operation({
+            'id': 'diode.iv', 'layer': 'standard', 'description': 'Ramp the forward bias up to a compliance, then to zero',
+            'parameters': {'compliance': {'type': 'number', 'unit': 'A'}},
+            'steps': [{'id': 'ramp', 'device': 'smu', 'operation': 'source',
+                       'sweep': {'volts': {'start': 0, 'stop': 1, 'points': 101}},
+                       'until': {'path': ['current'], 'above': '${compliance}'}},
+                      {'id': 'zero', 'device': 'smu', 'operation': 'source', 'arguments': {'volts': 0}}],
+            'result': {'current': {'step': 'ramp', 'path': ['current']}}})
+        # Each use stops at its own compliance and returns to zero; the next use then runs.
+        found = self.submit([{'id': 'rows', 'operation': 'diode.iv', 'sweep': {'compliance': [1e-4, 1e-3]}}]).result(60)
+        current = found['rows']['current']
+        self.assertEqual((current['data']['shape'], [row.index(None) for row in current['values']]), ([2, 101], [49, 55]))
+        self.assertEqual(self.client.saved_operation('diode.iv')['uses']['completed'], 2)
+        # A use swept in a continuous experiment stops on its named result; uses that never ran are not counted.
+        self.client.save_operation({
+            'id': 'diode.point', 'layer': 'standard', 'description': 'Source a forward bias and read the current',
+            'parameters': {'volts': {'type': 'number', 'unit': 'V'}},
+            'steps': [{'id': 'source', 'device': 'smu', 'operation': 'source', 'arguments': {'volts': '${volts}'}}],
+            'result': {'current': {'step': 'source', 'path': ['current']}}})
+        with self.client.start_experiment(resources=['smu']) as run:
+            found = run.call('diode.point', sweep={'volts': {'start': 0, 'stop': 1, 'points': 101}},
+                             until={'path': ['current'], 'above': 1e-3})
+        self.assertEqual(found['current']['values'].index(None), 55)
+        self.assertEqual(self.client.saved_operation('diode.point')['uses']['calls'], 55)
+
+    def test_a_graph_is_previewed_and_a_running_one_tells_when_it_ends(self):
+        steps = [{'id': 'turn', 'device': 'stage', 'operation': 'move_to', 'arguments': {'duration': 0.2},
+                  'sweep': {'angle_deg': [0, 10, 20, 30, 40]}}]
+        # Nothing has run on the stage yet: the preview counts the moves, and no time is estimated.
+        self.assertEqual(self.client.preview(steps), {'preview': True, 'operations': 5, 'estimated_s': None,
+                                                      'by_operation': {'stage.move_to': {'operations': 5}}, 'requires': {}})
+        run = self.submit(steps)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and run.info(details=False)['operation_states'].get('completed', 0) < 2:
+            time.sleep(0.02)
+        # Two moves done, three to go at the same pace.
+        ends = datetime.fromisoformat(run.info(details=False)['estimated_end']).timestamp() - time.time()
+        self.assertTrue(0 < ends < 3, ends)
+        run.result(10)
+        self.assertNotIn('estimated_end', run.info(details=False))
+        # Now each move is known to take what these five took: the preview counts five at their median.
+        preview = self.client.preview(steps)
+        self.assertEqual(preview['by_operation']['stage.move_to']['from'], 5)
+        took = sorted(datetime.fromisoformat(op['ended']).timestamp() - datetime.fromisoformat(op['started']).timestamp()
+                      for op in run.info()['operation_records'])
+        self.assertGreaterEqual(took[2], 0.2)
+        self.assertAlmostEqual(preview['estimated_s'], 5 * took[2], delta=0.001)
+
+    def test_a_step_tries_again_an_instrument_call_that_failed(self):
+        self.client.register({'id': 'flaky', 'driver': Flaky.__module__ + ':Flaky'})
+        Flaky.calls = 0
+        # Every other reading gets no reply: each point is read again 0.05 s later, and the sweep completes.
+        run = self.submit([{'id': 'scan', 'device': 'flaky', 'operation': 'read', 'sweep': {'x': [1, 2, 3]},
+                            'retry': {'times': 1, 'after_s': 0.05}}])
+        self.assertEqual(run.result(10)['scan']['value']['values'], [1, 2, 3])
+        operations = run.info()['operation_records']
+        self.assertEqual([len(op['attempts']) for op in operations], [1, 1, 1])
+        self.assertEqual(operations[0]['attempts'][0]['error'], 'TimeoutError: no reply within 5 s')
+        self.assertNotIn('files', operations[0])
+        self.assertNotIn('retry_at', operations[0])
+        waited = [datetime.fromisoformat(op['started']) - datetime.fromisoformat(op['attempts'][0]['ended']) for op in operations]
+        self.assertTrue(all(w.total_seconds() >= 0.05 for w in waited))
+        events = self.client.request(f'/v1/events?run_id={run.id}&limit=1000')['events']
+        self.assertEqual(sum(e['kind'] == 'operation.retrying' for e in events), 3)
+        # Without retry the first missing reply ends the experiment.
+        Flaky.calls = 0
+        self.assertEqual(self.submit([{'id': 'scan', 'device': 'flaky', 'operation': 'read', 'sweep': {'x': [1, 2]}}])
+                         .wait(10, details=False)['state'], 'failed')
+        with self.assertRaisesRegex(IOPError, 'retry is'):
+            self.submit([{'id': 'scan', 'device': 'flaky', 'operation': 'read', 'retry': {'times': 0}}])
+
+    def test_retry_and_resume_preserve_unknown_outcomes_and_resource_holds(self):
+        from ai4instruments.iop.drivers import UnconfirmedChange
+        self.client.register({'id': 'flaky', 'driver': Flaky.__module__ + ':Flaky'})
+        with patch.object(Flaky, 'invoke', side_effect=UnconfirmedChange('position was not confirmed')) as invoked:
+            run = self.submit([{'id': 'read', 'device': 'flaky', 'operation': 'read',
+                               'retry': {'times': 3, 'after_s': 0}}])
+            info = run.wait(10)
+        self.assertEqual(invoked.call_count, 1)
+        self.assertEqual(info['state'], 'failed')
+        self.assertTrue(info['operation_records'][0]['outcome_unknown'])
+        self.assertNotIn('attempts', info['operation_records'][0])
+        self.assertIn('device:flaky', self.engine.resource_holds)
+        with self.assertRaises(IOPError) as held:
+            run.resume('do-not-repeat-unknown')
+        self.assertEqual(held.exception.code, 'device_outcome_unknown')
+
+    def test_a_seek_finds_where_a_reading_is_largest(self):
+        self.client.register({'id': 'fiber', 'driver': Fiber.__module__ + ':Fiber'})
+        over = {'x': {'minimum': -2, 'maximum': 2, 'step': 0.5, 'start': -1.5},
+                'y': {'minimum': -2, 'maximum': 2, 'step': 0.5, 'start': 1.2}}
+        best = {key: {'step': 'align', 'path': ['best', 'at', key]} for key in over}
+        run = self.submit([{'id': 'align', 'device': 'fiber', 'operation': 'couple',
+                            'seek': {'maximize': ['power'], 'over': over, 'points': 60}},
+                           {'id': 'there', 'device': 'fiber', 'operation': 'couple', 'bindings': best, 'after': ['align']}])
+        result = run.result(30)
+        # Once no step of 1/32 mm helps, the search ends: the other points are skipped and the next step goes there.
+        found = result['align']['best']
+        self.assertAlmostEqual(found['at']['x'], 0.37, delta=0.02)
+        self.assertAlmostEqual(found['at']['y'], -0.81, delta=0.02)
+        self.assertEqual(result['there']['power'], found['reading'])
+        taken = len(result['align']['power']['values'])
+        self.assertLess(taken, 60)
+        self.assertEqual(run.info(details=False)['operation_states'], {'completed': taken + 1, 'skipped': 60 - taken})
+        self.assertEqual(result['align']['positions']['y']['data']['unit'], 'mm')
+        self.assertEqual(result['align']['positions']['x']['values'][found['index']], found['at']['x'])
+        # Over a saved operation that turns the stage and reads the meter, from where a coarse sweep read most.
+        start = {'step': 'coarse', 'view': {'field': 'power'}, 'path': ['summary', 'max_at']}
+        result = self.submit([
+            {'id': 'coarse', 'operation': 'axis.measure', 'arguments': {'axis': 'stage'},
+             'sweep': {'angle': {'start': -60, 'stop': 30, 'points': 7}}},
+            {'id': 'fine', 'operation': 'axis.measure', 'arguments': {'axis': 'stage'}, 'after': ['coarse'],
+             'seek': {'maximize': ['power'], 'over': {'angle': {'minimum': -60, 'maximum': 30, 'step': 4, 'start': start}}}}
+        ]).result(30)
+        self.assertEqual(result['fine']['best'], {'index': 0, 'at': {'angle': 0}, 'reading': 1.0})
+        self.assertEqual(result['fine']['positions']['angle']['values'][:3], [0, 4, -4])
+        with self.assertRaisesRegex(IOPError, 'seek x goes from -9 to 2; couple takes nothing outside -5 to 5 mm'):
+            self.submit([{'id': 'align', 'device': 'fiber', 'operation': 'couple', 'seek': {
+                'maximize': ['power'], 'over': {**over, 'x': {'minimum': -9, 'maximum': 2, 'step': 0.5}}}}])
+        with self.assertRaisesRegex(IOPError, 'a seek places its own points'):
+            self.submit([{'id': 'align', 'device': 'fiber', 'operation': 'couple', 'sweep': {'x': [0, 1]},
+                          'seek': {'maximize': ['power'], 'over': {'y': over['y']}}}])
+
+    def test_a_step_graph_continues_where_it_stopped(self):
+        self.client.register({'id': 'flaky', 'driver': Flaky.__module__ + ':Flaky'})
+        Flaky.calls = 0
+        steps = [{'id': 'scan', 'device': 'flaky', 'operation': 'read', 'sweep': {'x': [1, 2, 3, 4]}},
+                 {'id': 'last', 'device': 'flaky', 'operation': 'read', 'arguments': {'x': 5}, 'after': ['scan']}]
+        # The meter stops answering at the third point, and the experiment fails there.
+        with patch.object(Flaky, 'failing', lambda call: call >= 3):
+            run = self.submit(steps)
+            self.assertEqual(run.wait(10, details=False)['state'], 'failed')
+        info = run.info(details=False)
+        self.assertTrue(info['can_resume'])
+        self.assertEqual(info['operation_states'], {'completed': 2, 'cancelled': 2, 'failed': 1})
+        self.assertIn('partial.txt', [f['name'].rsplit('/', 1)[-1] for f in run.files()])
+        # Answering again, it continues: the two points read are kept, the rest are read, and the sweep gathers all.
+        with patch.object(Flaky, 'failing', lambda call: False):
+            self.assertEqual(run.resume('continue-1')['attempt'], 2)
+            self.assertEqual(run.result(10)['scan']['value']['values'], [1, 2, 3, 4])
+        self.assertEqual(Flaky.calls, 6)
+        operations = run.info()['operation_records']
+        self.assertEqual([[a['state'] for a in op.get('attempts', [])] for op in operations], [[], [], ['failed'], [], []])
+        self.assertEqual(operations[2]['attempts'][0]['error'], 'TimeoutError: no reply within 5 s')
+        self.assertNotIn('partial.txt', [f['name'].rsplit('/', 1)[-1] for f in run.files()])
+        self.assertFalse(run.info(details=False)['can_resume'])
+        self.assertEqual(run.resume('continue-1')['attempt'], 2)
+        with self.assertRaisesRegex(IOPError, 'Continue an interrupted, failed or cancelled experiment'):
+            run.resume('continue-2')
+
+    def test_a_device_record_limits_what_its_setup_tolerates(self):
+        from .test_conditions import Part
+        limits = {'source': {'volts': {'maximum': 0.6, 'note': 'The diode overheats above 0.6 V'}}}
+        self.client.register({'id': 'smu', 'driver': Diode.__module__ + ':Diode', 'limits': limits})
+        volts = next(d for d in self.client.devices() if d['id'] == 'smu')['operations']['source']['parameters']['volts']
+        self.assertEqual((volts['maximum'], volts['limit']), (0.6, 'The diode overheats above 0.6 V'))
+        # A ramp that would go beyond is refused before anything runs, with the reason; within, it runs.
+        Diode.given = []
+        with self.assertRaises(IOPError) as refused:
+            self.submit([{'id': 'ramp', 'device': 'smu', 'operation': 'source',
+                          'sweep': {'volts': {'start': 0, 'stop': 1, 'points': 101}}}])
+        self.assertEqual(refused.exception.code, 'invalid_arguments')
+        self.assertIn('volts is 0.61 V, above 0.6 V: The diode overheats above 0.6 V', str(refused.exception))
+        self.assertEqual(Diode.given, [])
+        ramp = self.submit([{'id': 'ramp', 'device': 'smu', 'operation': 'source', 'sweep': {'volts': [0, 0.3, 0.6]}}])
+        self.assertEqual(ramp.result(10)['ramp']['current']['data']['shape'], [3])
+        # A limit stays within what the instrument accepts, on a numeric parameter of one of its operations.
+        for limits, message in (({'set_x': {'position': {'maximum': 2}}}, 'takes nothing outside -1 to 1'),
+                                ({'set_x': {'position': {'minimum': 0.5, 'maximum': 0.2}}}, 'minimum is above maximum'),
+                                ({'set_x': {'speed': {'maximum': 1}}}, 'numeric parameter'), ({'jump': {'x': {}}}, 'name an operation')):
+            with self.subTest(limits=limits), self.assertRaisesRegex(IOPError, message):
+                self.client.register({'id': 'coupler', 'driver': Part.__module__ + ':Part', 'config': {'part': 'coupler'},
+                                      'limits': limits})
+
+    def test_a_step_repeats_for_the_spread_of_a_reading_or_until_a_reading(self):
+        # Twenty readings in turn; at each of two angles, three readings, a row per angle.
+        result = self.submit([{'id': 'read', 'device': 'meter', 'operation': 'measure', 'repeat': 20},
+                              {'id': 'rows', 'operation': 'axis.measure', 'arguments': {'axis': 'stage'},
+                               'sweep': {'angle': [0, 45]}, 'repeat': 3, 'after': ['read']}]).result(20)
+        read = result['read']['power']['data']
+        self.assertEqual((read['shape'], read['axes']), ([20], [{'name': 'repeat', 'start': 0, 'step': 1}]))
+        rows = result['rows']['power']
+        self.assertEqual((rows['data']['shape'], [axis['name'] for axis in rows['data']['axes']]), ([2, 3], ['angle', 'repeat']))
+        self.assertEqual([[round(value, 9) for value in row] for row in rows['values']], [[1, 1, 1], [0, 0, 0]])
+        # A saved operation takes how many times from a parameter.
+        self.client.save_operation({'id': 'meter.spread', 'layer': 'standard', 'description': 'Read the meter several times',
+                                    'parameters': {'n': {'type': 'integer', 'minimum': 1}},
+                                    'steps': [{'id': 'read', 'device': 'meter', 'operation': 'measure', 'repeat': '${n}'}],
+                                    'result': {'power': {'step': 'read', 'path': ['power']}}})
+        spread = self.submit([{'id': 'spread', 'operation': 'meter.spread', 'arguments': {'n': 4}}]).result(10)
+        self.assertEqual(spread['spread']['power']['data']['shape'], [4])
+        # Repeated until a reading passes a limit, a step waits for it: here the fifth reading, above 4.
+        self.client.register({'id': 'counter', 'driver': Counter.__module__ + ':Counter'})
+        Counter.count = 0
+        run = self.submit([{'id': 'poll', 'device': 'counter', 'operation': 'read', 'repeat': 100,
+                            'until': {'path': ['count'], 'above': 4}}])
+        self.assertEqual(run.result(10)['poll']['count']['values'][:6], [1, 2, 3, 4, 5, None])
+        self.assertEqual(run.info(details=False)['operation_states'], {'completed': 5, 'skipped': 95})
+
+    def test_a_sweep_stops_once_what_it_gathered_is_known_well_enough(self):
+        self.client.register({'id': 'noisy', 'driver': Noisy.__module__ + ':Noisy'})
+        Noisy.seed = 12345
+        # A power read with a spread of 29 µW, until its mean is known to 5 µW, from five readings on.
+        run = self.submit([{'id': 'mean', 'device': 'noisy', 'operation': 'read', 'repeat': 1000,
+                            'until': {'view': {'field': 'power'}, 'path': ['summary', 'error'], 'below': 5e-6, 'points': 5}}])
+        values = [value for value in run.result(20)['mean']['power']['values'] if value is not None]
+        # It stops at the first reading whose error of the mean is below 5 µW, here the 37th of the 1000 allowed.
+        error = [statistics.stdev(values[:n]) / math.sqrt(n) for n in (len(values) - 1, len(values))]
+        self.assertTrue(error[1] < 5e-6 <= error[0] and len(values) < 100)
+        summary = run.read_array('mean.power')['summary']
+        self.assertAlmostEqual(summary['error'], error[1], delta=1e-12)
+        self.assertAlmostEqual(summary['mean'], 1e-3, delta=3 * summary['error'])
+        stopped = next(op['gathers']['mean']['stopped'] for op in run.info()['operation_records'] if 'gathers' in op)
+        self.assertEqual(stopped['point'], len(values) - 1)
+        self.assertAlmostEqual(stopped['reading'], error[1], delta=1e-12)
+        # An adaptive sweep over 100 MHz, until a Lorentzian through what it gathered gives the line's center to
+        # 20 kHz: here after 18 of the 200 points it may take.
+        run = self.submit([{'id': 'find', 'device': 'noisy', 'operation': 'probe',
+                            'sweep': {'hz': {'start': 1.0e9, 'stop': 1.1e9, 'points': 200, 'adapt': ['power']}},
+                            'until': {'view': {'field': 'power', 'fit': 'lorentzian'}, 'path': ['fit', 'errors', 'center'],
+                                      'below': 20e3, 'points': 10}}])
+        run.result(60)
+        fit = run.read_array('find.power', fit='lorentzian')['fit']
+        self.assertLess(run.info(details=False)['operation_states']['completed'], 50)
+        self.assertLess(fit['errors']['center'], 20e3)
+        self.assertAlmostEqual(fit['center'], 1.0613e9, delta=3 * fit['errors']['center'])
+        self.assertAlmostEqual(fit['width'], 3e6, delta=3 * fit['errors']['width'])
 
     def test_two_parameters_give_a_map_and_a_sweep_inside_a_saved_operation_combines(self):
         run = self.submit([{'id': 'map', 'operation': 'axis.measure',
@@ -299,6 +818,10 @@ class SweepCase(unittest.TestCase):
         for volts in range(4):
             seen = run.read_array('map.spectrum', along='wavelength', at={'volts': volts}, points=50)
             self.assertAlmostEqual(seen['summary']['max_at'], 500 + 10 * volts)
+        # Read at every bias at once, from the four files: the line's center against the bias.
+        rows = run.read_array('map.spectrum', along='wavelength', peak='max', points=1)['rows']
+        self.assertEqual((rows['axis'], rows['coordinates'], [round(line['center'], 6) for line in rows['peak']]),
+                         ('volts', [0, 1, 2, 3], [500, 510, 520, 530]))
         self.assertEqual(run.read_array('map.spectrum', along='volts', at={'wavelength': 1000})['values'][0], 100)
         # As a map: each bias a row, wavelengths 505 to 535 nm in columns of 2 nm.
         seen = run.read_array('map.spectrum', along=['volts', 'wavelength'], low=[None, 505], high=[None, 535],
@@ -327,6 +850,40 @@ class SweepCase(unittest.TestCase):
             self.assertEqual(gathered['angle']['data']['axes'], [{'name': 'angle', 'start': 10.0, 'step': 10.0, 'unit': 'deg'}])
             seen = run.read_array('call.power', request_id='two-angles')
             self.assertEqual((seen['request_id'], seen['summary']['min_at']), ('two-angles', 20.0))
+            # The other options of a step apply to a use too: three readings at each angle, and a search for the best.
+            thrice = run.call('axis.measure', {'axis': 'stage'}, sweep={'angle': [10, 20]}, repeat=3)
+            self.assertEqual(thrice['power']['data']['shape'], [2, 3])
+            sought = run.call('axis.measure', {'axis': 'stage'}, retry={'times': 1},
+                              seek={'maximize': ['power'], 'over': {'angle': {'minimum': -60, 'maximum': 30, 'step': 8, 'start': 20}}})
+            self.assertEqual((sought['best']['at'], sought['best']['reading']), ({'angle': 0}, 1.0))
+            self.assertEqual(sought['positions']['angle']['values'][:4], [20, 28, 12, 4])
+
+    def test_an_experiment_is_saved_as_one_archive(self):
+        with self.client.start_experiment(name='Two angles', resources=['stage', 'meter']) as run:
+            run.call('axis.measure', {'axis': 'stage'}, sweep={'angle': [10, 20]}, request_id='two-angles')
+            run.save_file('notes.csv', 'angle,power\n10,1\n')
+        path = run.archive(self.temp.name + '/two-angles.zip')
+        with zipfile.ZipFile(path) as archive:
+            names = set(archive.namelist())
+            self.assertLessEqual({'experiment.json', 'operations.jsonl', 'events.jsonl', 'saved-operations.json'}, names)
+            self.assertEqual(json.loads(archive.read('experiment.json'))['id'], run.id)
+            operations = [json.loads(line) for line in archive.read('operations.jsonl').splitlines()]
+            self.assertEqual([(op['step'], op['state']) for op in operations][:2],
+                             [('call.0.turn', 'completed'), ('call.0.read', 'completed')])
+            self.assertEqual(len(operations), 4)
+            self.assertEqual([item['id'] for item in json.loads(archive.read('saved-operations.json'))], ['axis.measure'])
+            notes = [name for name in names if name.startswith('files/') and name.endswith('notes.csv')]
+            self.assertEqual(archive.read(notes[0]), b'angle,power\n10,1\n')
+            # The RO-Crate describes each entry with its size, and the experiment as an action using the devices.
+            graph = {entity['@id']: entity for entity in json.loads(archive.read('ro-crate-metadata.json'))['@graph']}
+            parts = graph['./']['hasPart']
+            self.assertEqual({part['@id'] for part in parts}, names - {'ro-crate-metadata.json'})
+            self.assertTrue(all(graph[name]['contentSize'] == str(archive.getinfo(name).file_size) for name in names
+                                if name != 'ro-crate-metadata.json'))
+            self.assertLessEqual({'#iop', '#device-stage', '#device-meter'},
+                                 {item['@id'] for item in graph['#experiment']['instrument']})
+            self.assertEqual(graph['#experiment']['actionStatus']['@id'], 'http://schema.org/CompletedActionStatus')
+            self.assertIn(graph['./']['license']['@id'], graph)
 
     @unittest.skipUnless(importlib.util.find_spec('mcp'), 'Install the agent extra to exercise MCP')
     def test_agents_sweep_in_a_batch_and_read_what_it_gathered(self):
@@ -352,6 +909,12 @@ class SweepCase(unittest.TestCase):
             self.assertEqual(reply['results']['scan']['power']['values_omitted'], 91)
             seen = call('read_array', {'run_id': run.id, 'request_id': 'scan', 'field': 'scan.power', 'points': 4})
             self.assertEqual((seen['summary']['max_at'], len(seen['envelope']['max'])), (0.0, 4))
+            # A search that stops once the power exceeds 0.9: at -9 degrees, where cos²(18°) is 0.905.
+            reply = call('submit_operations', {**submission, 'request_id': 'search', 'steps': [
+                {**submission['steps'][0], 'until': {'path': ['power'], 'above': 0.9}}]})
+            self.assertEqual(reply['sweeps']['scan']['points'], {'completed': 74, 'skipped': 108})
+            self.assertEqual(reply['sweeps']['scan']['stopped']['point'], 36)
+            self.assertAlmostEqual(reply['sweeps']['scan']['stopped']['reading'], power(-9))
 
     def test_sweeps_are_checked_before_anything_runs(self):
         for step, message in (
@@ -364,7 +927,14 @@ class SweepCase(unittest.TestCase):
                 ({'id': 's', 'device': 'stage', 'operation': 'move_to',
                   'sweep': {'angle_deg': {'center': 0, 'span': 1, 'points': {'step': 'x'}}}}, 'positive integer'),
                 ({'id': 's', 'device': 'stage', 'operation': 'move_to',
-                  'sweep': {'angle_deg': {'center': {'step': 'nowhere'}, 'span': 1, 'points': 3}}}, 'unknown step')):
+                  'sweep': {'angle_deg': {'center': {'step': 'nowhere'}, 'span': 1, 'points': 3}}}, 'unknown step'),
+                ({'id': 's', 'device': 'stage', 'operation': 'move_to', 'until': {'path': ['angle_actual'], 'above': 1}},
+                 'until and retake belong to a sweep'),
+                ({'id': 's', 'device': 'stage', 'operation': 'move_to', 'repeat': 0}, 'from 1 to 10000'),
+                ({'id': 's', 'device': 'stage', 'operation': 'move_to', 'sweep': {'angle_deg': [1, 2]},
+                  'until': {'path': ['angle_actual'], 'above': 2, 'below': 3}}, 'below is less than above'),
+                ({'id': 's', 'device': 'stage', 'operation': 'move_to', 'sweep': {'angle_deg': [1, 2]},
+                  'until': {'path': ['angle_actual'], 'above': '${limit}'}}, 'values of sweep, repeat, until and seek')):
             with self.assertRaisesRegex(IOPError, message):
                 self.submit([step])
         # An end read from an earlier result is a number only once it is read: the first point fails if it is not.
@@ -380,3 +950,9 @@ class SweepCase(unittest.TestCase):
         with self.assertRaisesRegex(IOPError, 'start, stop'):
             self.client.save_operation({**PEAK, 'parameters': {}, 'steps': [
                 {**PEAK['steps'][0], 'sweep': {'angle': {'start': 0, 'stop': 1}}}, PEAK['steps'][1]]})
+        with self.assertRaisesRegex(IOPError, 'describe parameter limit'):
+            self.client.save_operation({**PEAK, 'steps': [
+                {**PEAK['steps'][0], 'until': {'path': ['power'], 'above': '${limit}'}}, PEAK['steps'][1]]})
+        with self.assertRaisesRegex(IOPError, 'until and retake belong to a sweep'):
+            self.client.save_operation({**PEAK, 'steps': [
+                PEAK['steps'][0], {**PEAK['steps'][1], 'until': {'path': ['angle_actual'], 'above': 1}}]})

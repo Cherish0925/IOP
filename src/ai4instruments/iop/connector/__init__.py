@@ -17,7 +17,7 @@ import sys
 import tempfile
 from urllib.parse import urlsplit
 
-VERSION = "1.5.0"
+VERSION = "1.6.0"
 HERE = Path(__file__).parent
 
 
@@ -126,11 +126,18 @@ def connection(args):
     )
 
 
+def _skill_folder():
+    """The skill beside this package once installed, or in the source tree."""
+    return HERE if (HERE / "SKILL.md").is_file() else HERE.parents[3] / "iop/connect/skills/iop-lab"
+
+
 def skill():
-    installed = HERE / "SKILL.md"
-    if installed.is_file():
-        return installed.read_bytes()
-    return (HERE.parents[3] / "iop/connect/skills/iop-lab/SKILL.md").read_bytes()
+    return (_skill_folder() / "SKILL.md").read_bytes()
+
+
+def guides():
+    """The skill's references by topic: each read only when a task needs it."""
+    return {path.stem: path.read_bytes() for path in sorted((_skill_folder() / "references").glob("*.md"))}
 
 
 def files_for(name, profile):
@@ -151,6 +158,8 @@ def files_for(name, profile):
     }
     for host in ("native", "aros"):
         provided[f"{host}/{name}/skills/iop-lab/SKILL.md"] = guide
+        for topic, text in guides().items():
+            provided[f"{host}/{name}/skills/iop-lab/references/{topic}.md"] = text
     references = (
         {profile["credential"]["env"]: "${" + profile["credential"]["env"] + "}"}
         if profile["mode"] == "remote"

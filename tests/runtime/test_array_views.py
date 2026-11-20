@@ -19,6 +19,10 @@ from .test_arrays import start
 
 # A resonance dip over a frequency sweep: 1001 points, 1.0 to 1.1 GHz.
 DIP = [1.0 - 0.8 / (1 + ((i - 600) / 20) ** 2) for i in range(1001)]
+# Three modes on the same sweep, 0.77, 0.5 and 0.3 deep, on a ripple 0.005 high.
+MODES = [1.0 - sum(depth / (1 + ((1.0e9 + 1e5 * i - center) / half) ** 2)
+                   for center, half, depth in ((1.0213e9, 1.05e6, 0.77), (1.0587e9, 0.8e6, 0.5), (1.0841e9, 1.5e6, 0.3)))
+         + 0.005 * math.sin(i / 7) for i in range(1001)]
 FREQUENCY = {'name': 'frequency', 'unit': 'Hz', 'start': 1.0e9, 'step': 1.0e5}
 
 
@@ -75,6 +79,38 @@ class ViewCase(unittest.TestCase):
     def view(self, values, description, use_native=True, **options):
         holder, path = saved(self.folder.name, values, description)
         return views.view(holder, path, use_native=use_native, **options)
+
+    def assertFitEqual(self, actual, expected, path='fit'):
+        """Compare fit structure exactly while allowing final-rounding differences between math libraries."""
+        self.assertIs(type(actual), type(expected), path)
+        if isinstance(expected, dict):
+            self.assertEqual(actual.keys(), expected.keys(), path)
+            for key in expected:
+                self.assertFitEqual(actual[key], expected[key], f'{path}.{key}')
+        elif isinstance(expected, list):
+            self.assertEqual(len(actual), len(expected), path)
+            for index, (a, b) in enumerate(zip(actual, expected)):
+                self.assertFitEqual(a, b, f'{path}[{index}]')
+        elif isinstance(expected, float):
+            self.assertTrue(math.isclose(actual, expected, rel_tol=5e-15, abs_tol=0.0),
+                            f'{path}: {actual!r} != {expected!r}')
+        else:
+            self.assertEqual(actual, expected, path)
+
+    def test_fit_comparison_allows_roundoff_but_rejects_changed_results(self):
+        def row(value):
+            return [{'count': 3, 'errors': {'zero': value}, 'model': 'line', 'width': None}]
+        for value in (2355324.4776665154, 1e-170, 1e-300):
+            with self.subTest(value=value):
+                self.assertFitEqual(row(math.nextafter(value, math.inf)), row(value), 'rows.fit')
+                for changed in (value * (1 + 1e-12), 0.0):
+                    with self.assertRaises(AssertionError):
+                        self.assertFitEqual(row(changed), row(value), 'rows.fit')
+        for actual, expected in (({'count': 3.0}, {'count': 3}), ({'count': 4}, {'count': 3}),
+                                  ({'model': 'gaussian'}, {'model': 'line'}), ({'width': 0.0}, {'width': None}),
+                                  ({'width': None}, {}), ([None], [None, None])):
+            with self.subTest(actual=actual, expected=expected), self.assertRaises(AssertionError):
+                self.assertFitEqual(actual, expected)
 
     def test_a_trace_reads_as_a_summary_an_envelope_and_a_window(self):
         trace = {'dtype': 'float64', 'axes': [FREQUENCY]}
@@ -264,10 +300,11 @@ class ViewCase(unittest.TestCase):
         self.assertEqual(self.view([0, 5, 0, 1, 2, 3], image, along='column', at={'row': 0}, peak='max')['peak']['index'], 1)
         # An axis of one position, such as the only channel of a stream, is read at it.
         self.assertEqual(self.view([0, 5, 0], {'dtype': 'float64', 'shape': [3, 1]}, peak='max')['peak']['index'], 1)
-        for description, options, message in ((image, {'peak': 'max'}, 'fix the others with at: column'),
+        cube = {'dtype': 'float64', 'shape': [2, 3, 2], 'axes': [{'name': 'row'}, {'name': 'column'}, {'name': 'depth'}]}
+        for description, options, message in ((cube, {'peak': 'max'}, 'at most one other; fix the others with at: column, depth'),
                                               (trace, {'peak': 'top'}, 'max, or min for a dip')):
             with self.assertRaisesRegex(ValueError, message):
-                self.view(DIP, description, **options) if description is trace else self.view([0] * 6, image, **options)
+                self.view(DIP, description, **options) if description is trace else self.view([0] * 12, cube, **options)
 
     def test_peaks_fit_actual_coordinates_in_both_directions(self):
         for coordinates, values, peak in (([0, 1, 3], [0, 2, 0], 'max'),
@@ -279,6 +316,116 @@ class ViewCase(unittest.TestCase):
             self.assertAlmostEqual(line['width'], 1.3125)
         with self.assertRaisesRegex(ValueError, 'strictly increase or decrease'):
             self.view([0, 2, 0], {'dtype': 'float64', 'axes': [{'name': 'x', 'coordinates': [0, 1, 0]}]}, peak='max')
+
+    def test_the_lines_of_a_spectrum_stand_out_by_their_prominence(self):
+        trace = {'dtype': 'float64', 'axes': [FREQUENCY]}
+        modes = self.view(MODES, trace, peak='min', prominence=0.1)['peaks']
+        self.assertEqual(len(modes), 3)
+        for line, center, width in zip(modes, (1.0213e9, 1.0587e9, 1.0841e9), (2.1e6, 1.6e6, 3e6)):
+            self.assertAlmostEqual(line['center'], center, delta=3e4)
+            self.assertAlmostEqual(line['width'], width, delta=0.03 * width)
+        self.assertEqual([round(line['prominence'], 1) for line in modes], [0.8, 0.5, 0.3])
+        # A larger prominence leaves the two deeper modes; a small one adds the ripple's own dips.
+        self.assertEqual(len(self.view(MODES, trace, peak='min', prominence=0.4)['peaks']), 2)
+        self.assertGreater(len(self.view(MODES, trace, peak='min', prominence=0.001)['peaks']), 3)
+        for options, message in (({'prominence': 0.1}, 'read with a peak or a dip'),
+                                 ({'peak': 'min', 'prominence': 0}, 'positive number')):
+            with self.assertRaisesRegex(ValueError, message):
+                self.view(MODES, trace, **options)
+
+    def test_where_a_trace_crosses_a_level(self):
+        # The current of a diode reaches 1 mA between 0.53 and 0.54 V; on the straight line between them, at 0.5352.
+        volts = {'name': 'volts', 'unit': 'V', 'start': 0, 'step': 0.01}
+        current = [1e-12 * math.expm1(0.01 * i / 0.02585) for i in range(60)]
+        found = self.view(current, {'dtype': 'float64', 'axes': [volts]}, level=1e-3)['crossings']
+        self.assertEqual((len(found), found[0]['rising'], found[0]['index']), (1, True, 53))
+        self.assertAlmostEqual(found[0]['at'], 0.5352, delta=1e-4)
+        # A dip crosses a level on its way down and back up, placed at the coordinates of its axis.
+        self.assertEqual(self.view(DIP, {'dtype': 'float64', 'axes': [FREQUENCY]}, level=0.6)['crossings'],
+                         [{'at': 1.058e9, 'rising': False, 'index': 580}, {'at': 1.062e9, 'rising': True, 'index': 619}])
+        # A magnetization loop swept up and back over listed fields crosses zero at the coercive field each way.
+        fields = [round(-1 + 0.1 * k, 10) for k in range(21)] + [round(1 - 0.1 * k, 10) for k in range(1, 21)]
+        moments = [math.tanh((h - 0.3 if k <= 20 else h + 0.3) / 0.1) for k, h in enumerate(fields)]
+        loop = self.view(moments, {'dtype': 'float64', 'axes': [{'name': 'field', 'coordinates': fields}]}, level=0)
+        self.assertEqual([(round(c['at'], 6), c['rising']) for c in loop['crossings']], [(0.3, True), (-0.3, False)])
+        for level in (math.inf, 'high'):
+            with self.assertRaisesRegex(ValueError, 'level is a finite number'):
+                self.view(DIP, {'dtype': 'float64'}, level=level)
+        with self.assertRaisesRegex(ValueError, 'A level is read along one axis, at each position of at most one other'):
+            self.view([0] * 12, {'dtype': 'float64', 'shape': [2, 3, 2]}, level=0)
+
+    def test_a_straight_line_through_the_straight_part_of_a_trace(self):
+        # A laser gives 0.4 W/A above its threshold at 25 mA and a little spontaneous light throughout. The line
+        # through the light above 30 mA reaches zero at 24.94 mA: the threshold by its usual definition.
+        current = {'name': 'current', 'unit': 'A', 'start': 0, 'step': 1e-3}
+        light = [1e-3 * i * 1e-3 + 0.4 * max(0.0, i * 1e-3 - 0.025) for i in range(61)]
+        fit = self.view(light, {'dtype': 'float64', 'axes': [current], 'unit': 'W'}, low=0.03, fit='line')['fit']
+        for key, expected in (('slope', 0.401), ('intercept', -0.01), ('zero', 0.01 / 0.401), ('residual', 0)):
+            self.assertAlmostEqual(fit[key], expected, delta=1e-12)
+        self.assertLess(max(fit['errors'].values()), 1e-12)
+        self.assertEqual(fit['count'], 31)
+        tiny = self.view([1e-170 * x for x in range(10)], {'dtype': 'float64'}, fit='line')['fit']
+        self.assertAlmostEqual(tiny['slope'] / 1e-170, 1.0)
+        self.assertEqual(tiny['errors']['zero'], 0.0)
+        with self.assertRaisesRegex(ValueError, 'fit is line'):
+            self.view(light, {'dtype': 'float64'}, fit='curve')
+        with self.assertRaisesRegex(ValueError, 'A fit is read along one axis, at each position of at most one other'):
+            self.view([0] * 12, {'dtype': 'float64', 'shape': [2, 3, 2]}, fit='line')
+
+    def test_lines_of_lorentzian_and_gaussian_shape_through_noise(self):
+        # A resonance at 1.06 GHz, 0.5 MHz wide (Q 2120), under noise of up to 0.02 from a fixed sequence: the
+        # Lorentzian through its 201 points gives Q within 0.5%, where the width at half height is 2% off.
+        seed = [12345]
+
+        def noise():
+            seed[0] = (seed[0] * 6364136223846793005 + 1442695040888963407) % 2 ** 64
+            return ((seed[0] >> 11) / 2 ** 53 - 0.5) * 0.04
+        frequency = {'name': 'frequency', 'unit': 'Hz', 'start': 1.0575e9, 'step': 25e3}
+        dip = [1 - 0.8 / (1 + ((1.0575e9 + 25e3 * i - 1.06e9) / 0.25e6) ** 2) + noise() for i in range(201)]
+        seen = self.view(dip, {'dtype': 'float64', 'axes': [frequency]}, peak='min', fit='lorentzian')
+        fit, line = seen['fit'], seen['peak']
+        self.assertAlmostEqual(fit['center'] / fit['width'], 2120, delta=0.005 * 2120)
+        self.assertGreater(abs(line['center'] / line['width'] - 2120), 0.01 * 2120)
+        self.assertEqual((round(fit['height'], 1), round(fit['base'], 2), fit['count']), (-0.8, 1.0, 201))
+        # The true center and width lie within three standard errors, which come with the fit.
+        self.assertLess(abs(fit['center'] - 1.06e9), 3 * fit['errors']['center'])
+        self.assertLess(abs(fit['width'] - 0.5e6), 3 * fit['errors']['width'])
+        self.assertLess(fit['errors']['width'], 0.01 * 0.5e6)
+        # One high value on the flat noise beside the dip is no line its samples resolve: its fit gives no errors.
+        spike = [1 + noise() for _ in range(120)]
+        spike[60] = 2
+        for shape in ('lorentzian', 'gaussian'):
+            fit = self.view(spike, {'dtype': 'float64'}, fit=shape)['fit']
+            self.assertEqual((fit['width'] < 1, fit['errors']), (True, None))
+        # A Gaussian beam profile 10 um wide at half height, sampled every 0.5 um.
+        x = {'name': 'x', 'unit': 'um', 'start': 0, 'step': 0.5}
+        profile = [0.1 + 2 * math.exp(-math.log(2) * ((0.5 * i - 64.5) / 5) ** 2) for i in range(200)]
+        beam = self.view(profile, {'dtype': 'float64', 'axes': [x]}, fit='gaussian')['fit']
+        self.assertEqual((round(beam['center'], 9), round(beam['width'], 9), round(beam['height'], 9)), (64.5, 10, 2))
+        with self.assertRaisesRegex(ValueError, 'fit is line, lorentzian or gaussian'):
+            self.view(profile, {'dtype': 'float64'}, fit='voigt')
+        with self.assertRaisesRegex(ValueError, 'fitted to at most 1000000 values'):
+            views.plan({'dtype': 'float64', 'shape': [1000, 2000]}, along=1, fit='gaussian')
+
+    def test_lines_crossings_and_fits_at_each_position_of_another_axis(self):
+        # A line that moves 10 nm per volt, read along wavelength at each bias: its center tunes with the bias.
+        volts = {'name': 'volts', 'unit': 'V', 'start': 0, 'step': 1}
+        wavelength = {'name': 'wavelength', 'unit': 'nm', 'start': 400, 'step': 0.1}
+        spectra = [100 / (1 + ((400 + 0.1 * i - 500 - 10 * v) / 2) ** 2) for v in range(4) for i in range(2000)]
+        rows = self.view(spectra, {'dtype': 'float64', 'shape': [4, 2000], 'axes': [volts, wavelength]},
+                         along='wavelength', peak='max', level=50, fit='line')['rows']
+        self.assertEqual((rows['axis'], rows['unit'], rows['coordinates']), ('volts', 'V', [0, 1, 2, 3]))
+        self.assertEqual([round(line['center'], 6) for line in rows['peak']], [500, 510, 520, 530])
+        self.assertEqual([[round(c['at'], 3) for c in row] for row in rows['crossings']],
+                         [[498, 502], [508, 512], [518, 522], [528, 532]])
+        self.assertEqual([fit['count'] for fit in rows['fit']], [2000] * 4)
+        # A labelled axis gives its labels; prominence reads one trace.
+        labelled = self.view([0, 1, 0, 2, 3, 2], {'dtype': 'float64', 'shape': [2, 3],
+                                                 'axes': [{'name': 'channel', 'labels': ['x', 'y']}, {'name': 'k'}]},
+                             along='k', peak='max')['rows']
+        self.assertEqual((labelled['labels'], [line['index'] for line in labelled['peak']]), (['x', 'y'], [1, 1]))
+        with self.assertRaisesRegex(ValueError, 'prominence reads the lines of one trace'):
+            self.view(spectra, {'dtype': 'float64', 'shape': [4, 2000]}, along=1, peak='max', prominence=1)
 
     def test_inline_values_are_viewed_without_a_file(self):
         holder = arrays.result(_payload(DIP[:100], {}), arrays.check_result({'dtype': 'float64'}), None)
@@ -304,12 +451,32 @@ class ViewCase(unittest.TestCase):
             (nan_trace, {'dtype': 'float64'}, {'points': 37, 'peak': 'max'}),
             (nan_trace, {'dtype': 'float32', 'byte_order': 'big'}, {'start': 101, 'stop': 4093, 'peak': 'min'}),
             (DIP, {'dtype': 'float64', 'axes': [FREQUENCY]}, {'low': 1.05e9, 'high': 1.07e9, 'peak': 'min'}),
+            (MODES, {'dtype': 'float64', 'axes': [FREQUENCY]}, {'peak': 'min', 'prominence': 0.1}),
+            (nan_trace, {'dtype': 'float32', 'byte_order': 'big'}, {'start': 101, 'stop': 9000, 'peak': 'max', 'prominence': 1e8}),
             ([0, 2, 0], {'dtype': 'float64', 'axes': [{'name': 'x', 'coordinates': [0, 1, 3]}]}, {'peak': 'max'}),
             ([0, -2, 0], {'dtype': 'float64', 'axes': [{'name': 'x', 'coordinates': [3, 1, 0]}]}, {'peak': 'min'}),
             (z, {'dtype': 'float64', 'shape': [-1, 2], 'axes': [{'name': 'k'}, {'name': 'component', 'labels': ['re', 'im']}]},
              {'at': {'component': 'power'}, 'points': 40, 'peak': 'max'}),
             (cube, {'dtype': 'float64', 'shape': [6, 7, 50], 'axes': [{'name': 'a'}, {'name': 'b'}, {'name': 'c'}]},
              {'along': 'c', 'at': {'a': 4, 'b': 2}, 'peak': 'max'}),
+            (nan_trace, {'dtype': 'float64'}, {'points': 37, 'level': 3e9}),
+            (nan_trace, {'dtype': 'float32', 'byte_order': 'big'}, {'start': 101, 'stop': 9000, 'level': 3.5e9, 'peak': 'max'}),
+            ([-1, 1, -1, 1], {'dtype': 'float64', 'axes': [{'name': 'x', 'coordinates': [0, 2, 1, 3]}]}, {'level': 0}),
+            (nan_trace, {'dtype': 'float64'}, {'points': 37, 'fit': 'line'}),
+            (DIP, {'dtype': 'float64', 'axes': [FREQUENCY]}, {'low': 1.05e9, 'high': 1.07e9, 'fit': 'line', 'level': 0.5}),
+            ([1, 3, 2, 5], {'dtype': 'float64', 'axes': [{'name': 'x', 'coordinates': [0, 2, 1, 3]}]}, {'fit': 'line'}),
+            ([1e-170 * x for x in range(10)], {'dtype': 'float64'}, {'fit': 'line'}),
+            (cube, {'dtype': 'float64', 'shape': [6, 7, 50], 'axes': [{'name': 'a'}, {'name': 'b'}, {'name': 'c'}]},
+             {'along': 'c', 'at': {'a': 4}, 'peak': 'max', 'level': 70, 'fit': 'line'}),
+            (nan_trace[:20000], {'dtype': 'float32', 'byte_order': 'big', 'shape': [100, 200]},
+             {'along': 0, 'start': 3, 'stop': 97, 'peak': 'min', 'level': 3.2e9}),
+            (DIP, {'dtype': 'float64', 'axes': [FREQUENCY]}, {'low': 1.05e9, 'high': 1.07e9, 'fit': 'lorentzian'}),
+            (nan_trace, {'dtype': 'float32', 'byte_order': 'big'}, {'start': 101, 'stop': 400, 'fit': 'gaussian'}),
+            ([0, 1, 3, 1, 0, 0.5], {'dtype': 'float64', 'axes': [{'name': 'x', 'coordinates': [0, 1, 2, 3, 5, 8]}]},
+             {'fit': 'lorentzian'}),
+            (cube, {'dtype': 'float64', 'shape': [6, 7, 50], 'axes': [{'name': 'a'}, {'name': 'b'}, {'name': 'c'}]},
+             {'along': 'c', 'at': {'a': 4}, 'fit': 'gaussian'}),
+            ([1, 1.01, 0.99, 1, 2, 1.01, 1, 0.99, 1], {'dtype': 'float64'}, {'fit': 'lorentzian'}),
         ]
         compared = 0
         for values, description, options in cases:
@@ -331,6 +498,17 @@ class ViewCase(unittest.TestCase):
                 for a, b in zip(native['buckets']['mean'], python['buckets']['mean']):
                     self.assertTrue(a is b is None or abs(a - b) <= 1e-9 * max(1.0, abs(b)))
                 self.assertEqual(native.get('peak'), python.get('peak'))
+                self.assertEqual(native.get('peaks'), python.get('peaks'))
+                self.assertEqual(native.get('crossings'), python.get('crossings'))
+                self.assertFitEqual(native.get('fit'), python.get('fit'))
+                native_rows, python_rows = native.get('rows'), python.get('rows')
+                if native_rows is None or python_rows is None:
+                    self.assertEqual(native_rows, python_rows)
+                else:
+                    self.assertEqual(native_rows.keys(), python_rows.keys())
+                    self.assertEqual({k: v for k, v in native_rows.items() if k != 'fit'},
+                                     {k: v for k, v in python_rows.items() if k != 'fit'})
+                    self.assertFitEqual(native_rows.get('fit'), python_rows.get('fit'), 'rows.fit')
         # The chunks of a stream: the same values split across files at arbitrary byte boundaries.
         holder, path = saved(folder, nan_trace, {'dtype': 'float64'})
         payload, parts = path.read_bytes(), []
@@ -376,10 +554,22 @@ class ServiceViewCase(unittest.TestCase):
         zoomed = self.client.read_array(sweep['id'], low=1.0598e9, high=1.0602e9)
         self.assertEqual(zoomed['values'], DIP[598:603])
         self.assertEqual(self.client.read_array(sweep['id'], peak='min', points=2)['peak']['center'], 1.06e9)
+        self.assertEqual([line['index'] for line in self.client.read_array(sweep['id'], peak='min', prominence=0.5)['peaks']],
+                         [600])
+        self.assertEqual([(c['at'], c['rising']) for c in self.client.read_array(sweep['id'], level=0.6)['crossings']],
+                         [(1.058e9, False), (1.062e9, True)])
+        fit = self.client.read_array(sweep['id'], fit='lorentzian')['fit']
+        self.assertAlmostEqual(fit['center'], 1.06e9, delta=1)
+        self.assertAlmostEqual(fit['width'], 4e6, delta=1)
         printed = subprocess.check_output([sys.executable, '-m', 'ai4instruments.iop', '--endpoint', self.client.endpoint,
-                                           'array', sweep['id'], '--low', '1.0598e9', '--high', '1.0602e9', '--peak', 'min'],
+                                           'array', sweep['id'], '--low', '1.0598e9', '--high', '1.0602e9', '--peak', 'min',
+                                           '--level', '0.201', '--fit', 'line'],
                                           env=dict(os.environ, IOP_TOKEN=self.config['token']), text=True)
-        self.assertEqual((json.loads(printed)['values'], json.loads(printed)['peak']['center']), (DIP[598:603], 1.06e9))
+        printed = json.loads(printed)
+        self.assertEqual((printed['values'], printed['peak']['center'], [c['rising'] for c in printed['crossings']]),
+                         (DIP[598:603], 1.06e9, [False, True]))
+        # The window is symmetric about the dip: the line through it is flat.
+        self.assertEqual((printed['fit']['slope'], printed['fit']['zero'], printed['fit']['count']), (0.0, None, 5))
         with self.assertRaisesRegex(IOPError, "several arrays.*'items.trace', 'items.reference'"):
             self.client.read_array(pair['id'])
         self.assertEqual(self.client.read_array(pair['id'], 'items.reference', points=2)['envelope']['max'], [1.0, 1.0])
@@ -396,8 +586,8 @@ class ServiceViewCase(unittest.TestCase):
         self.assertIn('read_array', mcp.TOOLSETS['experiments'])
         # The schema field is inputSchema in MCP SDK 1.x and input_schema in 2.x.
         schema = getattr(tools['read_array'], 'input_schema', None) or tools['read_array'].inputSchema
-        self.assertTrue({'operation_id', 'field', 'along', 'at', 'start', 'stop', 'low', 'high', 'points', 'peak'}
-                        <= set(schema['properties']))
+        self.assertTrue({'operation_id', 'field', 'along', 'at', 'start', 'stop', 'low', 'high', 'points', 'peak',
+                         'prominence', 'level', 'fit'} <= set(schema['properties']))
         self.assertIn('read_array', tools['operation_result'].description)
 
     def test_scpi_arrays_carry_coordinates_read_from_the_instrument(self):

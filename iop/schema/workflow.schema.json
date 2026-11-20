@@ -80,6 +80,25 @@
           },
           "sweep": {
             "$ref": "#/$defs/sweep"
+          },
+          "repeat": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 10000,
+            "description": "Run the step this many times in turn, at each point of its sweep if it has one; what it returns is gathered over a last axis named repeat"
+          },
+          "until": {
+            "$ref": "#/$defs/until"
+          },
+          "retake": {
+            "const": true,
+            "description": "With sweep or repeat on a device operation, in a step graph: points a lost condition put in doubt are taken again, with the arguments they were given, once a pass restored the condition and before the next operation; what the sweep gathers holds what the retakes read. Not with adapt"
+          },
+          "retry": {
+            "$ref": "#/$defs/retry"
+          },
+          "seek": {
+            "$ref": "#/$defs/seek"
           }
         }
       }
@@ -92,6 +111,37 @@
       },
       "uniqueItems": true,
       "description": "Conditions that must hold for the experiment to be accepted: a platform's, or an instrument's named <device>.<id>."
+    },
+    "upkeep": {
+      "description": "Keep the required conditions while the experiment runs: before an operation starts, the Runtime maintains what is unknown, due, about to expire or lost and due for another attempt, inside the experiment, and the operation starts after that pass. Accepted while they do not hold yet.",
+      "oneOf": [
+        {
+          "const": true
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "ahead_s": {
+              "type": "number",
+              "minimum": 0,
+              "default": 0,
+              "description": "Renew this long before validity ends or the drift forecast reaches the tolerance."
+            },
+            "retry_s": {
+              "type": "number",
+              "exclusiveMinimum": 0,
+              "default": 1800,
+              "description": "Wait before another attempt at a condition the last attempt did not bring to hold."
+            },
+            "correct": {
+              "type": "boolean",
+              "default": true,
+              "description": "false: observe only; an operation that relies on a condition found lost fails."
+            }
+          }
+        }
+      ]
     }
   },
   "$defs": {
@@ -134,7 +184,7 @@
     },
     "view": {
       "type": "object",
-      "description": "Read the value from a view of an array the step returned: field, along, at, start, stop, low, high, points, peak; path then selects inside the view. Along two axes, a map, along names both and the others give one value per axis. peak max, or min for a dip, finds the line: path [\"peak\", \"center\"] or [\"peak\", \"width\"] (see docs/runtime/drivers.md, Reading arrays)",
+      "description": "Read the value from a view of an array the step returned: field, along, at, start, stop, low, high, points, peak; path then selects inside the view. Along two axes, a map, along names both and the others give one value per axis. peak max, or min for a dip, finds the line: path [\"peak\", \"center\"] or [\"peak\", \"width\"]; level finds where the trace crosses a value: path [\"crossings\", 0, \"at\"]; fit line gives the straight line through it: path [\"fit\", \"slope\"] or [\"fit\", \"zero\"]; fit lorentzian or gaussian a line of that shape: path [\"fit\", \"center\"] or [\"fit\", \"width\"]. With one other axis not fixed, these are read at each of its positions: path [\"rows\", \"peak\", 0, \"center\"] (see docs/runtime/drivers.md, Reading arrays)",
       "additionalProperties": false,
       "properties": {
         "field": {
@@ -228,13 +278,30 @@
             "max",
             "min"
           ]
+        },
+        "prominence": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "With peak, read every line that stands out by this much: path [\"peaks\"]"
+        },
+        "level": {
+          "type": "number",
+          "description": "Read where the trace crosses this value, between samples, rising or falling"
+        },
+        "fit": {
+          "enum": [
+            "line",
+            "lorentzian",
+            "gaussian"
+          ],
+          "description": "Fit a straight line, or a line of Lorentzian or Gaussian shape, through the trace by least squares"
         }
       }
     },
     "sweep": {
       "type": "object",
       "minProperties": 1,
-      "description": "Run this step at each value of these parameters, one point after another, the first changing slowest; what it returns is gathered into arrays over the sweep, at most 10000 points. A list gives the values (numbers, or strings as labels); start, stop and points, or center, span and points, give evenly spaced numbers. An end of a range may be read from an earlier step, as a binding is, such as where a coarse sweep found most power; each point then takes its value when it runs",
+      "description": "Run this step at each value of these parameters, one point after another, the first changing slowest; what it returns is gathered into arrays over the sweep, at most 10000 points. A list gives the values (numbers, or strings as labels); start, stop and points, or center, span and points, give evenly spaced numbers. An end of a range may be read from an earlier step, as a binding is, such as where a coarse sweep found most power; each point then takes its value when it runs. With adapt, each point is placed from what the earlier ones read, closer together where the reading changes most",
       "additionalProperties": {
         "oneOf": [
           {
@@ -265,6 +332,17 @@
               "points": {
                 "type": "integer",
                 "minimum": 1
+              },
+              "adapt": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": [
+                    "string",
+                    "integer"
+                  ]
+                },
+                "description": "Place each point from what the earlier ones read: the path to the number each point reads, such as [\"power\"]; points come closer where it changes most (one swept parameter, 2 to 1000 points, gathered in order of value)"
               }
             }
           },
@@ -286,10 +364,62 @@
               "points": {
                 "type": "integer",
                 "minimum": 1
+              },
+              "adapt": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": [
+                    "string",
+                    "integer"
+                  ]
+                },
+                "description": "Place each point from what the earlier ones read: the path to the number each point reads, such as [\"power\"]; points come closer where it changes most (one swept parameter, 2 to 1000 points, gathered in order of value)"
               }
             }
           }
         ]
+      }
+    },
+    "until": {
+      "type": "object",
+      "required": [
+        "path"
+      ],
+      "minProperties": 2,
+      "additionalProperties": false,
+      "description": "Stop a sweep or repetition after a point whose reading is above or below a limit, or is not a number, or once a view of what it has gathered is: the later points are skipped without reaching an instrument, and the steps after the sweep run. The first point always runs",
+      "properties": {
+        "path": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": [
+              "string",
+              "integer"
+            ]
+          },
+          "description": "The number each point reads, in what its operation returns or in the named result of its use, such as [\"current\"]; with view, the number in that view, such as [\"summary\", \"error\"]"
+        },
+        "above": {
+          "type": "number",
+          "description": "Stop after a point that reads more than this"
+        },
+        "below": {
+          "type": "number",
+          "description": "Stop after a point that reads less than this; with above, the sweep goes on while the reading stays between them"
+        },
+        "view": {
+          "$ref": "#/$defs/view",
+          "description": "Read path in this view of what the sweep has gathered so far, before each point, such as {\"field\": \"power\"}, or {\"field\": \"s21\", \"fit\": \"lorentzian\"} with path [\"fit\", \"errors\", \"center\"]; while it gives no number, the sweep goes on. Such a sweep has at most 1000 points"
+        },
+        "points": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000,
+          "default": 1,
+          "description": "How many points run before until is read, so that an error from a few points does not stop the sweep"
+        }
       }
     },
     "end": {
@@ -301,6 +431,104 @@
           "$ref": "#/$defs/source"
         }
       ]
+    },
+    "retry": {
+      "type": "object",
+      "required": [
+        "times"
+      ],
+      "additionalProperties": false,
+      "description": "When the instrument call fails, make it again after after_s seconds, up to times more times; each failed attempt stays in the operation record under attempts, and what it wrote is discarded. A call whose outcome is unknown, a refusal before the call and a cancellation are not made again. For operations safe to repeat, such as a reading or a move to a position",
+      "properties": {
+        "times": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "description": "How many more times the call may be made"
+        },
+        "after_s": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 3600,
+          "default": 1,
+          "description": "Seconds to wait before each further call"
+        }
+      }
+    },
+    "seek": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 2,
+      "description": "Find where a reading is largest or smallest: each point moves the parameters over by a compass search from start, keeping a move whose reading improves on the best by more than gain, trying the other direction when one does not help, and halving every step when none does; the search ends once each step is below its resolution, and the later points are skipped. What it gathered holds the readings over an axis named evaluation, the places read under positions, and the best under best (index, at, reading). Not with sweep, repeat, until or retake",
+      "properties": {
+        "maximize": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": [
+              "string",
+              "integer"
+            ]
+          },
+          "description": "The path to the number each point reads that the seek makes largest, such as [\"power\"]"
+        },
+        "minimize": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": [
+              "string",
+              "integer"
+            ]
+          },
+          "description": "The path to the number each point reads that the seek makes smallest"
+        },
+        "over": {
+          "type": "object",
+          "minProperties": 1,
+          "maxProperties": 10,
+          "description": "Each parameter the seek moves, up to 10, with the range it never leaves",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "minimum",
+              "maximum",
+              "step"
+            ],
+            "properties": {
+              "minimum": {
+                "description": "The lowest value the seek takes; a number, or read from an earlier step as a binding is"
+              },
+              "maximum": {
+                "description": "The highest value the seek takes"
+              },
+              "step": {
+                "description": "The first move, halved each time no move helps"
+              },
+              "start": {
+                "description": "Where the seek starts; the middle of the range by default. May be read from an earlier step, such as where a coarse sweep read most"
+              },
+              "resolution": {
+                "description": "The smallest step worth taking; a sixteenth of step by default"
+              }
+            }
+          }
+        },
+        "points": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000,
+          "default": 40,
+          "description": "How many places the seek may read"
+        },
+        "gain": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0,
+          "description": "The smallest improvement that counts, above the noise of a reading"
+        }
+      }
     }
   }
 }

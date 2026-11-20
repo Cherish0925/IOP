@@ -25,6 +25,8 @@ def build(output):
         for name in names:
             archive.write(PACKAGE / name, root + "connector/" + name)
         archive.write(ROOT / "iop/connect/skills/iop-lab/SKILL.md", root + "connector/SKILL.md")
+        for reference in sorted((ROOT / "iop/connect/skills/iop-lab/references").glob("*.md")):
+            archive.write(reference, root + "connector/references/" + reference.name)
         for name in ("README.md", "README.zh-CN.md", "guide.en.html", "guide.zh-CN.html"):
             archive.write(ROOT / "iop/connect" / name, root + name)
         for name in ("LICENSE", "LICENSE-docs.md"):

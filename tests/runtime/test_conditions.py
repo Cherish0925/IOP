@@ -26,7 +26,8 @@ class Part(Driver):
                         'where': {'effect': 'observe', 'parameters': {}},
                         **{'set_' + axis: {'parameters': {'position': {'type': 'number', 'minimum': -1, 'maximum': 1}}}
                            for axis in 'xy'}},
-            'detector': {'read': {'effect': 'observe', 'parameters': {}}},
+            'detector': {'read': {'effect': 'observe', 'parameters': {}},
+                         'integrate': {'effect': 'observe', 'parameters': {'seconds': {'type': 'number', 'minimum': 0}}}},
         }[self.config['part']]}
 
     def invoke(self, operation, arguments, cancelled):
@@ -41,6 +42,19 @@ class Part(Driver):
             WORLD[operation[-1]] = arguments['position']
         elif operation == 'where':
             return {'x': WORLD['x'], 'y': WORLD['y']}
+        elif operation == 'integrate':
+            # A longer reading, while the coupling fades by WORLD['fade'], or drops to half during the reading
+            # numbered WORLD['bump'].
+            WORLD['integrations'] = WORLD.get('integrations', 0) + 1
+            if WORLD['integrations'] == WORLD.get('bump'):
+                WORLD['alignment'] = 0.5
+            if WORLD['integrations'] in WORLD.get('shaken', ()):
+                # Someone reports the table shook during this reading; the alignment itself holds.
+                WORLD['engine'].conditions.invalidate(['path.aligned'], 'the table shook')
+            time.sleep(arguments['seconds'])
+            signal = WORLD['level'] * WORLD['alignment']
+            WORLD['alignment'] *= WORLD.get('fade', 1.0)
+            return {'signal': signal}
         elif self.config['part'] == 'source':
             return {'level': WORLD['level']}
         else:
@@ -273,9 +287,21 @@ class ConditionsCase(unittest.TestCase):
         earlier = self.client.submit([{'id': 'read', 'device': 'detector', 'operation': 'read'}], requires=['path.aligned'])
         earlier.result(5)
         current = self.client.start_experiment(requires=['path.aligned'])
+        # An integration in progress when the enclosure is opened took its data through the disturbance.
+        batch = self.client.request(f'/v1/runs/{current.id}/batches', {'request_id': 'long', 'steps': [
+            {'id': 'long', 'device': 'detector', 'operation': 'integrate', 'arguments': {'seconds': 0.5}}]})
+        path = '/v1/operations/' + batch['operations'][0]['id']
+        while self.client.request(path)['state'] == 'queued':
+            time.sleep(0.01)
         self.client.invalidate(['source.stable'], 'enclosure opened')
+        integration = self.client.request(path + '?wait=5')
         self.assertNotIn('in_doubt', earlier.info())
+        self.assertNotIn('in_doubt', earlier.info()['operation_records'][0])
         self.assertEqual(current.info()['in_doubt']['path.aligned']['outcome'], 'disturbed')
+        self.assertEqual({c: d['outcome'] for c, d in integration['in_doubt'].items()},
+                         {'source.stable': 'disturbed', 'path.aligned': 'disturbed'})
+        active = next(r for r in self.client.context()['active_runs'] if r['id'] == current.id)
+        self.assertEqual(active['in_doubt'], ['path.aligned', 'source.stable'])
         current.finish()
 
     def test_a_condition_without_a_working_correction_is_lost_and_blocks_what_depends_on_it(self):
@@ -307,8 +333,35 @@ class ConditionsCase(unittest.TestCase):
         WORLD['alignment'] = 0.2
         self.client.configure_platform(platform(SOURCE, {**PATH, 'correct': []}), expected_revision=1)
         self.client.maintain('chain', force=True)
-        doubt = run.info()['in_doubt']['path.aligned']
+        later = run.info()
+        doubt = later['in_doubt']['path.aligned']
         self.assertEqual((doubt['outcome'], doubt['since']), ('drifted', info['conditions']['path.aligned']['accepted']))
+        self.assertEqual(later['operation_records'][0]['in_doubt'], {'path.aligned': doubt})
+
+    def test_doubt_follows_consumed_results_without_replaying_downstream_actions(self):
+        self.client.maintain('chain')
+        run = self.client.submit([
+            {'id': 'read', 'device': 'source', 'operation': 'read', 'repeat': 2, 'retake': True},
+            {'id': 'move', 'device': 'stage', 'operation': 'move_to', 'arguments': {'duration': 0},
+             'bindings': {'angle_deg': {'step': 'read', 'view': {'field': 'level'}, 'path': ['summary', 'mean']}}},
+            {'id': 'follow', 'device': 'aux', 'operation': 'move_to', 'arguments': {'duration': 0},
+             'bindings': {'angle_deg': {'step': 'move', 'path': ['angle_actual']}}},
+            {'id': 'ordered', 'device': 'stage', 'operation': 'position', 'after': ['follow']},
+        ], requires=['source.stable'])
+        run.result(10)
+        before = {op['step']: op for op in run.info()['operation_records']}
+        inputs = sorted([before['read.0']['id'], before['read.1']['id']])
+        self.assertEqual(before['move']['input_operations'], inputs)
+        self.assertEqual(before['follow']['input_operations'], [before['move']['id']])
+        WORLD['level'] = 0.5
+        self.client.maintain('chain', force=True)
+        after = {op['step']: op for op in run.info()['operation_records']}
+        self.assertEqual(after['move']['in_doubt']['source.stable']['source_operations'], inputs)
+        self.assertEqual(after['follow']['in_doubt']['source.stable']['source_operations'], [before['move']['id']])
+        self.assertNotIn('source_operations', after['ordered']['in_doubt']['source.stable'])
+        self.assertEqual({key: op['started'] for key, op in before.items()},
+                         {key: op['started'] for key, op in after.items()})
+        self.assertEqual(after['follow']['result'], before['follow']['result'])
 
     def test_saved_operations_name_the_conditions_they_require(self):
         self.client.save_operation({'id': 'signal.read', 'layer': 'standard', 'description': 'Read the signal',
@@ -324,12 +377,13 @@ class ConditionsCase(unittest.TestCase):
         self.assertEqual(self.client.saved_operation('other.read')['unavailable'], ['gone: no such condition'])
 
     def test_a_continuous_experiment_maintains_what_it_relies_on_as_it_goes(self):
-        self.client.configure_platform(platform(SOURCE, {**PATH, 'valid_for': 0.4}), expected_revision=1)
+        # valid_for leaves room for a slow machine to start the experiment and run its first batch in time.
+        self.client.configure_platform(platform(SOURCE, {**PATH, 'valid_for': 1.5}), expected_revision=1)
         self.client.maintain('chain')
         experiment = self.client.start_experiment(resources=['source', 'coupler', 'detector'], requires=['path.aligned'])
         read = [{'id': 'read', 'device': 'detector', 'operation': 'read'}]
         experiment.batch(read)
-        time.sleep(0.45)
+        time.sleep(1.55)
         WORLD['alignment'] = 0.3
         with self.assertRaises(IOPError) as refused:
             experiment.batch(read)
@@ -450,6 +504,28 @@ class ExampleCase(unittest.TestCase):
         report = self.client.maintain('demo-bench', force=True)
         self.assertEqual([(e['condition'], e['result']) for e in report['report']],
                          [('stage.in_range', 'corrected'), ('meter.signal', 'verified')])
+
+
+class ProvenanceCase(unittest.TestCase):
+    def test_stored_consumers_inherit_doubt_without_declaring_the_source_condition(self):
+        from ai4instruments.iop.store import Store
+        store = Store(':memory:')
+        self.addCleanup(store.close)
+        def operation(name, **extra):
+            return {'id': name, 'run_id': 'experiment', 'state': 'completed', 'created': '2026-01-01T00:00:00Z',
+                    'ended': '2026-01-01T00:01:00Z', **extra}
+        with store.transaction():
+            store.put('operations', operation('reading', conditions={'aligned': {'accepted': '2026-01-01T00:00:00Z'}}))
+            store.put('operations', operation('consumer', input_operations=['reading']))
+            store.put('operations', operation('later', input_operations=['consumer']))
+            store.put('operations', operation('ordered', after_ids=['later']))
+        entry = {'since': '2026-01-01T00:00:00Z', 'found': '2026-01-01T00:02:00Z', 'outcome': 'drifted'}
+        marked = store.doubt('experiment', 'aligned', entry['since'], entry)
+        self.assertEqual(set(marked), {'reading', 'consumer', 'later'})
+        self.assertEqual(marked['consumer']['source_operations'], ['reading'])
+        self.assertEqual(marked['later']['source_operations'], ['consumer'])
+        self.assertNotIn('in_doubt', store.get('operations', 'ordered'))
+        self.assertEqual(store.get('operations', 'later')['state'], 'completed')
 
 
 class DefinitionCase(unittest.TestCase):

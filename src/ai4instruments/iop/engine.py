@@ -16,7 +16,9 @@ import zipfile
 import queue
 import hashlib
 import re
+import shutil
 from collections import OrderedDict, deque
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, CancelledError
 from pathlib import Path, PurePosixPath
 from .calibration import operation_fields
@@ -30,11 +32,18 @@ from .resources import Allocator, QueueFull, capacities, quantities
 from .execution import Context
 from .monitors import Monitors, check as check_monitors
 
-TERMINAL = {"completed", "failed", "cancelled", "interrupted"}
+TERMINAL = {"completed", "skipped", "failed", "cancelled", "interrupted"}
+# An operation in these states lets the steps after it run: it completed, or its sweep stopped before it.
+SATISFIED = {"completed", "skipped"}
 
 
 def identifier(prefix):
     return prefix + "_" + uuid.uuid4().hex[:20]
+
+
+def stamp(text):
+    """Seconds since the epoch of a recorded time."""
+    return datetime.fromisoformat(text).timestamp()
 
 
 def relative_path(name):
@@ -68,6 +77,10 @@ class Engine:
         self.step_ids, self.minimum_capacities = {}, {}
         # The ends of each range swept, read once for all of its points, by experiment.
         self.ranges = {}
+        # Points of sweeps that retake them which a lost condition put in doubt, and their retakes in progress.
+        self.doubted, self.retaking = {}, {}
+        # Operations refused before their instrument was called, and how many calls of each were made again.
+        self.refused, self.tries = set(), {}
         self.completed = queue.SimpleQueue()
         self.progress_lock = threading.Lock()
         self.progress_updates = {}
@@ -108,16 +121,13 @@ class Engine:
                 self.offline[device.get('id', 'unknown')] = str(error)
         for run in self.store.recover():
             self.runs[run["id"]] = run
-            cursor = 0
-            while True:
-                page = self.store.operation_page(run['id'], cursor, 1000)
-                if not page['operations']:
-                    break
-                for op in page['operations']:
-                    self.operations[op['id']] = op
-                cursor = page['cursor']
+            self.operations.update((op['id'], op) for op in self.store.operations(run['id']))
             self._index_run(run)
         self.resource_holds = self.store.resource_holds()
+        # Experiments a stop of the service or an unresolved instrument left interrupted in the last week, until
+        # they are continued: the laboratory overview names them as something to do.
+        self.interrupted = self.store.interrupted(
+            datetime.fromtimestamp(time.time() - 7 * 86400, timezone.utc).isoformat(timespec='microseconds'))
         self.thread = threading.Thread(target=self._loop, name="iop-scheduler", daemon=True)
 
     def start(self):
@@ -341,12 +351,105 @@ class Engine:
         amounts.update(item.get('requirements', {}))
         return amounts
 
+    def running(self, run_id):
+        """Whether an operation of this experiment is in progress."""
+        return any(self.operations[oid]['run_id'] == run_id for oid in self.futures)
+
+    def doubt(self, run_id, condition_id, after, entry):
+        """Its data may have been taken while a condition did not hold: mark each operation of this experiment
+        that relied on the condition and was in progress after that moment, in its record and in memory."""
+        for oid, found in self.store.doubt(run_id, condition_id, after, entry).items():
+            if oid in self.operations:
+                self.operations[oid].setdefault('in_doubt', {})[condition_id] = found
+                self._doubted(self.operations[oid])
+
+    def _doubted(self, op):
+        """A point of a sweep that retakes its points, ended and now in doubt, is taken again."""
+        if any(entry.get('source_operations') for entry in op.get('in_doubt', {}).values()):
+            # The arguments came from doubtful data. Repeating the same physical action cannot repair them.
+            self.doubted.get(op['run_id'], {}).pop(op['id'], None)
+        elif op.get('retake') and op['state'] == 'completed' and op.get('in_doubt') and 'retaken_by' not in op:
+            self.doubted.setdefault(op['run_id'], {})[op['id']] = None
+
+    def _retake(self, run, originals):
+        """Take again points a lost condition put in doubt, before the experiment's other operations: the same
+        operation with the arguments it was given; what the sweep gathers then holds what the retakes read."""
+        ops = []
+        for oid in originals:
+            original = self.operations[oid]
+            op = self._operation(run['id'], {'id': original['step'] + '~1', 'device': original['device'],
+                                             'operation': original['operation'], 'arguments': original['arguments']})
+            op.update(after_ids=[], swept_by=original['swept_by'], retakes=oid,
+                      **({'input_operations': original['input_operations']} if original.get('input_operations') else {}),
+                      **({'requires': original['requires']} if original.get('requires') else {}))
+            ops.append((op, original))
+        for op, original in ops:
+            original['retaken_by'] = op['id']
+        run['operations'].extend(op['id'] for op, _ in ops)
+        run['operation_count'] = run.get('operation_count', 0) + len(ops)
+        with self.store.transaction():
+            self.store.put('runs', run)
+            for op, original in ops:
+                self.store.put('operations', original)
+                self.store.put('operations', op)
+                self.store.event('operation.queued', run['id'], operation_id=op['id'], device=op['device'],
+                                 operation=op['operation'], retakes=original['id'])
+        for op, _ in reversed(ops):
+            self.operations[op['id']] = op
+            self.ready[run['id']][op['id']] = None
+            self.ready[run['id']].move_to_end(op['id'], last=False)
+            self.remaining[run['id']] += 1
+            self.retaking.setdefault(run['id'], set()).add(op['id'])
+            for key, count in self._amounts(op).items():
+                self.minimum_capacities[run['id']][key] = max(self.minimum_capacities[run['id']].get(key, 0), count)
+
+    def _release(self, op_id):
+        """What an operation held while its instrument was called, given back once the call returned."""
+        self.allocation.release(op_id)
+        del self.futures[op_id]
+        self.waiting_steps.discard(op_id)
+        self.cancellations.pop(op_id, None)
+        self.progress_times.pop(op_id, None)
+        self.refused.discard(op_id)
+
+    def _again(self, op, error):
+        """An instrument call that failed cleanly is queued again, as its step allows, after the wait it gives; the
+        failed attempt stays in the record, and what it wrote is discarded."""
+        attempt = {'state': 'failed', 'error': f'{type(error).__name__}: {error}', 'started': op['started'], 'ended': now()}
+        op.setdefault('attempts', []).append(attempt)
+        self.tries[op['id']] = self.tries.get(op['id'], 0) + 1
+        op.update(state='queued', retry_at=datetime.fromtimestamp(time.time() + op['retry'].get('after_s', 1),
+                                                                  timezone.utc).isoformat(timespec='microseconds'))
+        for key in ('started', 'progress'):
+            op.pop(key, None)
+        shutil.rmtree(self.home / 'runs' / op['run_id'] / 'output' / 'operations' / op['id'], ignore_errors=True)
+        self.communication[op['device']] = {'time': attempt['ended'], 'operation_id': op['id'], 'state': 'failed',
+                                            'error': attempt['error']}
+        self._release(op['id'])
+        self.ready[op['run_id']][op['id']] = None
+        with self.store.transaction():
+            self.store.put('operations', op)
+            self.store.event('operation.retrying', op['run_id'], operation_id=op['id'], attempt=len(op['attempts']),
+                             error=attempt['error'])
+
+    def _retaken(self, op):
+        """A point taken again: what its sweep gathers holds what it read in place of the point in doubt."""
+        sweep = op['swept_by'][-1]
+        for oid in self.runs[op['run_id']]['operations']:
+            holder = self.operations.get(oid)
+            if holder and sweep in holder.get('gathers', {}):
+                for point in holder['gathers'][sweep]['points']:
+                    if point.get('step') == op['retakes']:
+                        point['step'] = op['id']
+                self.store.put('operations', holder)
+                return
+
     def _index_run(self, run):
         self.ready[run['id']] = OrderedDict()
         run['involved_resources'] = sorted(self._amounts(run, reserve=True).keys() |
             set().union(*(self._amounts(self.operations[o]).keys() for o in run['operations'])))
         ops = [self.operations[oid] for oid in run['operations']]
-        by_step = {o['step']: o for o in ops if o.get('step') is not None}
+        by_step = {o['step']: o for o in ops if o.get('step') is not None and not o.get('maintenance')}
         self.step_ids[run['id']] = {name: op['id'] for name, op in by_step.items()}
         minimum = self._amounts(run, reserve=True)
         for op in ops:
@@ -359,8 +462,8 @@ class Engine:
         for op in ops:
             if op['state'] != 'queued':
                 continue
-            parents = ([self.operations[oid] for oid in op['after_ids'] if self.operations[oid]['state'] != 'completed']
-                       if 'after_ids' in op else [by_step[step] for step in op['after'] if by_step[step]['state'] != 'completed'])
+            parents = ([self.operations[oid] for oid in op['after_ids'] if self.operations[oid]['state'] not in SATISFIED]
+                       if 'after_ids' in op else [by_step[step] for step in op['after'] if by_step[step]['state'] not in SATISFIED])
             self.remaining_dependencies[op['id']] = len(parents)
             for parent in parents:
                 self.dependents.setdefault(parent['id'], []).append(op['id'])
@@ -373,11 +476,18 @@ class Engine:
             if call not in calls:
                 continue
             progress = self.call_progress.setdefault(op['run_id'], {}).setdefault((op.get('batch'), call), {
-                'remaining': 0, 'state': 'completed', 'operation': calls[call]['operation'], 'revision': calls[call]['revision']})
+                'remaining': 0, 'state': 'skipped', 'operation': calls[call]['operation'], 'revision': calls[call]['revision']})
             if op['state'] not in TERMINAL:
                 progress['remaining'] += 1
-            elif op['state'] != 'completed' and progress['state'] != 'failed':
-                progress['state'] = 'failed' if op['state'] == 'failed' else 'cancelled'
+            else:
+                self._use_step_ended(progress, op['state'])
+
+    @staticmethod
+    def _use_step_ended(progress, state):
+        """A use ends failed when a step failed, else cancelled when one stopped, else completed when one completed;
+        one whose steps were all skipped, as a point after its sweep stopped, was not made."""
+        order = ('skipped', 'completed', 'cancelled', 'failed')
+        progress['state'] = max(progress['state'], state if state in order else 'cancelled', key=order.index)
 
     def _calls_ended(self, op):
         """Record a use of a saved operation when its last step ends: this is its evidence."""
@@ -385,13 +495,13 @@ class Engine:
             progress = self.call_progress.get(op['run_id'], {}).get((op.get('batch'), call))
             if progress is None:
                 continue
-            if op['state'] != 'completed' and progress['state'] != 'failed':
-                progress['state'] = 'failed' if op['state'] == 'failed' else 'cancelled'
+            self._use_step_ended(progress, op['state'])
             progress['remaining'] -= 1
             if progress['remaining'] > 0:
                 continue
             del self.call_progress[op['run_id']][(op.get('batch'), call)]
-            self._record_use(progress['operation'], progress['revision'], op['run_id'], call, progress['state'])
+            if progress['state'] != 'skipped':
+                self._record_use(progress['operation'], progress['revision'], op['run_id'], call, progress['state'])
 
     def _record_use(self, operation, revision, run_id, call, state):
         uses = self.uses.setdefault(operation, {'calls': 0, 'completed': 0, 'failed': 0})
@@ -403,11 +513,18 @@ class Engine:
 
     def _operation_ended(self, op):
         self._calls_ended(op)
+        self.tries.pop(op['id'], None)
+        if op.get('retakes'):
+            self.retaking.get(op['run_id'], set()).discard(op['id'])
+            if op['state'] == 'completed':
+                self._retaken(op)
+        else:
+            self._doubted(op)
         self.ready[op['run_id']].pop(op['id'], None)
         self.remaining_dependencies.pop(op['id'], None)
         self.remaining[op['run_id']] -= 1
         children = self.dependents.pop(op['id'], [])
-        if op['state'] == 'completed':
+        if op['state'] in SATISFIED:
             for child in children:
                 if self.operations[child]['state'] != 'queued':
                     continue
@@ -852,6 +969,8 @@ class Engine:
         for source in (self.descriptions[device_id], specs[name], step):
             for key, count in quantities(source.get('requirements', {}), self.capacities).items():
                 requirements[key] = max(requirements.get(key, 0), count)
+        if 'retry' in step:
+            library.retried(step['retry'], f"Step {step.get('id')}")
         calibration = self.descriptions[device_id].get('calibration')
         recorded = operation_fields(calibration, name)
         if recorded.get('calibration_expired') and calibration.get('enforce'):
@@ -864,7 +983,7 @@ class Engine:
                 "resources":sorted(set(self._resources([device_id], name) + self._resources(step.get("resources", [])))),
                 "request_id":step.get("request_id"),
                 "device_revision":self.descriptions[device_id].get('revision'), **recorded,
-                **{key: step[key] for key in ('derive', 'gathers', 'swept_by') if step.get(key)}}
+                **{key: step[key] for key in ('derive', 'gathers', 'swept_by', 'continues', 'retake', 'retry') if step.get(key)}}
 
     def _described(self, device, operation):
         """A registered device operation's description, or None."""
@@ -872,7 +991,8 @@ class Engine:
 
     @staticmethod
     def _locate(operations):
-        """What operations read from sweeps and ranges, and how to gather a sweep, name operations by ID."""
+        """What operations read from sweeps and ranges, how to gather a sweep and where to read whether it stopped
+        name operations by ID."""
         ids = {op['step']: op['id'] for op in operations}
         for op in operations:
             if any(map(library.by_id, op['bindings'].values())):
@@ -880,6 +1000,8 @@ class Engine:
                                   for key, binding in op['bindings'].items()}
             if 'gathers' in op:
                 op['gathers'] = {sweep: library.locate_gathering(found, ids) for sweep, found in op['gathers'].items()}
+            if 'continues' in op:
+                op['continues'] = [library.locate(marker, ids) for marker in op['continues']]
 
     def _recorded(self, operation_id):
         return self.operations.get(operation_id) or self.store.get('operations', operation_id)
@@ -887,8 +1009,9 @@ class Engine:
     def _assembled(self, run):
         """A step graph's result from its operations completed so far: each Basic Operation's result under its
         step, each use of a saved operation its named result, and each sweep what it gathered; the operations
-        of a sweep's points stay in their records."""
-        by_step = {self.operations[oid]['step']: self.operations[oid] for oid in run['operations']}
+        of a sweep's points and of maintenance inside the experiment stay in their records."""
+        ops = (self.operations[oid] for oid in run['operations'])
+        by_step = {op['step']: op for op in ops if not op.get('maintenance')}
         sweeps = run.get('sweeps', {})
         result = {step: op.get('result') for step, op in by_step.items()
                   if op['state'] == 'completed' and not op.get('swept_by')}
@@ -910,6 +1033,9 @@ class Engine:
             if self.stopping:
                 raise ValueError("Service is stopping")
             spec = json.loads(dumps(spec))
+            preview = spec.pop('preview', False)
+            if not isinstance(preview, bool):
+                raise ValueError('preview is true to see what a step graph would do without running it')
             program = None
             if package is None and spec.get('kind', 'workflow') == 'workflow':
                 # A saved Workflow Operation that is a program runs as this experiment.
@@ -924,7 +1050,7 @@ class Engine:
                     raise ValueError('Submit external experiment operations through its run ID')
                 if not isinstance(spec.get('request_id'), str) or not spec['request_id'].strip():
                     raise ValueError('Provide request_id for the external experiment')
-            previous = self.store.request("runs", spec.get("request_id"))
+            previous = None if preview else self.store.request("runs", spec.get("request_id"))
             if previous:
                 if previous['kind'] != kind or previous["spec"] != spec or (package is not None and not program and (self.home / "runs" / previous["id"] / "package.zip").read_bytes() != package):
                     raise ValueError("request_id already names a different experiment")
@@ -980,14 +1106,23 @@ class Engine:
             required = self.conditions.required(spec, run.get('calls'), program)
             if 'upkeep' in spec:
                 from .conditions import experiment_upkeep
-                if kind == 'workflow' or not required:
-                    raise ValueError('upkeep keeps the conditions a continuous experiment or program requires; name them in requires')
+                if not required:
+                    raise ValueError('upkeep keeps the conditions an experiment requires; name them in requires')
                 run['upkeep'] = experiment_upkeep(spec['upkeep'])
                 amounts, _ = self.conditions.requirements(required)
-                missing = {k: n for k, n in amounts.items() if n > self._amounts(run, reserve=True).get(k, 0)}
-                if missing:
-                    raise RequestError('maintenance_resources', 'Reserve the devices and resource quantities used by '
-                                       'maintenance when starting an experiment that keeps its conditions.', resources=missing)
+                if kind != 'workflow':
+                    missing = {k: n for k, n in amounts.items() if n > self._amounts(run, reserve=True).get(k, 0)}
+                    if missing:
+                        raise RequestError('maintenance_resources', 'Reserve the devices and resource quantities used by '
+                                           'maintenance when starting an experiment that keeps its conditions.', resources=missing)
+                elif run['resources'] or run['requirements']:
+                    # A step graph that reserves what its steps use reserves what keeping its conditions uses too.
+                    run['resources'] = sorted(set(run['resources']) | {k for k in amounts if not k.startswith('pool:')})
+                    for key, count in amounts.items():
+                        if key.startswith('pool:'):
+                            run['requirements'][key] = max(run['requirements'].get(key, 0), count)
+            if preview:
+                return self._preview(kind, operations, required)
             if required:
                 # The experiment is accepted only while what it relies on holds; the record keeps what that was.
                 # One that keeps its conditions is accepted, and keeps them before its first operation.
@@ -1205,6 +1340,8 @@ class Engine:
             self._record_use(call['operation'], call['revision'], run['id'], call['step'], state)
         run.update(state=state, ended=now())
         run.pop("terminate_at", None)
+        if state == 'interrupted':
+            self.interrupted[run['id']] = {key: run[key] for key in ('id', 'name', 'kind', 'ended') if key in run}
         self.allocation.finish(run['id'])
         directory = self.home / "runs" / run["id"]
         save_json(directory / "run.json", run)
@@ -1225,6 +1362,8 @@ class Engine:
         self.remaining.pop(run['id'], None)
         self.step_ids.pop(run['id'], None)
         self.ranges.pop(run['id'], None)
+        self.doubted.pop(run['id'], None)
+        self.retaking.pop(run['id'], None)
         self.call_progress.pop(run['id'], None)
         self.minimum_capacities.pop(run['id'], None)
         process = self.processes.get(run['id'])
@@ -1388,12 +1527,60 @@ class Engine:
                 with self.lock:
                     self.reconnecting.difference_update(affected)
 
+    def _preview(self, kind, operations, required):
+        """What a step graph would do, without running it: how many operations of each instrument, the conditions
+        it relies on and their state, and how long its operations would take one after another, each at the
+        median its kind took over the most recent ones."""
+        if kind != 'workflow':
+            raise ValueError('preview shows what a step graph would do')
+        counts = {}
+        for op in operations:
+            key = op['device'] + '.' + op['operation']
+            counts[key] = counts.get(key, 0) + 1
+        took = self.store.durations()
+        return {'preview': True, 'operations': len(operations),
+                'by_operation': {key: {'operations': n, **({'median_s': took[key][0], 'from': took[key][1]} if key in took else {})}
+                                 for key, n in counts.items()},
+                'estimated_s': sum(took[key][0] * n for key, n in counts.items()) if counts.keys() <= took.keys() else None,
+                'requires': {c: self.conditions.state(c)['state'] for c in self.conditions.closure(required)}}
+
+    def _ends(self, run):
+        """When a running step graph would end at its pace so far: the time it has run, scaled by what is left over
+        what it has done since it started or continued, each operation counting as long as those of its kind took
+        in it. None until each kind left has ended once."""
+        took, left, done, start = {}, {}, 0, stamp(run['started'])
+        for oid in run['operations']:
+            op = self.operations[oid]
+            if op.get('maintenance'):
+                continue
+            kind = (op['device'], op['operation'])
+            if op['state'] == 'completed' and op.get('started') and op.get('ended'):
+                began = stamp(op['started'])
+                seconds = stamp(op['ended']) - began
+                total, count = took.get(kind, (0, 0))
+                took[kind] = (total + seconds, count + 1)
+                if began >= start:
+                    done += seconds
+            elif op['state'] in ('queued', 'running'):
+                left[kind] = left.get(kind, 0) + 1
+        if not left or not done or left.keys() - took.keys():
+            return None
+        rest = sum(count * took[kind][0] / took[kind][1] for kind, count in left.items())
+        clock = time.time()
+        return datetime.fromtimestamp(clock + (clock - start) * rest / done, timezone.utc).isoformat()
+
     def run_info(self, run_id, details=True):
         result = self.store.get('runs', run_id, summary=not details)
+        with self.lock:
+            run = self.runs.get(run_id)
+            ends = self._ends(run) if run is not None and run['kind'] == 'workflow' and run['state'] == 'running' else None
+        if ends:
+            result['estimated_end'] = ends
+        result['operation_states'] = self.store.operation_states(run_id)
         result['progress'] = {name: {k: v for k, v in record.items() if k != 'state'}
                               for name, record in self.store.checkpoints(run_id).items()}
         result['can_resume'] = (result['state'] in TERMINAL - {'completed'} and
-            (result['kind'] == 'external' or result['kind'] == 'package' and
+            (result['kind'] in ('external', 'workflow') or result['kind'] == 'package' and
              result.get('package', {}).get('resume') is True and bool(result['progress'])))
         if details:
             result['operation_records'] = list(reversed(self.store.list('operations', run_id, 10000)))
@@ -1436,9 +1623,13 @@ class Engine:
                     run.update(state='cancelling', end_state='cancelled')
                     self._stop_pending(run)
             except BaseException as error:
-                op.update(state='failed', error=f'{type(error).__name__}: {error}')
                 from .process_driver import DriverUnavailable
                 from .drivers import UnconfirmedChange
+                if (op.get('retry') and self.tries.get(op_id, 0) < op['retry']['times'] and run['state'] == 'running'
+                        and op_id not in self.refused and not isinstance(error, (DriverUnavailable, UnconfirmedChange))):
+                    self._again(op, error)
+                    continue
+                op.update(state='failed', error=f'{type(error).__name__}: {error}')
                 if isinstance(error, (DriverUnavailable, UnconfirmedChange)):
                     op['outcome_unknown'] = True
                     if isinstance(error, DriverUnavailable):
@@ -1468,11 +1659,7 @@ class Engine:
                 self.store.event('operation.' + op['state'], run['id'], operation_id=op_id,
                                  result=op.get('result'), error=op.get('error'))
             self._operation_ended(op)
-            self.allocation.release(op_id)
-            del self.futures[op_id]
-            self.waiting_steps.discard(op_id)
-            self.cancellations.pop(op_id, None)
-            self.progress_times.pop(op_id, None)
+            self._release(op_id)
             if run['kind'] in {'package', 'external'}:
                 # Long-lived programs keep only in-flight calls in memory. All
                 # completed operations remain in the indexed SQLite history.
@@ -1541,15 +1728,29 @@ class Engine:
                     package_slots -= 1
                 except Exception as error:
                     run.update(state='cancelling', end_state='failed', error=str(error))
+        maintaining = {job['run_id'] for job in self.conditions.jobs.values() if job['state'] == 'running'}
+        # Points in doubt are taken again once no pass runs in their experiment, before its other operations.
+        for rid in [rid for rid, doubted in self.doubted.items()
+                    if doubted and rid not in maintaining and self.runs.get(rid, {}).get('state') == 'running']:
+            try:
+                self._retake(self.runs[rid], list(self.doubted.pop(rid)))
+            except ValueError as error:
+                # The points stay in doubt, as without retake, such as when their instrument went offline.
+                self.errors.append({'time': now(), 'error': f'Retaking points of {rid}: {error}'})
         # Round-robin between experiments; a large ready set cannot monopolize starts.
         run_ids = [rid for rid, ready in self.ready.items() if ready and self.runs[rid]['state'] == 'running']
         if self.last_scheduled_run in run_ids:
             index = run_ids.index(self.last_scheduled_run) + 1
             run_ids = run_ids[index:] + run_ids[:index]
         candidates = deque((rid, iter(self.ready[rid])) for rid in run_ids)
-        maintaining = {job['run_id'] for job in self.conditions.jobs.values() if job['state'] == 'running'}
+        # An experiment that keeps its conditions starts no operation while a pass is due; the pass starts inside
+        # it once none of its operations is running, and its operations continue after the pass.
+        for rid in run_ids:
+            run = self.runs[rid]
+            if run.get('upkeep') and rid not in maintaining and self.conditions.keep(run, run['requires']):
+                maintaining.add(rid)
         blocked = set()
-        dispatch = []
+        dispatch, stops = [], {}
         pooled = len(self.futures) - len(self.waiting_steps)
         while candidates and pooled < self.worker_count:
             rid, items = candidates.popleft()
@@ -1559,14 +1760,29 @@ class Engine:
                 continue
             candidates.append((rid, items))
             op = self.operations[op_id]
-            if rid in maintaining and not op.get('maintenance'):
+            # While a pass keeps its conditions, an experiment's operations wait for it; while points in doubt are
+            # taken again, its other operations wait for them, except the maintenance those retakes rely on.
+            if rid in maintaining and not op.get('maintenance') or \
+                    self.retaking.get(rid) and not (op.get('retakes') or op.get('maintenance')):
+                continue
+            if 'retry_at' in op and stamp(op['retry_at']) > time.time():
+                continue
+            stop = self._stopping(op) if op.get('continues') else None
+            if stop:
+                stops.setdefault((rid, stop[0]['sweep']), stop)
                 continue
             amounts = self._amounts(op)
             if not self.allocation.can_claim(rid, amounts, blocked | waiting):
                 blocked.update(amounts)
                 continue
+            if (op.get('requires') and self.runs[rid].get('upkeep') and self.conditions.lapsed(op['requires'])
+                    and self.conditions.keep(self.runs[rid], op['requires'])):
+                # A condition came due since the experiment kept it: the operation waits for the pass that renews it.
+                maintaining.add(rid)
+                continue
             self.last_scheduled_run = rid
             op.update(state='running', started=now())
+            op.pop('retry_at', None)
             self.allocation.claim(op_id, rid, amounts)
             output = self.home / 'runs' / rid / 'output' / 'operations' / op_id
             context = Context(rid, op_id, output, lambda value, oid=op_id: self._progress(oid, value))
@@ -1578,19 +1794,28 @@ class Engine:
                     op['conditions'] = self.conditions.require(op['requires'], rid)
                 if op.get('bindings'):
                     args = dict(op['arguments'])
+                    inputs = set()
                     for name, binding in op['bindings'].items():
-                        if library.by_id(binding):
-                            args[name] = library.read(binding, self._recorded, self.home / 'runs' / rid / 'output',
-                                                      known=self.ranges.setdefault(rid, {}))
-                            continue
-                        source = op.get('binding_ids', {}).get(name) or self.step_ids[rid][binding['step']]
-                        args[name] = library.value(self._recorded(source), binding)
+                        if not library.by_id(binding):
+                            source = op.get('binding_ids', {}).get(name) or self.step_ids[rid][binding['step']]
+                            binding = {**binding, 'step': source}
+                        args[name] = library.read(binding, self._recorded, self.home / 'runs' / rid / 'output',
+                                                  known=self.ranges.setdefault(rid, {}))
+                        inputs.update(library.input_operations(binding, self._recorded))
                     op['arguments'] = parameters(self.descriptions[op['device']]['operations'][op['operation']], args)
+                    op['input_operations'] = sorted(inputs)
+                for source in op.get('input_operations', []):
+                    for condition, entry in self._recorded(source).get('in_doubt', {}).items():
+                        found = op.setdefault('in_doubt', {}).setdefault(condition, dict(entry))
+                        found['source_operations'] = sorted(set(found.get('source_operations', [])) | {source})
                 error = None
             except Exception as error:
                 dispatch.append((op, context, error))
             else:
                 dispatch.append((op, context, None))
+                if not op.get('maintenance'):
+                    # An operation of the experiment starts: its upkeep kept what it relies on.
+                    self.conditions.renewed.pop(rid, None)
         # Commit one group of starts before any of those device calls execute.
         # Iterators remain valid because ready queues change only after selection.
         if dispatch:
@@ -1610,8 +1835,10 @@ class Engine:
             op_id = op['id']
             self.ready[op['run_id']].pop(op_id)
             if error is not None:
+                # Refused before its instrument was called, it is not tried again.
                 from concurrent.futures import Future
                 future = Future(); future.set_exception(error)
+                self.refused.add(op_id)
             elif getattr(self.devices[op['device']], 'dedicated_thread', False):
                 future = self._own_thread(self._call, self.devices[op['device']], op, context)
                 self.waiting_steps.add(op_id)
@@ -1622,6 +1849,47 @@ class Engine:
                 self.completed.put(oid)
                 self.wake.set()
             future.add_done_callback(completed)
+        for (rid, _), (marker, found) in stops.items():
+            self._stop_sweep(self.runs[rid], marker, found)
+        if stops:
+            self.wake.set()
+
+    def _stopping(self, op):
+        """A sweep this operation continues that the point before it stopped, and where; or None."""
+        output, known = self.home / 'runs' / op['run_id'] / 'output', self.ranges.setdefault(op['run_id'], {})
+        for marker in op['continues']:
+            found = library.stopped(marker, self._recorded, output, known)
+            if found:
+                return marker, found
+        return None
+
+    def _stop_sweep(self, run, marker, found):
+        """Skip the points of a sweep after the one whose reading met its until: they never reach an instrument,
+        and the steps after the sweep run as when it completes. The operation that holds the sweep records where
+        it stopped."""
+        sweep, kept = marker['sweep'], run['kind'] in {'package', 'external'}
+        skipped = [self.operations[oid] for oid in run['operations']
+                   if self.operations[oid]['state'] == 'queued' and sweep in self.operations[oid].get('swept_by', ())]
+        ended = now()
+        for op in skipped:
+            op.update(state='skipped', ended=ended)
+        self.operations[marker['step']]['gathers'][sweep]['stopped'] = found
+        if kept:
+            # As completed ones, the operations of a long-lived program then stay only in the indexed history.
+            gone = {op['id'] for op in skipped}
+            run['operations'] = [oid for oid in run['operations'] if oid not in gone]
+        with self.store.transaction():
+            self.store.event('sweep.stopped', run['id'], sweep=sweep, skipped=len(skipped), **found)
+            for op in skipped:
+                self.store.put('operations', op)
+                self.store.event('operation.skipped', run['id'], operation_id=op['id'])
+            if kept:
+                self.store.put('runs', run)
+        for op in skipped:
+            self._operation_ended(op)
+        if kept:
+            for op in skipped:
+                del self.operations[op['id']]
 
     @staticmethod
     def _call(driver, op, context):

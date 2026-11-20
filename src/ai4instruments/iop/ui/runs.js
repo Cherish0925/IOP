@@ -112,6 +112,17 @@ export function bindRuns() {
       }),
   );
 }
+// How many operations are in each state, so how far a long sweep got shows without paging through it.
+function operationStates(counts = {}) {
+  const parts = Object.entries(counts)
+    .filter(
+      ([state]) => state !== "completed" || Object.keys(counts).length > 1,
+    )
+    .map(([state, count]) => `${esc(statusName(state))} ${count}`);
+  return parts.length
+    ? `<span class="run-states">${parts.join(" · ")}</span>`
+    : "";
+}
 // Streams of a numeric format, such as float32-le, are drawn per channel from their views.
 const NUMERIC = /^(u?int8(-(le|be))?|(u?int(16|32|64)|float(32|64))-(le|be))$/;
 function streamFigures(id, streams) {
@@ -251,13 +262,17 @@ export async function inspectRun(id) {
       $("#modal-title").textContent = run.name || run.id;
       const active = ["running", "queued", "cancelling"].includes(run.state);
       $("#run-detail-summary").innerHTML =
-        `<div class="run-summary"><div><small>${t("状态", "State")}</small>${badge(run.state)}</div><div><small>${t("开始时间", "Started")}</small>${date(run.started || run.created)}</div><div><small>${t("用时", "Elapsed")}</small>${duration(run.started ? (new Date(run.ended || Date.now()) - new Date(run.started)) / 1000 : null)}</div><div><small>${t("操作数", "Operations")}</small>${run.operation_count ?? page.operations.length}</div>${active ? `<button class="button small" id="run-cancel">${icon("stop")}${t("停止实验", "Stop experiment")}</button>` : ""}</div>${
+        `<div class="run-summary"><div><small>${t("状态", "State")}</small>${badge(run.state)}</div><div><small>${t("开始时间", "Started")}</small>${date(run.started || run.created)}</div><div><small>${t("用时", "Elapsed")}</small>${duration(run.started ? (new Date(run.ended || Date.now()) - new Date(run.started)) / 1000 : null)}</div>${run.estimated_end ? `<div><small>${t("预计结束", "Ends about")}</small>${date(run.estimated_end)}</div>` : ""}<div><small>${t("操作数", "Operations")}</small>${run.operation_count ?? page.operations.length}${operationStates(run.operation_states)}</div>${active ? `<button class="button small" id="run-cancel">${icon("stop")}${t("停止实验", "Stop experiment")}</button>` : ""}</div>${
           run.can_resume
-            ? `<div class="actions"><button class="button small" id="run-resume">${icon("play")}${t("从保存的进度继续", "Continue from saved progress")}</button><small>${t("程序进度", "Saved progress")} · ${Object.keys(
-                run.progress || {},
-              )
-                .map(esc)
-                .join(", ")}</small></div>`
+            ? `<div class="actions"><button class="button small" id="run-resume">${icon("play")}${
+                run.kind === "workflow"
+                  ? `${t("从停止处继续", "Continue where it stopped")}</button><small>${t(`保留 ${run.operation_states?.completed ?? 0} 个已完成的操作`, `Keeps ${run.operation_states?.completed ?? 0} completed operations`)}`
+                  : `${t("从保存的进度继续", "Continue from saved progress")}</button><small>${t("程序进度", "Saved progress")} · ${Object.keys(
+                      run.progress || {},
+                    )
+                      .map(esc)
+                      .join(", ")}`
+              }</small></div>`
             : ""
         }${run.error ? `<p class="run-error">${esc(typeof run.error === "object" ? JSON.stringify(run.error) : run.error)}</p>` : ""}`;
       $("#run-resume")?.addEventListener("click", (e) =>
@@ -282,7 +297,7 @@ export async function inspectRun(id) {
         ? page.operations
             .map(
               (o, i) =>
-                `<div class="operation-row"><span class="operation-index">${String(pages.length * 100 + i + 1).padStart(2, "0")}</span><div><h3>${esc(o.step || o.id)} <span class="muted">· ${esc(o.device)} / ${esc(o.operation)}</span></h3><small>${date(o.started || o.created)}${o.ended ? " · " + duration((new Date(o.ended) - new Date(o.started)) / 1000) : ""}${o.progress?.message ? " · " + esc(o.progress.message) : ""}</small>${o.progress?.fraction != null ? `<div class="progress-track"><i style="width:${Math.max(0, Math.min(100, o.progress.fraction * 100))}%"></i></div>` : ""}${o.error ? `<p class="error-text">${esc(typeof o.error === "string" ? o.error : JSON.stringify(o.error))}</p>` : ""}${o.result != null ? operationResult(o.result, o.state === "completed" ? o.id : undefined) : ""}<details class="raw"><summary>${t("参数与完整返回值", "Arguments & full response")}</summary><pre>${esc(JSON.stringify({ arguments: o.arguments, result: o.result }, null, 2))}</pre></details></div>${badge(o.state)}</div>`,
+                `<div class="operation-row"><span class="operation-index">${String(pages.length * 100 + i + 1).padStart(2, "0")}</span><div><h3>${esc(o.step || o.id)} <span class="muted">· ${esc(o.device)} / ${esc(o.operation)}</span></h3><small>${date(o.started || o.created)}${o.ended ? " · " + duration((new Date(o.ended) - new Date(o.started)) / 1000) : ""}${o.progress?.message ? " · " + esc(o.progress.message) : ""}${o.maintenance ? " · " + t("保持条件", "Keeping conditions") : ""}${o.retakes ? " · " + t("重测", "Taken again") : ""}${o.retaken_by ? " · " + t("已重测", "Replaced by a retake") : ""}${o.attempts ? ` · <span title="${esc(o.attempts.map((a) => a.error || a.state).join("\n"))}">${t(`重试 ${o.attempts.length} 次`, `Tried again ${o.attempts.length}×`)}</span>` : ""}${o.in_doubt ? ` · <span class="doubt">${t("存疑", "In doubt")}: ${esc(Object.keys(o.in_doubt).join(", "))}</span>` : ""}</small>${o.progress?.fraction != null ? `<div class="progress-track"><i style="width:${Math.max(0, Math.min(100, o.progress.fraction * 100))}%"></i></div>` : ""}${o.error ? `<p class="error-text">${esc(typeof o.error === "string" ? o.error : JSON.stringify(o.error))}</p>` : ""}${o.result != null ? operationResult(o.result, o.state === "completed" ? o.id : undefined) : ""}<details class="raw"><summary>${t("参数与完整返回值", "Arguments & full response")}</summary><pre>${esc(JSON.stringify({ arguments: o.arguments, result: o.result }, null, 2))}</pre></details></div>${badge(o.state)}</div>`,
             )
             .join("")
         : empty(
@@ -310,6 +325,7 @@ export async function inspectRun(id) {
         ]);
         if ($("#modal").dataset.runDetail !== id || !body.isConnected) return;
         $("#detail-files").innerHTML =
+          `<div class="actions"><button class="button small" id="run-archive">${icon("download")}${t("整个实验 ZIP", "Whole experiment as ZIP")}</button><small>${t("记录、文件与 RO-Crate 说明，数据仓库可直接读取", "Records, files and an RO-Crate description that data repositories read")}</small></div>` +
           streamFigures(id, streams) +
           (files.length
             ? `<div class="table-wrap"><table><thead><tr><th>${t("文件", "File")}</th><th>${t("大小", "Size")}</th><th></th></tr></thead><tbody>${files.map((f, i) => `<tr><td>${icon("file")} <span class="mono">${esc(f.name)}</span></td><td class="nowrap">${size(f.size)}</td><td><button class="button small" data-download="${i}">${icon("download")}${t("下载", "Download")}</button></td></tr>`).join("")}</tbody></table></div>`
@@ -322,6 +338,10 @@ export async function inspectRun(id) {
                 ),
               ));
         drawArrays($("#detail-files"));
+        $("#run-archive").onclick = (e) =>
+          busy(e.currentTarget, () =>
+            save("runs/" + encodeURIComponent(id) + "/archive", id + ".zip"),
+          );
         $$("[data-download]", body).forEach(
           (b) =>
             (b.onclick = () =>

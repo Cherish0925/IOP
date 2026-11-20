@@ -113,14 +113,19 @@ def parser():
     p.add_argument('--port', type=int, default=8766); p.add_argument('--toolsets', help=toolset_help)
     p = sub.add_parser('mcp-config', help='Print the MCP launcher configuration for this installation')
     p.add_argument('--toolsets', help=toolset_help)
+    p = sub.add_parser('guide', help='Print how to work with a laboratory, or one part of it with examples')
+    p.add_argument('topic', nargs='?', default='overview',
+                   help='overview, steps, sweeps, arrays, conditions, experiments, setup or episodes')
     p = sub.add_parser('register'); p.add_argument('file')
     p = sub.add_parser('reconnect'); p.add_argument('device')
     p = sub.add_parser('release', help='Release an idle instrument connection'); p.add_argument('device')
     p = sub.add_parser('device-config', help='Read saved versions or update an idle instrument')
     p.add_argument('device'); p.add_argument('--file'); p.add_argument('--revision', type=int)
-    p = sub.add_parser('resume', help='Continue a program from its saved progress')
+    p = sub.add_parser('resume', help='Continue a program from its saved progress, or a step graph from where it stopped')
     p.add_argument('run_id'); p.add_argument('--request-id'); p.add_argument('--wait', action='store_true')
     p = sub.add_parser('checkpoints', help='Read saved program progress'); p.add_argument('run_id')
+    p = sub.add_parser('archive', help='Save an experiment as one ZIP: records, files and an RO-Crate description')
+    p.add_argument('run_id'); p.add_argument('--output', help='File to write; RUN_ID.zip by default')
     p = sub.add_parser('identify', help='Read and save instrument identity'); p.add_argument('device'); p.add_argument('--wait', action='store_true')
     p = sub.add_parser('instrument-profile', help='List or save model-specific operations'); p.add_argument('file', nargs='?')
     p = sub.add_parser('instrument-catalog', help='Find installed model descriptions and their package versions')
@@ -156,6 +161,10 @@ def parser():
     p.add_argument('--start', type=int); p.add_argument('--stop', type=int)
     p.add_argument('--low', type=float); p.add_argument('--high', type=float); p.add_argument('--points', type=int)
     p.add_argument('--peak', choices=['max', 'min'], help='Find the line at the highest value, or the lowest for a dip')
+    p.add_argument('--prominence', type=float, help='With --peak, every line that stands out by this much')
+    p.add_argument('--level', type=float, help='Where the trace crosses this value, rising or falling')
+    p.add_argument('--fit', choices=['line', 'lorentzian', 'gaussian'],
+                   help='A straight line, or a line of that shape, through the trace by least squares')
     p = sub.add_parser('runs'); p.add_argument('--limit',type=int,default=20)
     for name in ['result','cancel','files','finish']:
         p = sub.add_parser(name); p.add_argument('run_id')
@@ -171,6 +180,13 @@ def main():
         try:
             output(install(args))
         except (OSError, ValueError) as exc:
+            raise SystemExit(str(exc)) from None
+        return
+    if args.command == 'guide':
+        from .mcp import guide_text
+        try:
+            print(guide_text(args.topic))
+        except ValueError as exc:
             raise SystemExit(str(exc)) from None
         return
     home = home_path(args.home)
@@ -240,6 +256,9 @@ def main():
             output(run.wait() if args.wait else {'run_id': run.id, 'attempt': record['attempt']})
         elif args.command == 'checkpoints':
             output(client.run(args.run_id).checkpoints())
+        elif args.command == 'archive':
+            path = client.run(args.run_id).archive(args.output)
+            output({'path': str(path.resolve()), 'size': path.stat().st_size})
         elif args.command == 'identify':
             run = client.identify(args.device)
             output(run.result() if args.wait else {'run_id': run.id})
@@ -296,7 +315,8 @@ def main():
         elif args.command == 'array':
             output(client.read_array(args.operation_id, args.field, along=args.along,
                                      at=json.loads(args.at) if args.at else None, start=args.start, stop=args.stop,
-                                     low=args.low, high=args.high, points=args.points, peak=args.peak))
+                                     low=args.low, high=args.high, points=args.points, peak=args.peak,
+                                     prominence=args.prominence, level=args.level, fit=args.fit))
         elif args.command == 'call':
             if args.request_id and not args.run_id:
                 raise ValueError('Use --run-id with --request-id to retry an experiment operation')

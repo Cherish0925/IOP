@@ -1,8 +1,9 @@
 """Replace idle instrument configurations and retain their previous definitions."""
 import copy
 import fnmatch
+import math
 from .config import save_json
-from .drivers import make_driver
+from .drivers import make_driver, span
 from .errors import RequestError
 
 
@@ -10,19 +11,51 @@ METADATA = ('identity', 'identity_source', 'instrument_profile', 'documentation'
 
 
 def allowed(record, description):
-    """Keep only the operations a device record allows; identify stays available for discovery."""
+    """Keep only the operations a device record allows, with their numeric arguments within the limits it sets;
+    identify stays available for discovery."""
     patterns = record.get('allowed_operations')
-    if patterns is None:
-        return description
-    if not isinstance(patterns, list) or any(not isinstance(p, str) or not p for p in patterns):
-        raise ValueError('allowed_operations must be a list of operation name patterns')
-    operations = {name: spec for name, spec in description.get('operations', {}).items()
-                  if any(fnmatch.fnmatchcase(name, p) for p in patterns)}
-    if not operations:
-        raise ValueError('allowed_operations matches none of the driver operations')
-    if 'identify' in description.get('operations', {}):
-        operations.setdefault('identify', description['operations']['identify'])
-    return {**description, 'operations': operations}
+    if patterns is not None:
+        if not isinstance(patterns, list) or any(not isinstance(p, str) or not p for p in patterns):
+            raise ValueError('allowed_operations must be a list of operation name patterns')
+        operations = {name: spec for name, spec in description.get('operations', {}).items()
+                      if any(fnmatch.fnmatchcase(name, p) for p in patterns)}
+        if not operations:
+            raise ValueError('allowed_operations matches none of the driver operations')
+        if 'identify' in description.get('operations', {}):
+            operations.setdefault('identify', description['operations']['identify'])
+        description = {**description, 'operations': operations}
+    if 'limits' in record:
+        description = {**description, 'operations': limited(record['limits'], description.get('operations', {}))}
+    return description
+
+
+def limited(limits, operations):
+    """The operations with the bounds a device record sets on numeric arguments, for what its setup tolerates:
+    within what the instrument accepts, never beyond it. Each bound keeps its note under limit."""
+    if not isinstance(limits, dict):
+        raise ValueError('limits maps operations to bounds on their numeric parameters')
+    operations = copy.deepcopy(operations)
+    for name, bounds in limits.items():
+        if name not in operations or not isinstance(bounds, dict) or not bounds:
+            raise ValueError(f'limits {name}: name an operation of this instrument and bounds on its parameters')
+        fields = operations[name].get('parameters', {})
+        for parameter, bound in bounds.items():
+            field, what = fields.get(parameter), f'limits {name}.{parameter}'
+            if not isinstance(field, dict) or field.get('type') not in ('number', 'integer'):
+                raise ValueError(f'{what}: name a numeric parameter of that operation')
+            if (not isinstance(bound, dict) or bound.keys() - {'minimum', 'maximum', 'note'}
+                    or not bound.keys() & {'minimum', 'maximum'} or not isinstance(bound.get('note', ''), str)
+                    or any(isinstance(bound[k], bool) or not isinstance(bound[k], (int, float)) or not math.isfinite(bound[k])
+                           for k in bound.keys() & {'minimum', 'maximum'})):
+                raise ValueError(f'{what}: give minimum, maximum or both as numbers, and a note if wanted')
+            low, high = bound.get('minimum', field.get('minimum', -math.inf)), bound.get('maximum', field.get('maximum', math.inf))
+            if low > high:
+                raise ValueError(f'{what}: minimum is above maximum')
+            if low < field.get('minimum', -math.inf) or high > field.get('maximum', math.inf):
+                raise ValueError(f'{what}: the instrument takes nothing {span(field)}; a limit stays within what it takes')
+            field.update({k: bound[k] for k in ('minimum', 'maximum') if k in bound},
+                         limit=bound.get('note') or 'set for this instrument')
+    return operations
 
 
 def describe(record, driver):

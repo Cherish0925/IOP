@@ -1,10 +1,14 @@
-export type Step = { id: string; device?: string; operation: string; arguments?: Record<string, unknown>; after?: string[]; resources?: string[]; requirements?: Record<string, number>; bindings?: Record<string, Source>; sweep?: Sweep };
+export type Step = { id: string; device?: string; operation: string; arguments?: Record<string, unknown>; after?: string[]; resources?: string[]; requirements?: Record<string, number>; bindings?: Record<string, Source>; sweep?: Sweep; repeat?: number; until?: Until; retake?: true; retry?: { times: number; after_s?: number }; seek?: Seek };
 /** A value an earlier step returned: path selects inside its result or, with view, inside a view of an array it returned. */
 export type Source = { step: string; path?: (string | number)[]; view?: ArrayViewOptions };
 /** An end of a range: a number, or one read from an earlier step when the sweep runs. */
 export type End = number | Source;
-/** Parameters a step runs over, one point after another: a list of values, or evenly spaced numbers from start to stop or around a center. */
-export type Sweep = Record<string, (number | string)[] | { start: End; stop: End; points: number } | { center: End; span: End; points: number }>;
+/** Parameters a step runs over, one point after another: a list of values, or numbers from start to stop or around a center, evenly spaced or, with adapt (the path to the number each point reads), placed closer together where that reading changes most. */
+export type Sweep = Record<string, (number | string)[] | ({ start: End; stop: End } | { center: End; span: End }) & { points: number; adapt?: (string | number)[] }>;
+/** Stop a sweep after a point whose reading at path is above or below a limit, or is not a number, or with view once path in that view of what the sweep gathered is, read after `points` points; the later points are skipped and the steps after the sweep run. */
+export type Until = { path: (string | number)[]; above?: number; below?: number; view?: ArrayViewOptions; points?: number };
+/** Where a reading is largest or smallest, found by a compass search over the parameters in over; a number may be read from an earlier step as a binding is. */
+export type Seek = { maximize?: (string | number)[]; minimize?: (string | number)[]; over: Record<string, { minimum: number | Source; maximum: number | Source; step: number | Source; start?: number | Source; resolution?: number | Source }>; points?: number; gain?: number };
 export type Endpoint = { device: string; port: string };
 export type Procedure = { steps: Step[]; resources?: string[] };
 export type ConditionStep = { device?: string; operation: string; arguments?: Record<string, unknown> };
@@ -32,8 +36,10 @@ export type PlatformDefinition = {
   upkeep?: Upkeep;
 };
 export type Platform = { id: string; revision: number; updated: string; definition: PlatformDefinition; active_runs?: string[]; missing_devices?: string[] };
-export type RunRecord = { id: string; state: string; result?: unknown; error?: string; platform?: Platform; [key: string]: unknown };
-export type OperationRecord = RunRecord & { run_id: string; device: string; operation: string; device_revision?: number };
+/** Data that may have been taken while a condition did not hold: since its last accepted verification, until it was found lost or disturbed. */
+export type Doubt = { since: string | null; found: string; outcome: string; reason?: string; source_operations?: string[] };
+export type RunRecord = { id: string; state: string; result?: unknown; error?: string; platform?: Platform; operation_states?: Record<string, number>; in_doubt?: Record<string, Doubt>; estimated_end?: string; can_resume?: boolean; attempt?: number; [key: string]: unknown };
+export type OperationRecord = RunRecord & { run_id: string; device: string; operation: string; device_revision?: number; maintenance?: boolean; retakes?: string; retaken_by?: string; input_operations?: string[]; attempts?: { state: string; error?: string; started: string; ended: string }[]; retry_at?: string; conditions?: Record<string, { accepted: string; value?: unknown; reference?: Record<string, unknown> }> };
 export type BatchRecord = { request_id: string; run_id: string; complete: boolean; operations: OperationRecord[] };
 export type ArtifactRecord = { id: string; run_id: string; name: string; size: number; media_type: string; created: string; operation_ids?: string[] };
 export type Event = { sequence: number; kind: string; run_id?: string; [key: string]: unknown };
@@ -46,13 +52,24 @@ export type ArrayView = {
   field: string; dtype: string; shape: number[]; unit?: string;
   along: ArrayAxis | ArrayAxis[];
   at?: Record<string, string | number>; summarized?: (string | number)[];
-  summary: { count: number; nonfinite?: number; min: number | null; max: number | null; mean: number | null; std: number | null;
+  summary: { count: number; nonfinite?: number; min: number | null; max: number | null; mean: number | null; std: number | null; error?: number | null;
     min_index?: number[]; max_index?: number[]; min_at?: number | (number | null)[]; max_at?: number | (number | null)[] };
   values?: (number | null)[] | (number | null)[][];
   envelope?: { position: number[] | number[][]; coordinate?: number[] | (number[] | null)[]; min: (number | null)[] | (number | null)[][];
     max: (number | null)[] | (number | null)[][]; mean: (number | null)[] | (number | null)[][] };
   /** With peak: the line's center between samples, its width where it is halfway to the base, the coordinates there, its value and base. */
   peak?: { center: number; width?: number; low?: number; high?: number; value: number; base: number; index: number } | null;
+  /** With peak and prominence: every line that stands out by that much, in order of position, its width at half its prominence. */
+  peaks?: { center: number; width?: number; low?: number; high?: number; value: number; base: number; prominence: number; index: number }[];
+  /** With level: each place the trace crosses it, between samples, in order; index is the sample before. */
+  crossings?: { at: number; rising: boolean; index: number }[];
+  /** With fit "line": the straight line through the selection, its value at coordinate zero, where it reaches zero, and the root mean square it leaves; with "lorentzian" or "gaussian", a line of that shape, its full width at half height. */
+  fit?: { slope: number; intercept: number; zero: number | null; residual: number; count: number; errors?: { slope: number | null; zero: number | null } }
+    | { center: number; width: number; height: number; base: number; residual: number; count: number;
+        errors?: { center: number | null; width: number | null; height: number | null; base: number | null } | null } | null;
+  /** With one other axis left free: its coordinates or labels, and at each of its positions the peak, crossings and fit of the trace there. */
+  rows?: { axis: string | number; unit?: string; coordinates?: number[]; labels?: string[]; peak?: (ArrayView['peak'])[];
+    crossings?: NonNullable<ArrayView['crossings']>[]; fit?: (ArrayView['fit'])[] };
 };
 /** The URL query of an array view; at, and a list with one value per axis along, are sent as JSON. */
 function viewQuery(options: ArrayViewOptions) {
@@ -62,13 +79,13 @@ function viewQuery(options: ArrayViewOptions) {
 }
 type PerAxis<T> = T | (T | null)[];
 export type ArrayViewOptions = { field?: string; along?: string | number | (string | number)[]; at?: Record<string, string | number>;
-  start?: PerAxis<number>; stop?: PerAxis<number>; low?: PerAxis<number>; high?: PerAxis<number>; points?: number | number[]; peak?: 'max' | 'min' };
+  start?: PerAxis<number>; stop?: PerAxis<number>; low?: PerAxis<number>; high?: PerAxis<number>; points?: number | number[]; peak?: 'max' | 'min'; prominence?: number; level?: number; fit?: 'line' | 'lorentzian' | 'gaussian' };
 export type Submission = { name?: string; project?: string; experiment?: string; platform?: string; resources?: string[]; requirements?: Record<string, number>; parameters?: Record<string, unknown>; request_id?: string; requires?: string[]; upkeep?: boolean | Omit<Upkeep, 'conditions'> };
 export class IOPError extends Error {
   constructor(message: string, readonly status: number, readonly details: Record<string, unknown> = {}) { super(message); this.name = 'IOPError'; }
   get code() { return this.details.code as string | undefined; }
 }
-const terminal = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
+const terminal = new Set(['completed', 'skipped', 'failed', 'cancelled', 'interrupted']);
 const delay = (ms: number, signal?: AbortSignal): Promise<void> => new Promise((resolve, reject) => {
   if (signal?.aborted) { reject(signal.reason); return; }
   const abort = () => { clearTimeout(timer); reject(signal?.reason); };
@@ -94,6 +111,10 @@ export class IOP {
   devicePage(offset = 0, limit = 100) { return this.request('/v1/context/devices?' + new URLSearchParams({offset:String(offset),limit:String(limit)})); }
   deviceHistory(device: string) { return this.request<{id: string; revision: number; definition: Record<string, unknown>}[]>(`/v1/devices/${encodeURIComponent(device)}/history`); }
   configureDevice(device: string, definition: Record<string, unknown>, expectedRevision: number) { return this.request(`/v1/devices/${encodeURIComponent(device)}/configuration`, { definition, expected_revision: expectedRevision }); }
+  /** How to work with this laboratory, as text: the working method, or one part of it with examples. */
+  async guide(topic: 'overview' | 'steps' | 'sweeps' | 'arrays' | 'conditions' | 'experiments' | 'programs' | 'setup' | 'episodes' = 'overview') {
+    return (await this.request<{ topic: string; text: string }>('/v1/guides/' + topic)).text;
+  }
   schema(name: 'device' | 'platform' | 'workflow' | 'instrument-profile' | 'operation') { return this.request<Record<string, unknown>>('/v1/schemas/' + name); }
   discover() { return this.request<Record<string, unknown>>('/v1/discovery'); }
   startDiscovery() { return this.request<Record<string, unknown>>('/v1/discovery', {}); }
@@ -186,6 +207,10 @@ export class IOP {
     const record = await this.request<RunRecord>('/v1/runs', { ...options, steps, request_id: options.request_id ?? crypto.randomUUID() });
     return this.run(record.id);
   }
+  /** What a step graph would do without running it: operations by instrument, the conditions it relies on and their state, and estimated_s at the median each kind took recently. */
+  preview(steps: Step[], options: Omit<Submission, 'request_id'> = {}) {
+    return this.request<{ preview: true; operations: number; by_operation: Record<string, { operations: number; median_s?: number; from?: number }>; estimated_s: number | null; requires: Record<string, string> }>('/v1/runs', { ...options, steps, preview: true });
+  }
   async startExperiment(options: Submission = {}): Promise<Run> {
     const record = await this.request<RunRecord>('/v1/runs', { ...options, kind: 'external', request_id: options.request_id ?? crypto.randomUUID() });
     return this.run(record.id);
@@ -235,14 +260,15 @@ export class Run {
     return stream;
   }
   async wait(options: { signal?: AbortSignal; interval?: number; details?: boolean } = {}): Promise<RunRecord> {
-    let cursor = 0;
-    for (;;) {
+    let record = await this.info(false);
+    while (!terminal.has(record.state)) {
       options.signal?.throwIfAborted();
-      const record = await this.info(false);
-      if (terminal.has(record.state)) return options.details === false ? record : this.info();
-      const page = await this.client.events(cursor, this.id, Math.min(25, Math.max(0, this.client.timeout / 1000 - 1)), options.signal);
-      cursor = page.cursor;
+      // The Runtime answers when the experiment's state changes, however many operations it runs meanwhile.
+      const seconds = Math.min(25, Math.max(0, this.client.timeout / 1000 - 1));
+      record = await this.client.request<RunRecord>(`/v1/runs/${encodeURIComponent(this.id)}?` + new URLSearchParams({ details: 'false', wait: String(seconds), state: record.state }), undefined, options.signal);
+      if (!seconds) await new Promise((resolve) => setTimeout(resolve, options.interval ?? 100));
     }
+    return options.details === false ? record : this.info();
   }
   async result(options: { signal?: AbortSignal; interval?: number } = {}): Promise<unknown> {
     const record = await this.wait({ ...options, details: false });
@@ -252,7 +278,8 @@ export class Run {
   files() { return this.client.request<ArtifactRecord[]>(`/v1/runs/${encodeURIComponent(this.id)}/artifacts`); }
   filePage(after = 0, limit = 100) { return this.client.request<{files: ArtifactRecord[]; cursor: number; has_more: boolean}>(`/v1/runs/${encodeURIComponent(this.id)}/file-page?` + new URLSearchParams({after:String(after),limit:String(limit)})); }
   updates(after = 0, limit = 100, wait = 0, signal?: AbortSignal) { return this.client.request<RunUpdates>(`/v1/runs/${encodeURIComponent(this.id)}/updates?` + new URLSearchParams({after:String(after),limit:String(limit),wait:String(wait)}), undefined, signal); }
-  operations(after = 0, limit = 200) { return this.client.request<{ operations: OperationRecord[]; cursor: number }>(`/v1/runs/${encodeURIComponent(this.id)}/operations?` + new URLSearchParams({after:String(after),limit:String(limit)})); }
+  /** A page of this experiment's operations; with inDoubt, only those a condition may have spoiled. */
+  operations(after = 0, limit = 200, inDoubt = false) { return this.client.request<{ operations: OperationRecord[]; cursor: number }>(`/v1/runs/${encodeURIComponent(this.id)}/operations?` + new URLSearchParams({after:String(after),limit:String(limit),...(inDoubt ? {in_doubt:'true'} : {})})); }
   saveResult(result: unknown) { return this.client.request(`/v1/runs/${encodeURIComponent(this.id)}/result`, { result }); }
   async beginEpisode(id: string, definition: EpisodeDefinition) {
     await this.client.request(`/v1/runs/${encodeURIComponent(this.id)}/episodes`, {id, ...definition});
@@ -273,7 +300,7 @@ export class Run {
     while (!batch.complete) {
       batch = await this.client.request<BatchRecord>(path + '?' + new URLSearchParams({request_id: requestId, wait: String(wait)}), undefined, options.signal);
     }
-    if (batch.operations.some(op => op.state !== 'completed')) throw new IOPError('Operation batch did not complete', 0, batch);
+    if (batch.operations.some(op => op.state !== 'completed' && op.state !== 'skipped')) throw new IOPError('Operation batch did not complete', 0, batch);
     return batch.operations;
   }
   /** Use a saved Standard or Workflow Operation in this experiment and return its named result. */
@@ -281,10 +308,12 @@ export class Run {
   maintain(conditions?: string[], options: { force?: boolean; signal?: AbortSignal } = {}) {
     return this.client.maintain({ conditions, runId: this.id, ...options });
   }
-  /** Use a saved operation and return its named result; with sweep, at each point, its named results gathered into arrays. */
-  async call(operation: string, args: Record<string, unknown> = {}, options: { requestId?: string; signal?: AbortSignal; sweep?: Sweep } = {}) {
+  /** Use a saved operation in this experiment and return its named result; the options of a step apply: sweep, repeat, until, seek and retry. */
+  async call(operation: string, args: Record<string, unknown> = {}, options: { requestId?: string; signal?: AbortSignal } & Pick<Step, 'sweep' | 'repeat' | 'until' | 'seek' | 'retry'> = {}) {
     const requestId = options.requestId ?? crypto.randomUUID();
-    await this.batch([{ id: 'call', operation, arguments: args, ...(options.sweep ? { sweep: options.sweep } : {}) }], { requestId, signal: options.signal });
+    const { sweep, repeat, until, seek, retry } = options;
+    const given = Object.fromEntries(Object.entries({ sweep, repeat, until, seek, retry }).filter(([, value]) => value !== undefined));
+    await this.batch([{ id: 'call', operation, arguments: args, ...given }], { requestId, signal: options.signal });
     const batch = await this.client.request<{ results: Record<string, Record<string, unknown>> }>(
       `/v1/runs/${encodeURIComponent(this.id)}/batches?` + new URLSearchParams({ request_id: requestId }), undefined, options.signal);
     return batch.results.call;
@@ -311,6 +340,14 @@ export class Run {
     const value = await response.json();
     if (!response.ok) throw new IOPError(value.error ?? response.statusText, response.status);
     return value as ArtifactRecord;
+  }
+  /** The whole experiment as one ZIP: its records, its files and an RO-Crate description; read the response as a stream. */
+  async archive(signal?: AbortSignal): Promise<Response> {
+    const response = await fetch(this.client.endpoint + `/v1/runs/${encodeURIComponent(this.id)}/archive`, {
+      headers: { Authorization: 'Bearer ' + this.client.token }, signal
+    });
+    if (!response.ok) throw new IOPError(response.statusText, response.status);
+    return response;
   }
   async download(artifactId: string, signal?: AbortSignal): Promise<Response> {
     const response = await fetch(this.client.endpoint + '/v1/artifacts/' + encodeURIComponent(artifactId), {

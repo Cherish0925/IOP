@@ -143,10 +143,17 @@ try {
     (await page.locator("#device-response").innerText()).includes("1.25"),
   );
   await page.click("#device-release");
-  await page.waitForFunction(() => document.querySelector("#device-invoke")?.disabled);
-  assert.equal((await api("devices/" + identified.id)).status.state, "released");
+  await page.waitForFunction(
+    () => document.querySelector("#device-invoke")?.disabled,
+  );
+  assert.equal(
+    (await api("devices/" + identified.id)).status.state,
+    "released",
+  );
   await page.click("#device-reconnect");
-  await page.waitForFunction(() => !document.querySelector("#device-invoke")?.disabled);
+  await page.waitForFunction(
+    () => !document.querySelector("#device-invoke")?.disabled,
+  );
   assert.equal((await api("devices/" + identified.id)).status.state, "ready");
   if (images)
     await page.screenshot({
@@ -530,15 +537,16 @@ sys.stdout.buffer.write(b.getvalue())`,
     await page.locator("#detail-operation-list .array-plot").innerText(),
     /frequency 1 GHz[\s\S]*1\.1 GHz[\s\S]*0\.2 @ 1\.06 GHz/,
   );
-  // The dip of the trace: its center and its width at half height, marked on the chart.
+  // The dip of the trace: the Lorentzian that fits it best, drawn over it, with its center and its width at
+  // half height marked on the chart.
   await page.click('#detail-operation-list [data-array-line="min"]');
   await page.waitForSelector(
-    "#detail-operation-list .array-plot line.line-mark",
+    "#detail-operation-list .array-plot polyline.fit",
     { state: "attached" },
   );
   assert.match(
     await page.locator("#detail-operation-list .array-plot").innerText(),
-    /(谷|dip) 1\.06 GHz · (半高宽|width) 3\.99\d* MHz/,
+    /(洛伦兹|Lorentzian) 1\.06 GHz[^·]*· (半高宽|width) 4 MHz/,
   );
   assert.equal(
     await page
@@ -573,6 +581,21 @@ sys.stdout.buffer.write(b.getvalue())`,
       fullPage: true,
       style: "#toast{visibility:hidden}",
     });
+  // Peak on a map draws the line found in each row: the beam's center across, at 80 µm in each of 48 rows.
+  await page.click('#detail-operation-list [data-array-line="max"]');
+  // A straight line down the map has no width, so it is waited for as attached rather than visible.
+  await page.waitForSelector("#detail-operation-list .array-ridge polyline", {
+    state: "attached",
+  });
+  const ridge = (
+    await page
+      .locator("#detail-operation-list .array-ridge polyline")
+      .getAttribute("points")
+  )
+    .split(" ")
+    .map((point) => point.split(",").map(Number));
+  assert.equal(ridge.length, 48);
+  for (const [x] of ridge) assert.ok(Math.abs(x - 63.28125) < 0.01, String(x));
   // The whole array is saved as a NumPy file.
   const saving = page.waitForEvent("download");
   await page.click("#detail-operation-list [data-array-save]");
@@ -612,6 +635,109 @@ sys.stdout.buffer.write(b.getvalue())`,
   assert.match(
     await page.locator("#detail-results .array-plot").innerText(),
     /step-1\.angle_actual · 19 · deg[\s\S]*angle_deg/,
+  );
+  await page.click("#modal-close");
+  // An adaptive sweep is drawn at its coordinates: each angle read at itself gives a straight line.
+  const adaptive = await api("runs", {
+    name: "Adaptive turn",
+    steps: [
+      {
+        id: "turn",
+        device: "sim-axis",
+        operation: "move_to",
+        arguments: { duration: 0 },
+        sweep: {
+          angle_deg: {
+            start: -45,
+            stop: 45,
+            points: 7,
+            adapt: ["angle_actual"],
+          },
+        },
+      },
+    ],
+  });
+  await page.evaluate(
+    (id) => document.dispatchEvent(new CustomEvent("iop:run", { detail: id })),
+    adaptive.id,
+  );
+  await page.waitForSelector("#run-detail-summary .badge.completed");
+  await page.click('[data-detail-tab="results"]');
+  await page.waitForSelector("#detail-results .array-plot svg polyline");
+  const drawn = (
+    await page
+      .locator("#detail-results .array-plot svg polyline")
+      .first()
+      .getAttribute("points")
+  )
+    .split(" ")
+    .map((point) => point.split(",").map(Number));
+  assert.equal(drawn.length, 7);
+  for (const [x, y] of drawn)
+    assert.ok(Math.abs(y - (146 - (x / 600) * 142)) < 0.01, `${x},${y}`);
+  await page.click("#modal-close");
+  // Returning and hysteresis scans use their whole coordinate range, even when their endpoints coincide.
+  for (const angles of [
+    [0, 1, 0],
+    [0, 2, 1],
+  ]) {
+    const returning = await api("runs", {
+      name: "Returning turn",
+      steps: [
+        {
+          id: "turn",
+          device: "sim-axis",
+          operation: "move_to",
+          arguments: { duration: 0 },
+          sweep: { angle_deg: angles },
+        },
+      ],
+    });
+    await page.evaluate(
+      (id) =>
+        document.dispatchEvent(new CustomEvent("iop:run", { detail: id })),
+      returning.id,
+    );
+    await page.waitForSelector("#run-detail-summary .badge.completed");
+    await page.click('[data-detail-tab="results"]');
+    await page.waitForSelector("#detail-results .array-plot svg polyline");
+    const points = (
+      await page
+        .locator("#detail-results .array-plot svg polyline")
+        .first()
+        .getAttribute("points")
+    )
+      .split(" ")
+      .map((point) => point.split(",").map(Number));
+    assert.deepEqual(
+      points.map(([x]) => x),
+      angles.map((a) => (a * 600) / Math.max(...angles)),
+    );
+    assert.ok(points.flat().every(Number.isFinite));
+    await page.click("#modal-close");
+  }
+  // A sweep stopped by its until shows how many of its points were skipped.
+  const stopped = await api("runs", {
+    name: "Stopped turn",
+    steps: [
+      {
+        id: "turn",
+        device: "sim-axis",
+        operation: "move_to",
+        arguments: { duration: 0 },
+        sweep: { angle_deg: { start: 0, stop: 30, points: 4 } },
+        until: { path: ["angle_actual"], above: 15 },
+      },
+    ],
+  });
+  await page.evaluate(
+    (id) => document.dispatchEvent(new CustomEvent("iop:run", { detail: id })),
+    stopped.id,
+  );
+  await page.waitForSelector("#run-detail-summary .badge.completed");
+  assert.equal(
+    await page.textContent("#run-detail-summary .run-states"),
+    "Completed 3 · Skipped 1",
   );
   await page.click("#modal-close");
   // A numeric data stream is drawn per channel from its view.

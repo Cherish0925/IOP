@@ -126,6 +126,17 @@ class ContinuityCase(unittest.TestCase):
             self.assertEqual({op['state'] for op in receipt['operations']}, {'completed'})
             self.assertLess(len(reads), 6 * len(steps))
 
+    def test_waiting_on_a_long_step_graph_reads_it_when_it_changes(self):
+        # The Runtime answers a waiter when the experiment's state changes, not at each of its operations.
+        run = self.client.submit([dict(self.step('read'), repeat=300)])
+        reads, request = [], self.client.request
+        def counted(path, *args, **kwargs):
+            reads.append(path)
+            return request(path, *args, **kwargs)
+        with patch.object(self.client, 'request', counted):
+            self.assertEqual(len(run.result(30)['read']['angle_actual']['values']), 300)
+        self.assertLess(len(reads), 8)
+
     def test_failure_cancels_batch_dependents(self):
         self.client.register({'id':'absent','driver':'scpi','config':{'host':'127.0.0.1','port':1,'timeout':0.1}})
         run = self.client.start_experiment()
