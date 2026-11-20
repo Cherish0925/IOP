@@ -593,8 +593,10 @@ class SweepCase(unittest.TestCase):
         self.assertEqual(preview['by_operation']['stage.move_to']['from'], 5)
         took = sorted(datetime.fromisoformat(op['ended']).timestamp() - datetime.fromisoformat(op['started']).timestamp()
                       for op in run.info()['operation_records'])
-        self.assertGreaterEqual(took[2], 0.2)
-        self.assertAlmostEqual(preview['estimated_s'], 5 * took[2], delta=0.001)
+        # Estimates follow recorded timestamps, whose clock need not match the simulated wait timer.
+        self.assertGreater(took[2], 0)
+        self.assertEqual(preview['by_operation']['stage.move_to']['median_s'], took[2])
+        self.assertEqual(preview['estimated_s'], 5 * took[2])
 
     def test_a_step_tries_again_an_instrument_call_that_failed(self):
         self.client.register({'id': 'flaky', 'driver': Flaky.__module__ + ':Flaky'})
