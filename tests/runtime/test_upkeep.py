@@ -275,6 +275,21 @@ class UpkeepCase(unittest.TestCase):
         passes = [op['started'] for op in info['operation_records'] if op.get('maintenance') and op['operation'] == 'read']
         self.assertTrue(any(retakes[0]['ended'] < started < retakes[1]['started'] for started in passes))
 
+    def test_a_validity_too_short_to_keep_ends_the_experiment_with_the_reason(self):
+        # An alignment valid for a microsecond is due again before any operation can start after its verification:
+        # upkeep renews it three times, then the experiment ends and says why, where it went on renewing forever.
+        self.engine.config['upkeep_interval_s'] = 3600
+        self.client.configure_platform(chain(SOURCE, {**PATH, 'valid_for': 1e-6}, keep=False))
+        run = self.client.submit([{'id': 'read', 'device': 'detector', 'operation': 'integrate', 'arguments': {'seconds': 0}}],
+                                 platform='chain', requires=['path.aligned'], upkeep=True)
+        info = run.wait(timeout=30)
+        self.assertEqual(info['state'], 'failed')
+        self.assertRegex(info['error'], 'path.aligned is due .* renewed what this experiment requires 3 times in a row '
+                                        '.* give the condition a longer valid_for')
+        events = self.client.request(f'/v1/events?run_id={run.id}&limit=1000')['events']
+        self.assertEqual(sum(event['kind'] == 'upkeep.started' for event in events), 3)
+        self.assertNotIn('detector.integrate', WORLD['log'])
+
     def test_rejected_operations_do_not_start_instrument_maintenance(self):
         from ai4instruments.iop import batches
         self.engine.config['upkeep_interval_s'] = 3600

@@ -37,6 +37,8 @@ OUTCOMES = ('holds', 'drifted', 'unusable')
 FIELDS = {'id', 'description', 'kind', 'after', 'verify', 'accept', 'usable', 'reference', 'correct', 'settle',
           'valid_for', 'note'}
 RECORDS = 20
+# Passes an experiment's upkeep runs in a row without one of its operations starting, before it gives up.
+RENEWALS = 3
 LOCAL = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,47}')
 
 
@@ -415,6 +417,8 @@ class Conditions:
         self.stopping = threading.Event()
         # Per platform: when each condition was last attempted automatically, and what the last pass found.
         self.attempts, self.waiting = {}, {}
+        # Passes each experiment's upkeep has run in a row since one of its operations last started.
+        self.renewed = {}
         self.wake = threading.Event()
         self.index()
 
@@ -621,6 +625,12 @@ class Conditions:
             (relied if state['state'] == 'holds' else lacking)[condition_id] = state
         if lacking:
             text = '; '.join(f"{c} is {s['state']}" + (f" ({s['reason']})" if s.get('reason') else '') for c, s in lacking.items())
+            if self.renewed.get(run_id, 0) >= RENEWALS:
+                # Upkeep restored them each time, and each time they came due before an operation could start.
+                raise RequestError('conditions_not_held', f'{text}, again after upkeep renewed what this experiment '
+                                   f'requires {RENEWALS} times in a row without one of its operations starting. A validity '
+                                   'shorter than the time from a verification to the next operation cannot be kept: give '
+                                   'the condition a longer valid_for.', conditions=lacking, run_id=run_id)
             raise RequestError('conditions_not_held', text + '. Maintain these conditions, then submit again.',
                                conditions=lacking, maintain='/v1/conditions/maintain',
                                **({'run_id': run_id} if run_id else {}))
@@ -1011,7 +1021,7 @@ class Conditions:
                         self.keep(run, run.get('requires', []))
                     except (ValueError, KeyError) as error:
                         self._wait(run['id'], str(error))
-                for store in (self.waiting, self.attempts):
+                for store in (self.waiting, self.attempts, self.renewed):
                     for key in [k for k in store if k not in self.engine.platforms and k not in self.engine.runs]:
                         del store[key]
 
@@ -1122,7 +1132,8 @@ class Conditions:
         """Inside an experiment that declares upkeep: start or join a pass when what it relies on needs one.
 
         Returns True while its operations wait: a pass runs in the experiment, or one is due and starts once
-        none of its operations is running.
+        none of its operations is running. After RENEWALS passes in a row with no operation started between
+        them, no further pass starts: the next operation is refused with the reason.
         """
         if not run.get('upkeep') or not names or run['kind'] != 'external' and run['state'] == 'queued':
             return False
@@ -1139,8 +1150,11 @@ class Conditions:
             return False
         if self.engine.running(run['id']):
             return True
+        if self.renewed.get(run['id'], 0) >= RENEWALS:
+            return False
         try:
             self._start(run['id'], list(plan['reasons']), plan, run_id=run['id'])
+            self.renewed[run['id']] = self.renewed.get(run['id'], 0) + 1
         except RequestError as error:
             if error.code != 'maintenance_active':
                 self._wait(run['id'], str(error))

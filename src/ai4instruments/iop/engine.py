@@ -1797,6 +1797,9 @@ class Engine:
                 dispatch.append((op, context, error))
             else:
                 dispatch.append((op, context, None))
+                if not op.get('maintenance'):
+                    # An operation of the experiment starts: its upkeep kept what it relies on.
+                    self.conditions.renewed.pop(rid, None)
         # Commit one group of starts before any of those device calls execute.
         # Iterators remain valid because ready queues change only after selection.
         if dispatch:
