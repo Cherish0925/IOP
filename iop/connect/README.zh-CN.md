@@ -47,7 +47,7 @@ Claude Code：`claude plugin marketplace add Cherish0925/IOP`，再执行 `claud
 
 读取 `lab_context`，再用 `describe_instrument` 查询所选设备的操作、参数和单位。接线、样品或校准条件无法从机器读出时，由了解现场的人补齐。提交前选定 `request_id`，保存实验室名和返回的实验 ID；重连后以 `experiment(run_id, include_result=true)` 读取结果。只有在原提交的回复丢失时，才用相同请求 ID 重发相同内容。
 
-## 0.8.7 连接方式
+## Portable 与 DeepSeek 连接
 
 `iop connect --name bench` 现在还返回 `portable` 和 `deepseek` 目录。
 前者采用 Agent Plugins 的 plugin.json / mcp.json 格式；后者包含 DeepSeek
@@ -57,4 +57,4 @@ Claude Code：`claude plugin marketplace add Cherish0925/IOP`，再执行 `claud
 DeepSeek Discover 的项目索引：
 https://raw.githubusercontent.com/Cherish0925/IOP/main/docs/dsh/index.json
 该索引中的通用连接使用已安装的 `iop mcp`；指定实验室使用上面的命名连接。
-通过 MCP resource `iop://guides/operations` 按需读取操作说明。
+通过 MCP resource `iop://guides/overview` 按需读取操作说明。

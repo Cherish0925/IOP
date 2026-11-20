@@ -1,0 +1,21 @@
+{
+  "signal": {
+    "device": "meter", "operation": "measure", "arguments": {}, "path": ["power"], "unit": "W",
+    "prepare": [{"id": "position", "device": "stage", "operation": "move_to", "arguments": {"angle_deg": 22.5, "duration": 0}}],
+    "components": {"meter-gain": {"relative": 0.01}}
+  },
+  "reference": {
+    "device": "meter", "operation": "measure", "arguments": {}, "path": ["power"], "unit": "W",
+    "prepare": [{"id": "position", "device": "stage", "operation": "move_to", "arguments": {"angle_deg": 0, "duration": 0}}],
+    "components": {"meter-gain": {"relative": 0.01}}
+  },
+  "dark": {
+    "device": "meter", "operation": "measure", "arguments": {}, "path": ["power"], "unit": "W",
+    "prepare": [{"id": "position", "device": "stage", "operation": "move_to", "arguments": {"angle_deg": 45, "duration": 0}}],
+    "components": {"meter-gain": {"relative": 0.01}}
+  },
+  "min_samples": 4,
+  "max_samples": 20,
+  "standard_uncertainty": 0.001,
+  "reference_relative_uncertainty": 0.1
+}

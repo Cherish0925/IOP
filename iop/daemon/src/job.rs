@@ -13,6 +13,19 @@ fn text<'a>(value: &'a Value, key: &str) -> Result<&'a str, io::Error> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("Missing {key}")))
 }
 
+fn duration(value: Option<&Value>) -> Result<Option<Duration>, io::Error> {
+    let seconds = match value {
+        None | Some(Value::Null) => 0.0,
+        Some(value) => value.as_f64().ok_or_else(|| io::Error::new(
+            io::ErrorKind::InvalidInput, "timeout must be a number of seconds"))?,
+    };
+    if !seconds.is_finite() || !(0.0..=31_536_000.0).contains(&seconds) {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput,
+            "timeout must be nonnegative and at most one year; zero means no deadline"));
+    }
+    Ok(if seconds == 0.0 { None } else { Some(Duration::from_secs_f64(seconds)) })
+}
+
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut requests = BufReader::new(tokio::io::stdin()).lines();
     let Some(line) = requests.next_line().await? else {
@@ -20,6 +33,14 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     let request: Value = serde_json::from_str(&line)?;
     let p = &request["params"];
+    // Validate before opening output files or launching the program.
+    let timeout = match duration(p.get("timeout")) {
+        Ok(value) => value,
+        Err(error) => {
+            super::emit(&json!({"id":request["id"], "error":error.to_string()})).await?;
+            return Ok(());
+        }
+    };
     let args = p["command"]
         .as_array()
         .ok_or("command must be an argument array")?;
@@ -57,10 +78,6 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     {
         command.creation_flags(0x00000200);
     }
-    let timeout = p["timeout"].as_f64().unwrap_or(0.0);
-    if !timeout.is_finite() || timeout < 0.0 {
-        return Err("timeout must be nonnegative".into());
-    }
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
@@ -73,7 +90,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let tree = super::process_tree::Tree::attach(&child)?;
     let result = async {
         super::emit(&json!({"id":request["id"],"event":"started","pid":pid})).await?;
-        let timer = time::sleep(Duration::from_secs_f64(if timeout > 0.0 { timeout } else { 86400.0 }));
+        let timer = time::sleep(timeout.unwrap_or(Duration::from_secs(86400)));
         tokio::pin!(timer);
         let response = loop {
             tokio::select! {
@@ -89,7 +106,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
                         break json!({"id":request["id"],"cancelled":true,"result":{"exit_code":-1}});
                     }
                 }
-                _ = &mut timer, if timeout > 0.0 => {
+                _ = &mut timer, if timeout.is_some() => {
                     super::stop(&mut child).await;
                     break json!({"id":request["id"],"error":"Program exceeded its configured duration","result":{"exit_code":-1}});
                 }
@@ -103,4 +120,23 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }.await;
     super::stop(&mut child).await;
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::duration;
+    use serde_json::json;
+    use std::time::Duration;
+
+    #[test]
+    fn optional_deadline_is_a_bounded_number() {
+        assert_eq!(duration(None).unwrap(), None);
+        assert_eq!(duration(Some(&json!(null))).unwrap(), None);
+        assert_eq!(duration(Some(&json!(0))).unwrap(), None);
+        assert_eq!(duration(Some(&json!(0.125))).unwrap(), Some(Duration::from_millis(125)));
+        assert_eq!(duration(Some(&json!(31_536_000))).unwrap(), Some(Duration::from_secs(31_536_000)));
+        for value in [json!(-1), json!(true), json!("5"), json!({}), json!(1e300)] {
+            assert!(duration(Some(&value)).is_err(), "{value}");
+        }
+    }
 }

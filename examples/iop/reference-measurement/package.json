@@ -1,0 +1,5 @@
+{
+  "name": "Reference-normalized measurement",
+  "command": ["{python}", "experiment.py"],
+  "resume": true
+}
