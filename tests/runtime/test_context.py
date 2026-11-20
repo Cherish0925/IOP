@@ -413,10 +413,12 @@ class MCPCase(unittest.TestCase):
                 self.assertEqual(call('operating_conditions', {'condition':'aux.in_range'})['statistics']['verifications'], 1)
                 due = call('operating_conditions', {'invalidate':'the mount was touched', 'conditions':['aux.in_range']})
                 self.assertEqual((due[0]['state'], due[0]['reason']), ('due', 'the mount was touched'))
-                # A program is named as the other forms of experiment are, and found by it.
+                # A program is named, and relies on conditions, as the other forms of experiment do.
                 with tempfile.TemporaryDirectory() as folder:
                     Path(folder, 'experiment.py').write_bytes(b'')
                     program = {'path': folder, 'request_id': 'mcp-program', 'name': 'Dark count', 'project': 'detector'}
+                    refused = request('tools/call', {'name': 'submit_program', 'arguments': dict(program, requires=['aux.in_range'])})
+                    self.assertIn('conditions_not_held: aux.in_range is due', refused['content'][0]['text'])
                     submitted = call('submit_program', program)
                 self.assertEqual(call('find_experiments', {'search': 'detector'})['experiments'][0]['id'], submitted['id'])
                 accepted = call('submit_experiment', {'steps':[{'id':'wait', 'device':'aux', 'operation':'wait',

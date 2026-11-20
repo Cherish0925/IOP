@@ -397,11 +397,13 @@ def create_server(client, *, http=False, selection=None):
 
     def submit_program(path: str, request_id: str, name: str | None = None, project: str | None = None,
                        platform: str | None = None, resources: list[str] | None = None, parameters: dict | None = None,
-                       requirements: dict[str, int] | None = None) -> dict:
-        """Upload an experiment directory or ZIP from this MCP host to the instrument service, which runs it independently of this connection."""
+                       requirements: dict[str, int] | None = None, requires: list[str] | None = None,
+                       upkeep: bool = False) -> dict:
+        """Upload an experiment directory or ZIP from this MCP host to the instrument service, which runs it independently of this connection. requires and upkeep are those of start_experiment."""
         return client.submit_package(Path(path).expanduser(), request_id=request_id, name=name, project=project,
                                      platform=platform, resources=resources or [], parameters=parameters,
-                                     requirements=requirements).info(details=False)
+                                     requirements=requirements, requires=requires or (),
+                                     upkeep=upkeep or None).info(details=False)
 
     @tool(annotations=read_only)
     def experiment(run_id: str, after: int = 0, limit: int = 20, include_result: bool = False, in_doubt: bool = False) -> dict:
