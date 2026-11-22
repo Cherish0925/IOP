@@ -191,6 +191,29 @@ Before each dependent step starts, the Runtime checks the recorded condition sta
 
 `invalidate(conditions, reason)` records that something happened (the enclosure was opened, a cable was changed) and makes those conditions and their dependents due. Re-observing only the upstream condition does not silently restore downstream validity. A monitor reading that leaves its limits does the same for the conditions verified or corrected with that device. / `invalidate(conditions, reason)` 记录发生了什么（开过罩子、换过线缆），使这些条件及下游依赖待确认。只重新观察上游，不会自动恢复下游条件。监视读数越限时，用到该设备的条件同样变为待核对。
 
+A platform names the disturbances its operators report and what each acts on, so that the knowledge of which conditions an event disturbs stays with the platform: / 平台写明操作者会报告的扰动及其作用的条件，哪个事件影响哪些条件的知识随平台保存：
+
+```json
+"disturbances": {
+  "enclosure_opened": {"description": "Air currents and a temperature step for several minutes",
+                       "conditions": ["path.aligned"]},
+  "sample_changed": {"description": "A new sample: its equilibrium and its baseline are new",
+                     "conditions": ["sample.equilibrated", "detector.baseline"]},
+  "power_cycled": {"description": "The source was switched off and on again: it warms up anew",
+                   "conditions": ["source.stable"]}
+}
+```
+
+`invalidate(platform=..., disturbance="enclosure_opened")` makes the listed conditions and their dependents due; the reason recorded is the event with its description, or with what the operator saw when a reason is given. List only what the event acts on directly; what depends on it follows. / `invalidate(platform=..., disturbance="enclosure_opened")` 使所列条件及其下游待核对；记录的原因为事件名加其说明，给出 reason 时为事件名加操作者看到的情况。只列出事件直接作用的条件，下游依赖自动跟随。
+
+At the bench: / 在平台旁：
+
+```sh
+iop conditions --platform bench --disturbance enclosure_opened
+iop conditions --platform bench --disturbance sample_changed --invalidate "sample 12, a thinner film"
+iop conditions path.aligned --invalidate "the table was knocked"
+```
+
 ## What the records say / 记录能说明什么
 
 Every verification and correction is recorded. `GET /v1/conditions/{id}` returns the latest records and: / 每次核对和校正都有记录。`GET /v1/conditions/{id}` 返回最近的记录以及：

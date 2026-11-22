@@ -24,7 +24,7 @@ Ask the operator, or read the manual, for each question; each answer is one fiel
 - A correction acts on the system; a `reference` acts on the data. A zero, a blank or a dark level has no correction other than measuring it again.
 - Settings adjusted against each other belong to one saved operation or to one `tune` over several settings; the graph stays acyclic.
 - A correction never requires the condition it restores.
-- Events the Runtime cannot observe, such as an opened enclosure, a reconnected cable or a changed sample, are reported with `operating_conditions(invalidate="what happened", conditions=[...])`.
+- Events the Runtime cannot observe, such as an opened enclosure, a reconnected cable, a changed sample or a power cut, are part of what the operator knows. Name each in the platform's `disturbances` with the conditions it acts on; it is then reported as `operating_conditions(disturbance="sample_changed", platform=...)`, or with `invalidate="what happened"` and `conditions`.
 
 ## The forms
 

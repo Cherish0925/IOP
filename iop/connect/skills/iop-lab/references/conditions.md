@@ -15,7 +15,7 @@ A condition is something an experiment relies on: an alignment, a lock, a warm-u
 
 ## Maintaining
 
-`operating_conditions(maintain=true, platform=..., request_id=...)` verifies what is due and corrects what drifted, dependencies first; `conditions=[...]` or `device` narrows it, `force` verifies again what holds, `run_id` runs it inside an experiment that reserved the instruments. The reply returns within `wait`; read on with `maintenance=<id>`. After a physical disturbance, `invalidate="what happened"` with `conditions` marks them due.
+`operating_conditions(maintain=true, platform=..., request_id=...)` verifies what is due and corrects what drifted, dependencies first; `conditions=[...]` or `device` narrows it, `force` verifies again what holds, `run_id` runs it inside an experiment that reserved the instruments. The reply returns within `wait`; read on with `maintenance=<id>`. After a physical disturbance, `invalidate="what happened"` with `conditions` marks them due; `disturbance` with `platform` names an event the platform lists, such as `enclosure_opened`, and marks what it acts on.
 
 ## Relying on conditions
 

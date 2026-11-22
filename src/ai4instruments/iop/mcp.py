@@ -271,12 +271,12 @@ def create_server(client, *, http=False, selection=None):
                              maintain: bool = False,
                              conditions: list[str] | None = None, run_id: str | None = None,
                              request_id: str | None = None, force: bool = False, invalidate: str | None = None,
-                             maintenance: str | None = None, wait: float = 0) -> dict | list:
-        """Read conditions and their states; platform/device filters them, condition returns one with records. maintain=true verifies and corrects in dependency order: pass platform, device or conditions, request_id, and run_id inside an experiment. force verifies again what holds. Replies wait up to 25 s; continue with maintenance=<id>. invalidate=<reason> marks conditions due after a disturbance. guide("conditions") explains requires and upkeep."""
+                             disturbance: str | None = None, maintenance: str | None = None, wait: float = 0) -> dict | list:
+        """Read conditions and their states; platform/device filters them, condition returns one with records. maintain=true verifies and corrects in dependency order: pass platform, device or conditions, request_id, and run_id inside an experiment. force verifies again what holds. Replies wait up to 25 s; continue with maintenance=<id>. invalidate=<reason> marks conditions due after a disturbance; disturbance=<event> with platform, what the platform lists for it. guide("conditions") explains requires and upkeep."""
         if maintenance:
             return client.request('/v1/maintenance/' + quote(maintenance, safe='') + waiting(wait))
-        if invalidate:
-            return client.invalidate(conditions or [], invalidate)
+        if invalidate or disturbance:
+            return client.invalidate(conditions or [], invalidate, platform=platform, disturbance=disturbance)
         if maintain:
             return client.request('/v1/conditions/maintain' + waiting(wait), {
                 'platform': platform, 'conditions': conditions, 'run_id': run_id, 'request_id': request_id, 'force': force,

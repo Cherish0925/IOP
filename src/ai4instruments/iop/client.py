@@ -300,9 +300,14 @@ class Client:
         """Platforms whose conditions the Runtime keeps: settings, pending reasons, the next foreseen pass and the last one."""
         return self.request('/v1/upkeep' + ('?' + urlencode({'platform': platform}) if platform else ''))
 
-    def invalidate(self, conditions, reason):
-        """Record that something disturbed the system; these conditions are verified again before use."""
-        return self.request('/v1/conditions/invalidate', {'conditions': conditions, 'reason': reason})
+    def invalidate(self, conditions=(), reason=None, *, platform=None, disturbance=None):
+        """Record that something disturbed the system; these conditions are verified again before use.
+
+        ``disturbance`` with ``platform`` names an event the platform lists, such as an opened enclosure:
+        the conditions it acts on are verified again, and its description is the reason when none is given.
+        """
+        body = {'conditions': list(conditions), 'reason': reason, 'platform': platform, 'disturbance': disturbance}
+        return self.request('/v1/conditions/invalidate', {k: v for k, v in body.items() if v is not None})
 
     def platforms(self):
         return self.request('/v1/platforms')

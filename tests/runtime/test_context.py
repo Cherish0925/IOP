@@ -421,6 +421,11 @@ class MCPCase(unittest.TestCase):
                 self.assertEqual(call('operating_conditions', {'condition':'aux.in_range'})['statistics']['verifications'], 1)
                 due = call('operating_conditions', {'invalidate':'the mount was touched', 'conditions':['aux.in_range']})
                 self.assertEqual((due[0]['state'], due[0]['reason']), ('due', 'the mount was touched'))
+                touched = {'mount_touched': {'description': 'Someone touched the mount', 'conditions': ['aux.in_range']}}
+                call('configure_platform', {'definition':{'schema_version':1, 'id':'aux-bench', 'devices':['aux'],
+                                                         'conditions':[ready], 'disturbances':touched}, 'expected_revision':1})
+                due = call('operating_conditions', {'disturbance':'mount_touched', 'platform':'aux-bench'})
+                self.assertEqual((due[0]['state'], due[0]['reason']), ('due', 'mount_touched: Someone touched the mount'))
                 # A program is named, and relies on conditions, as the other forms of experiment do.
                 with tempfile.TemporaryDirectory() as folder:
                     Path(folder, 'experiment.py').write_bytes(b'')

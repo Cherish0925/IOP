@@ -220,7 +220,10 @@ export class IOP {
   }
   /** Platforms whose conditions the Runtime keeps: settings, pending reasons, the next foreseen pass and the last one. */
   upkeep(platform?: string) { return this.request<UpkeepStatus[]>('/v1/upkeep' + (platform ? '?' + new URLSearchParams({ platform }) : '')); }
-  invalidate(conditions: string[], reason: string) { return this.request<ConditionState[]>('/v1/conditions/invalidate', { conditions, reason }); }
+  /** Record a disturbance; `disturbance` with `platform` names an event the platform lists and adds the conditions it acts on. */
+  invalidate(conditions: string[], reason?: string, options: { platform?: string; disturbance?: string } = {}) {
+    return this.request<ConditionState[]>('/v1/conditions/invalidate', { conditions, ...(reason === undefined ? {} : { reason }), ...options });
+  }
   platforms() { return this.request<Platform[]>('/v1/platforms'); }
   platform(id: string) { return this.request<Platform>('/v1/platforms/' + encodeURIComponent(id)); }
   configurePlatform(definition: PlatformDefinition, expectedRevision = 0) {

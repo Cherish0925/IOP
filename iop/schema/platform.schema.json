@@ -397,6 +397,37 @@
           "description": "false: observe and record only; nothing is corrected."
         }
       }
+    },
+    "disturbances": {
+      "type": "object",
+      "description": "Events a person reports at the platform, such as an opened enclosure, a reconnected fiber or a changed sample, each with the conditions it acts on. Reporting one makes those conditions and what depends on them due, with the event as the reason.",
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "description",
+          "conditions"
+        ],
+        "properties": {
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "description": "What happens and how it acts on the apparatus."
+          },
+          "conditions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "uniqueItems": true,
+            "description": "Conditions of this platform or its instruments the event acts on directly; what depends on them follows."
+          }
+        }
+      }
     }
   },
   "$defs": {

@@ -330,6 +330,30 @@ def upkeep(value, names):
             'correct': value.get('correct', True)}
 
 
+def disturbances(value, names):
+    """Events a person reports at a platform, each with the conditions it disturbs directly.
+
+    ``names`` are the conditions of the platform and its instruments. What depends on a listed
+    condition becomes due with it, so a disturbance lists only what the event itself acts on.
+    """
+    if not isinstance(value, dict):
+        raise ValueError('disturbances maps the name of an event to {"description", "conditions"}')
+    for event, entry in value.items():
+        what = 'Disturbance ' + name(event, 'Disturbance name')
+        if not isinstance(entry, dict) or entry.keys() - {'description', 'conditions'}:
+            raise ValueError(what + ' has description and conditions')
+        if not isinstance(entry.get('description'), str) or not entry['description'].strip():
+            raise ValueError(what + ': say what happens and how it acts on the apparatus')
+        listed = strings(entry.get('conditions'), what + ' conditions')
+        if not listed:
+            raise ValueError(what + ': name the conditions it disturbs')
+        unknown = [c for c in listed if c not in names]
+        if unknown:
+            raise ValueError(f"{what}: {', '.join(unknown)} is not a condition of this platform or its instruments"
+                             + closest(unknown[0], names))
+    return value
+
+
 def experiment_upkeep(value):
     """The upkeep an experiment declares for the conditions it requires."""
     if value is True:
@@ -632,6 +656,8 @@ class Conditions:
         conditions = check(definition.get('conditions', []), taken, external)
         if 'upkeep' in definition:
             definition['upkeep'] = upkeep(definition['upkeep'], [c['id'] for c in conditions] + sorted(external))
+        if 'disturbances' in definition:
+            definition['disturbances'] = disturbances(definition['disturbances'], [c['id'] for c in conditions] + sorted(external))
         for condition in conditions:
             for item in readings(condition) + condition['correct']:
                 if 'tune' in item:
@@ -828,12 +854,30 @@ class Conditions:
             self.engine.store.record_condition(condition_id, saved, record, 'condition.corrected', run_id=run_id, by=by,
                                                restored=restored)
 
-    def invalidate(self, names, reason):
-        """Something disturbed the system: these conditions are verified again before they are relied on."""
-        if not isinstance(reason, str) or not reason.strip():
-            raise ValueError('Say what disturbed the system')
+    def invalidate(self, names, reason, platform=None, disturbance=None):
+        """Something disturbed the system: these conditions are verified again before they are relied on.
+
+        ``disturbance`` names an event ``platform`` lists: the conditions it acts on are added, and its
+        description is the reason when none is given.
+        """
         with self.engine.lock:
-            for condition_id in strings(names, 'Conditions'):
+            if disturbance is not None:
+                saved = self.engine.platforms.get(platform) if isinstance(platform, str) else None
+                if saved is None:
+                    raise ValueError('Name the platform that lists the disturbance ' + str(disturbance))
+                events = saved['definition'].get('disturbances', {})
+                if disturbance not in events:
+                    raise ValueError(f'Platform {platform} lists no disturbance {disturbance}'
+                                     + (closest(disturbance, events) or '; it lists ' + (', '.join(events) or 'none')))
+                names = list(dict.fromkeys(list(names or []) + events[disturbance]['conditions']))
+                if not isinstance(reason, str) or not reason.strip():
+                    reason = events[disturbance]['description']
+                reason = disturbance + ': ' + reason
+            if not isinstance(reason, str) or not reason.strip():
+                raise ValueError('Say what disturbed the system')
+            if not strings(names, 'Conditions'):
+                raise ValueError('Name the conditions that were disturbed, or a disturbance the platform lists')
+            for condition_id in names:
                 if condition_id not in self.definitions:
                     raise KeyError(condition_id)
             affected = set(names)
