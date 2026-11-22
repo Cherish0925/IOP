@@ -233,6 +233,43 @@ class LockIn(socketserver.StreamRequestHandler):
             self.wfile.flush()
 
 
+# A cryogenic temperature controller speaking the Lake Shore 336 command set. A heater error stays until
+# HTRST? reads it; set commands get no reply.
+class TemperatureController(socketserver.StreamRequestHandler):
+    def handle(self):
+        for line in self.rfile:
+            command = line.decode().strip()
+            server = self.server
+            with server.lock:
+                if command == '*IDN?':
+                    reply = 'LSCI,MODEL336,1234567/1234567,2.9'
+                elif command.startswith('KRDG? '):
+                    reply = '+%.4f' % server.kelvin[command[-1]]
+                elif command.startswith('RDGST? '):
+                    reply = '%03d' % server.status[command[-1]]
+                elif command.startswith('HTRST? '):
+                    output = int(command[-1])
+                    reply, server.heater_error[output] = str(server.heater_error[output]), 0
+                elif command.startswith('SETP? '):
+                    reply = '+%.3f' % server.setpoint[int(command[-1])]
+                elif command.startswith('SETP '):
+                    output, value = command[5:].split(',')
+                    server.setpoint[int(output)] = float(value)
+                    continue
+                elif command.startswith('RANGE? '):
+                    reply = str(server.range[int(command[-1])])
+                elif command.startswith('RANGE '):
+                    output, value = command[6:].split(',')
+                    server.range[int(output)] = int(value)
+                    continue
+                elif command.startswith('HTR? '):
+                    reply = '+%.1f' % server.heater[int(command[-1])]
+                else:
+                    continue
+            self.wfile.write((reply + '\r\n').encode())
+            self.wfile.flush()
+
+
 class ModelDescriptionCase(unittest.TestCase):
     setUp = fixture.ServiceCase.setUp
     tearDown = fixture.ServiceCase.tearDown
@@ -283,6 +320,46 @@ class ModelDescriptionCase(unittest.TestCase):
         # The laboratory's own definition wins; conditions whose operations are not allowed are left out.
         self.assertEqual(sorted(rows), ['lockin.input_in_range', 'lockin.reference_locked'])
         self.assertEqual(rows['lockin.reference_locked']['description'], 'Locked, as this laboratory checks it')
+
+    def test_a_temperature_controller_brings_its_heater_conditions(self):
+        server = socketserver.ThreadingTCPServer(('127.0.0.1', 0), TemperatureController)
+        server.daemon_threads, server.lock = True, threading.Lock()
+        server.kelvin, server.status = {'A': 4.2031, 'B': 0.0}, {'A': 0, 'B': 1}
+        server.setpoint, server.range, server.heater, server.heater_error = {1: 4.2, 2: 0.0}, {1: 2, 2: 0}, {1: 37.5}, {1: 0, 2: 0}
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        connection = {'transport': 'tcp', 'host': '127.0.0.1', 'port': server.server_address[1], 'timeout': 1,
+                      'termination': '\r\n'}
+        from ai4instruments.iop.identification import parse_identity, profile_matches
+        profile = json.loads((Path(__file__).resolve().parents[2] / 'iop/instruments/lakeshore-336.json').read_text())
+        self.assertTrue(profile_matches(profile, parse_identity('LSCI,MODEL336,1234567/1234567,2.9')))
+        self.client.register({'id': 'cryo', 'instrument_profile': 'lakeshore-336', 'config': connection})
+        self.assertEqual([r['id'] for r in self.client.conditions(device='cryo')], ['cryo.heater1_ok', 'cryo.heater2_ok'])
+        self.assertTrue(self.client.maintain(device='cryo')['holds'])
+        run = self.client.submit([{'id': 'set', 'device': 'cryo', 'operation': 'set_setpoint', 'arguments': {'output': 1, 'value': 10}},
+                                  {'id': 'setpoint', 'device': 'cryo', 'operation': 'read_setpoint', 'arguments': {'output': 1}, 'after': ['set']},
+                                  {'id': 'a', 'device': 'cryo', 'operation': 'read_kelvin', 'arguments': {'input': 'A'}},
+                                  {'id': 'a_status', 'device': 'cryo', 'operation': 'read_status', 'arguments': {'input': 'A'}},
+                                  {'id': 'b_status', 'device': 'cryo', 'operation': 'read_status', 'arguments': {'input': 'B'}},
+                                  {'id': 'heater', 'device': 'cryo', 'operation': 'read_heater', 'arguments': {'output': 1}},
+                                  {'id': 'b', 'device': 'cryo', 'operation': 'read_kelvin', 'arguments': {'input': 'B'}}],
+                                 requires=['cryo.heater1_ok'])
+        result = run.result(10)
+        self.assertEqual((result['setpoint']['value'], result['a']['value'], result['a']['unit']), (10.0, 4.2031, 'K'))
+        self.assertEqual((result['a_status']['value'], result['b_status']['value'], result['heater']['value']), (0, 1, 37.5))
+        # Input B reports an invalid reading: its temperature is kept, as uncertain.
+        self.assertNotIn('quality', result['a'])
+        self.assertEqual(result['b']['quality']['detail'], 'RDGST? B returned 001')
+        # The heater lead came loose and was reconnected between two observations: the error stays until read.
+        with server.lock:
+            server.heater_error[1] = 1
+        found = {e['condition']: e for e in self.client.maintain(device='cryo', force=True)['report']}
+        self.assertEqual((found['cryo.heater1_ok']['result'], found['cryo.heater1_ok']['value']), ('lost', 1))
+        self.assertEqual(found['cryo.heater2_ok']['result'], 'verified')
+        self.assertTrue(self.client.maintain(conditions=['cryo.heater1_ok'])['holds'])
+        with self.assertRaisesRegex(IOPError, 'range must be one of'):
+            self.client.submit([{'id': 'r', 'device': 'cryo', 'operation': 'set_range', 'arguments': {'output': 1, 'range': 5}}])
 
     def test_model_descriptions_check_their_conditions(self):
         profile = json.loads((Path(__file__).resolve().parents[2] / 'iop/instruments/srs-sr830.json').read_text())

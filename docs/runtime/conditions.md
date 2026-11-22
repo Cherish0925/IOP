@@ -119,6 +119,8 @@ Some conditions belong to one instrument wherever it is used: a laser diode at i
 
 The built-in SR830 description carries four: `reference_locked`, `input_in_range`, `filter_in_range` and `output_in_range`, each read from one LIA status bit. These bits stay set until they are read, so an observation reports whether an unlock or overload occurred since the previous one; data taken in between by experiments that relied on the condition are marked `in_doubt`. / 内置的 SR830 说明带有四个条件，各读一个 LIA 状态位。这些位读取前保持置位，所以一次观察说明的是自上次观察以来是否发生过失锁或过载；依赖该条件的实验在这期间采集的数据被标为 `in_doubt`。
 
+The Lake Shore 336 description carries `heater1_ok` and `heater2_ok`, read with HTRST?: an open load or a short stays reported until it is read, so a cryostat temperature controlled while its heater delivered no power is found at the next observation. / Lake Shore 336 说明带有 `heater1_ok` 与 `heater2_ok`，由 HTRST? 读取：加热器开路或短路在读取前一直保留，因此加热器未输出功率期间的控温会在下一次观察时被发现。
+
 ## Tuning / 调节
 
 Most corrections an experimentalist makes by hand have one form: change a setting a little, look at the reading, keep the change if it helped. `tune` lets the Runtime do this itself, for one setting or for several adjusted jointly. / 实验者手动做的校正大多是同一种形式：把某个设定改一点，看读数，变好就保留。`tune` 让运行服务自己做这件事，可以是一个设定，也可以是多个设定联合调节。
