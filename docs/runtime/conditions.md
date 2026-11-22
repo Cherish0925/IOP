@@ -150,6 +150,8 @@ iop conditions --platform demo-bench --maintain   # verifies, corrects, reports
 iop conditions                                     # states now
 ```
 
+[`examples/iop/optical-bench`](../../examples/iop/optical-bench/README.md) simulates a fiber-coupled laser bench whose warm-up, thermal drift, mechanical disturbances, camera saturation and dark current follow physical models, and keeps each as a condition. / 该实例模拟一台光纤耦合激光平台，其预热、热漂移、机械扰动、相机饱和与暗电流均按物理模型给出，并各自作为工作条件维持。
+
 ## Maintaining / 保持
 
 `maintain` runs the loop for a platform or for named conditions. For each condition, after its dependencies: / `maintain` 对一个平台或指定的条件运行这个循环。对每个条件，在它的依赖之后：

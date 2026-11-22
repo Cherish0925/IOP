@@ -655,9 +655,9 @@ def make_driver(record, registry):
         return ProcessDriver(record['id'], record.get('config', {}), registry)
     name = record["driver"]
     from .adapters import Modbus, HTTP
-    from .simulation import Laboratory
+    from .simulation import Laboratory, Optics
     from .software import Command
-    builtins = {"simulated":Simulated, "simulated-lab":Laboratory, "scpi":SCPI, "modbus":Modbus, "http":HTTP, "command":Command}
+    builtins = {"simulated":Simulated, "simulated-lab":Laboratory, "simulated-optics":Optics, "scpi":SCPI, "modbus":Modbus, "http":HTTP, "command":Command}
     if name in builtins:
         cls = builtins[name]
     elif name == 'qcodes':
