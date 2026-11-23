@@ -4,6 +4,7 @@ import random
 import time
 import unittest
 from collections import deque
+from ai4instruments.iop import IOPError
 from ai4instruments.iop.conditions import check
 from ai4instruments.iop.drivers import Driver
 from . import test_service as fixture
@@ -19,7 +20,8 @@ class Loop(Driver):
         return {'operations': {
             'set_setpoint': {'parameters': {'value': value}},
             'setpoint': {'effect': 'observe', 'parameters': {}},
-            'read': {'effect': 'observe', 'parameters': {}},
+            'read': {'effect': 'observe', 'parameters': {}, 'result': {'unit': 'K'}},
+            'raw': {'effect': 'observe', 'parameters': {}},
             'wait': {'effect': 'observe', 'parameters': {'seconds': {'type': 'number', 'minimum': 0, 'maximum': 60}}},
             'set_offset': {'parameters': {'value': {'type': 'number', 'minimum': -1, 'maximum': 1}}},
             'offset': {'effect': 'observe', 'parameters': {}}}}
@@ -36,7 +38,7 @@ class Loop(Driver):
             return {'value': p['setpoint']}
         elif operation == 'offset':
             return {'value': p['offset']}
-        elif operation == 'read':
+        elif operation in ('read', 'raw'):
             p['reads'] += 1
             extra = p['sequence'][0] if p['sequence'] else p['rng'].gauss(0, p['noise'])
             p['sequence'].rotate(-1)
@@ -125,12 +127,37 @@ class FormsCase(unittest.TestCase):
         self.assertTrue(self.client.maintain('bench')['holds'])
         self.assertAlmostEqual(self.client.condition('loop.baseline')['reference']['baseline'], 20.0, places=9)
 
+    def test_tolerances_are_given_in_any_unit_of_the_reading(self):
+        read = {'device': 'loop', 'operation': 'read'}
+        self.bench({'id': 'loop.near', 'description': 'Near 20 K', 'verify': read,
+                    'accept': {'target': '-253.15 °C', 'within': '50 mK'}},
+                   {'id': 'loop.quiet', 'description': 'Quiet', 'verify': read, 'samples': 3,
+                    'accept': {'statistic': 'std', 'maximum': '5 mK'}},
+                   {'id': 'loop.still', 'description': 'Not drifting', 'verify': read, 'samples': 3, 'interval': 0.02,
+                    'accept': {'statistic': 'slope', 'maximum': '1 K/min'}},
+                   {'id': 'loop.standard', 'description': 'Within 0.1 % of 20 K', 'verify': read,
+                    'accept': {'target': 20, 'relative': '0.1 %'}})
+        accepted = {c['id']: c['accept'] for c in self.client.platform('bench')['definition']['conditions']}
+        self.assertAlmostEqual(accepted['loop.near']['target'], 20.0)
+        self.assertAlmostEqual(accepted['loop.near']['within'], 0.05)
+        self.assertAlmostEqual(accepted['loop.quiet']['maximum'], 0.005)
+        self.assertAlmostEqual(accepted['loop.still']['maximum'], 1 / 60)
+        self.assertAlmostEqual(accepted['loop.standard']['relative'], 0.001)
+        self.assertTrue(self.client.maintain('bench')['holds'])
+        for change, message in ((dict(read, operation='raw'), 'the unit of the reading is not described'),
+                                (read, 'the reading is in K: mV is not a unit of the same quantity as K')):
+            with self.assertRaisesRegex(IOPError, message):
+                self.client.configure_platform({'schema_version': 1, 'id': 'bench', 'devices': ['loop'], 'conditions': [
+                    {'id': 'loop.near', 'description': 'Near', 'verify': change,
+                     'accept': {'target': 20, 'within': '5 mV' if change is read else '5 mK'}}]}, expected_revision=1)
+
     def test_an_instrument_states_its_own_agreement_with_its_setpoint(self):
         own = {'id': 'at_setpoint', 'description': 'At its setpoint', 'verify': {'operation': 'read'},
-               'accept': {'target': {'operation': 'setpoint'}, 'within': 0.5}}
+               'accept': {'target': {'operation': 'setpoint'}, 'within': '500 mK'}}
         self.client.register({'id': 'loop2', 'driver': __name__ + ':Loop', 'conditions': [own]})
         self.assertTrue(self.client.maintain(device='loop2')['holds'])
-        self.assertEqual(self.client.condition('loop2.at_setpoint')['accept']['target']['device'], 'loop2')
+        accepted = self.client.condition('loop2.at_setpoint')['accept']
+        self.assertEqual((accepted['target']['device'], accepted['within']), ('loop2', 0.5))
 
 
 class FormDefinitionCase(unittest.TestCase):

@@ -138,6 +138,12 @@ def convert(value, source, target):
     return ((value * given.factor + given.offset) - wanted.offset) / wanted.factor
 
 
+def difference(value, source, target):
+    """A difference of ``value`` in unit ``source``, such as a tolerance or a spread, in unit ``target``: a
+    difference of 1 °C is 1 K."""
+    return convert(value, source, target) - convert(0, source, target)
+
+
 def quantity(value):
     """A number with its unit, given as {"value": 5, "unit": "mV"} or "5 mV"; None when ``value`` is neither."""
     if isinstance(value, dict) and value.keys() == {'value', 'unit'}:

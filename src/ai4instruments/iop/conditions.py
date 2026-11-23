@@ -36,6 +36,7 @@ from .engine import SATISFIED
 from .drivers import parameters
 from .errors import RequestError
 from .platforms import closest, name, strings
+from . import units
 from .store import dumps, now
 
 # Suggested labels. Dependencies come from each platform's explicit `after` relationships.
@@ -112,6 +113,43 @@ def statistic(name, values, times):
     if not spread:
         raise ValueError('samples taken at one instant have no slope')
     return sum((t - mt) * (v - mv) for t, v in zip(times, values)) / spread
+
+
+def in_reading_unit(condition, unit_of):
+    """The condition with tolerances given with their units, such as "20 mK" or "0.1 %", in the unit of the reading
+    it verifies. ``unit_of(step)`` gives that unit from the description of the verifying operation, or None."""
+    what = 'Condition ' + str(condition.get('id'))
+    converted = dict(condition)
+    for key in ('accept', 'usable'):
+        spec = condition.get(key)
+        if not isinstance(spec, dict):
+            continue
+        given = {k: units.quantity(spec[k]) for k in ('minimum', 'maximum', 'target', 'within', 'relative')
+                 if k in spec and not isinstance(spec[k], dict)}
+        given = {k: v for k, v in given.items() if v is not None}
+        if not given:
+            continue
+        spec = dict(spec)
+        if 'relative' in given:
+            spec['relative'] = units.convert(*given.pop('relative'), '1')
+        if given:
+            unit = unit_of(condition.get('verify')) if spec.get('value', ['value']) == ['value'] else None
+            if not unit:
+                raise ValueError(f"{what} {key}: {next(iter(given))} has a unit, but the unit of the reading is not "
+                                 'described; give a plain number in the unit of the reading')
+            statistic = spec.get('statistic')
+            for field, (number, unit_given) in given.items():
+                try:
+                    if statistic == 'slope':
+                        spec[field] = units.difference(number, unit_given, unit + '/s')
+                    elif field == 'within' or statistic in ('std', 'span'):
+                        spec[field] = units.difference(number, unit_given, unit)
+                    else:
+                        spec[field] = units.convert(number, unit_given, unit)
+                except ValueError as error:
+                    raise ValueError(f'{what} {key} {field}: the reading is in {unit}: {error}') from None
+        converted[key] = spec
+    return converted
 
 
 def judge(spec, results, times=None, target=None):
@@ -255,14 +293,17 @@ def label(item):
     return (item['device'] + '.' if 'device' in item else '') + item['operation']
 
 
-def check(definitions, taken=(), external=()):
+def check(definitions, taken=(), external=(), unit_of=None):
     """Validate the conditions of one platform or instrument.
 
     ``taken`` are names defined elsewhere in the laboratory; ``external`` are conditions of the
-    platform's instruments, which ``after`` may name.
+    platform's instruments, which ``after`` may name. ``unit_of`` gives the unit of a verifying
+    operation's reading, in which tolerances given with units are expressed.
     """
     if not isinstance(definitions, list) or any(not isinstance(c, dict) for c in definitions):
         raise ValueError('Platform conditions must be a list of objects')
+    if unit_of is not None:
+        definitions = [in_reading_unit(c, unit_of) for c in definitions]
     names = strings([c.get('id') for c in definitions], 'Condition names')
     checked = []
     for condition in definitions:
@@ -365,7 +406,7 @@ def experiment_upkeep(value):
     return settings
 
 
-def instrument(device_id, definitions):
+def instrument(device_id, definitions, unit_of=None):
     """The conditions of one instrument, named ``<device>.<id>`` in the laboratory.
 
     They are observed and restored with the instrument's own operations; ``device`` may be omitted.
@@ -407,7 +448,7 @@ def instrument(device_id, definitions):
                       'verify': own(condition.get('verify'), what + ' verify'),
                       'correct': [own(item, what + ' correct') for item in corrections] if isinstance(corrections, list)
                       else corrections})
-    return check(named)
+    return check(named, unit_of=unit_of)
 
 
 def available(conditions, operations, builtin=()):
@@ -545,6 +586,13 @@ def summary(condition, rows):
     return result
 
 
+def reading_unit(description, step):
+    """The unit an operation of this description declares for its reading."""
+    spec = description.get('operations', {}).get(step.get('operation')) if isinstance(step, dict) else None
+    unit = spec.get('result', {}).get('unit') if isinstance(spec, dict) and isinstance(spec.get('result'), dict) else None
+    return unit if isinstance(unit, str) and unit else None
+
+
 class Stopped(Exception):
     pass
 
@@ -574,7 +622,7 @@ class Conditions:
         for device_id, record in sorted(self.engine.device_records.items()):
             if record.get('conditions'):
                 try:
-                    for condition in instrument(device_id, record['conditions']):
+                    for condition in instrument(device_id, record['conditions'], self.unit_of):
                         self.definitions[condition['id']] = {**condition, 'device': device_id}
                 except ValueError as error:
                     self.errors[device_id] = str(error)
@@ -585,6 +633,12 @@ class Conditions:
             self.devices[condition_id] = self._devices(condition)
         if hasattr(self, 'wake'):
             self.wake.set()
+
+    def unit_of(self, step):
+        """The unit of the reading a verifying step returns, from the description of its instrument."""
+        if not isinstance(step, dict) or 'device' not in step:
+            return None
+        return reading_unit(self.engine.descriptions.get(step['device'], {}), step)
 
     def scope(self, platform_id):
         """The conditions of a platform and of its instruments."""
@@ -657,7 +711,7 @@ class Conditions:
         engine = self.engine
         taken = {c for c, d in self.definitions.items() if d.get('platform') != definition['id']}
         external = {c for c, d in self.definitions.items() if d.get('device') in definition['devices']}
-        conditions = check(definition.get('conditions', []), taken, external)
+        conditions = check(definition.get('conditions', []), taken, external, self.unit_of)
         if 'upkeep' in definition:
             definition['upkeep'] = upkeep(definition['upkeep'], [c['id'] for c in conditions] + sorted(external))
         if 'disturbances' in definition:
@@ -683,7 +737,8 @@ class Conditions:
 
     def prepare_instrument(self, device_id, record, description):
         """Check an instrument's own conditions against its operations; returns them with laboratory names."""
-        conditions = instrument(device_id, record['conditions']) if record.get('conditions') else []
+        own = lambda step: reading_unit(description, step)
+        conditions = instrument(device_id, record['conditions'], own) if record.get('conditions') else []
         names = {c['id'] for c in conditions}
         for condition_id, definition in self.definitions.items():
             if condition_id in names and definition.get('device') != device_id:

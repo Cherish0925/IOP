@@ -281,10 +281,18 @@
           "description": "Path into the observation result; default [\"value\"]."
         },
         "minimum": {
-          "type": "number"
+          "type": [
+            "number",
+            "string"
+          ],
+          "description": "A number in the unit of the reading, or a quantity with its unit such as \"20 mK\" when the reading's unit is described."
         },
         "maximum": {
-          "type": "number"
+          "type": [
+            "number",
+            "string"
+          ],
+          "description": "A number in the unit of the reading, or a quantity with its unit such as \"20 mK\" when the reading's unit is described."
         },
         "equals": {},
         "statistic": {
@@ -302,19 +310,27 @@
               "type": "number"
             },
             {
+              "type": "string",
+              "description": "A quantity with its unit, such as \"-253.15 °C\""
+            },
+            {
               "$ref": "#/$defs/instrumentTarget"
             }
           ],
           "description": "A nominal or certified value, or the reading that gives it, such as the setpoint the instrument holds. The value judged is the deviation from it."
         },
         "within": {
-          "type": "number",
-          "minimum": 0,
+          "type": [
+            "number",
+            "string"
+          ],
           "description": "With target: the absolute tolerance of the deviation."
         },
         "relative": {
-          "type": "number",
-          "minimum": 0,
+          "type": [
+            "number",
+            "string"
+          ],
           "description": "With target: the tolerance as a fraction of the target; added to within."
         }
       }

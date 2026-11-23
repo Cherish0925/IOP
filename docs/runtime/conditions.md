@@ -92,6 +92,8 @@ Two forms of tolerance express what most operating points come down to, whatever
  "accept": {"target": 100.0002, "within": 0.0003}, "correct": {"device": "balance", "operation": "calibrate_internal"}}
 ```
 
+Tolerances may be given with their units when the description states the unit of the reading: `"within": "20 mK"`, `"target": "-253.15 °C"`, `"maximum": "1 K/min"` with `slope`, `"maximum": "5 mK"` with `std`, `"relative": "0.1 %"`. They are kept in the unit of the reading, spreads and drifts as differences, and a unit of another quantity is refused. / 当说明写明读数单位时，容差可带单位给出，按读数单位保存，标准差、极差与漂移按差值换算；量纲不同的单位被拒绝。
+
 A `reference` taken over several samples keeps their mean, as a dark level or a baseline is averaged. `tune` works on either form: on a target it brings the deviation to zero. / 多个读数下的 `reference` 保留其平均值，如暗电平或基线取平均。`tune` 对两种形式都适用：对目标值时把偏差调到零。
 
 A correction acts on the system. A `reference` acts on the data: the condition "the dark level was measured within the last half hour" has no correction beyond measuring again, and its value travels with every experiment that requires it. / 校正作用于系统；`reference` 作用于数据：“半小时内测过暗计数”这个条件的校正就是再测一次，它的数值随每个依赖它的实验保存。

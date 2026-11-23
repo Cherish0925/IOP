@@ -21,7 +21,7 @@ Ask the operator, or read the manual, for each question; each answer is one fiel
 | What should the next person know: what disturbs it, how fast it drifts, what to avoid? | `note` |
 
 - One quantity per condition; "at temperature and steady" is one condition with a target and samples, "aligned and locked" is two joined by `after`.
-- Numbers in tolerances are in the unit of the reading; arguments of corrections may be given with their unit, such as `"5 min"` or `"250 mV"`.
+- Tolerances may be given with their unit, `"within": "20 mK"`, `"maximum": "1 K/min"` with `slope`, `"relative": "0.1 %"`, when the description states the unit of the reading; they are kept in that unit. Arguments of corrections may be given with theirs, such as `"5 min"`.
 - A correction acts on the system; a `reference` acts on the data. A zero, a blank or a dark level has no correction other than measuring it again.
 - Settings adjusted against each other belong to one saved operation or to one `tune` over several settings; the graph stays acyclic.
 - A correction never requires the condition it restores.
