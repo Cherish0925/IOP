@@ -107,11 +107,33 @@ class SubmittedUnitsCase(unittest.TestCase):
         with self.assertRaisesRegex(IOPError, r'Step turn \(stage.move_to\): angle_deg is in deg: '
                                               'mm is not a unit of the same quantity as deg'):
             self.client.submit([{'id': 'turn', 'device': 'stage', 'operation': 'move_to', 'arguments': {'angle_deg': '5 mm'}}])
+        # A sweep's range is given in any unit of the parameter; its positions are in the declared one.
+        run = self.client.submit([{'id': 'scan', 'device': 'stage', 'operation': 'move_to',
+                                   'sweep': {'angle_deg': {'start': '0 rad', 'stop': '0.1 rad', 'points': 3}},
+                                   'arguments': {'duration': '1 ms'}}])
+        run.result(5)
+        angles = [r['arguments']['angle_deg'] for r in run.info()['operation_records']]
+        self.assertEqual([round(a, 6) for a in angles], [0.0, 2.864789, 5.729578])
+        with self.assertRaisesRegex(IOPError, 'angle_deg is in deg: V is not a unit of the same quantity as deg'):
+            self.client.submit([{'id': 'scan', 'device': 'stage', 'operation': 'move_to',
+                                 'sweep': {'angle_deg': ['1 V', '2 V']}}])
         # A limit the setup imposes applies to the converted number.
         self.client.register({'id': 'limited', 'driver': 'simulated', 'config': {'kind': 'stage'},
                               'limits': {'move_to': {'angle_deg': {'maximum': 45, 'note': 'The mount hits its stop'}}}})
         with self.assertRaisesRegex(IOPError, 'The mount hits its stop'):
             self.client.submit([{'id': 'turn', 'device': 'limited', 'operation': 'move_to', 'arguments': {'angle_deg': '1 rad'}}])
+
+
+class RangeUnitsCase(unittest.TestCase):
+    def test_seek_ranges_convert_positions_and_widths(self):
+        from ai4instruments.iop.library import in_units
+        step = {'id': 'find', 'device': 'oven', 'operation': 'set',
+                'seek': {'maximize': ['value'], 'over': {'celsius': {'minimum': '300 K', 'maximum': '350 K', 'step': '5 K',
+                                                                      'resolution': '100 mK', 'start': '320 K'}}}}
+        over = in_units(step, {'celsius': {'type': 'number', 'unit': '°C'}})['seek']['over']['celsius']
+        expected = {'minimum': 26.85, 'maximum': 76.85, 'step': 5.0, 'resolution': 0.1, 'start': 46.85}
+        for key, value in expected.items():
+            self.assertAlmostEqual(over[key], value, msg=key)
 
 
 if __name__ == '__main__':
