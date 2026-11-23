@@ -26,7 +26,10 @@ class Loop(Driver):
             'raw': {'effect': 'observe', 'parameters': {}},
             'wait': {'effect': 'observe', 'parameters': {'seconds': {'type': 'number', 'minimum': 0, 'maximum': 60}}},
             'set_offset': {'parameters': {'value': {'type': 'number', 'minimum': -1, 'maximum': 1}}},
-            'offset': {'effect': 'observe', 'parameters': {}}}}
+            'offset': {'effect': 'observe', 'parameters': {}},
+            # A status register for each channel, and the command that clears it.
+            'status': {'effect': 'observe', 'parameters': {'channel': {'type': 'integer', 'minimum': 1, 'maximum': 4}}},
+            'clear': {'parameters': {'channel': {'type': 'integer', 'minimum': 1, 'maximum': 4}}}}}
 
     def invoke(self, operation, arguments, cancelled):
         p, now = PROCESS, time.monotonic()
@@ -40,6 +43,10 @@ class Loop(Driver):
             return {'value': p['setpoint'] + self.config.get('setpoint_offset', 0)}
         elif operation == 'offset':
             return {'value': p['offset']}
+        elif operation == 'status':
+            return {'value': p['status'].get(arguments['channel'], 0)}
+        elif operation == 'clear':
+            p['status'].pop(arguments['channel'], None)
         elif operation in ('read', 'raw'):
             p['reads'] += 1
             extra = p['sequence'][0] if p['sequence'] else p['rng'].gauss(0, p['noise'])
@@ -57,7 +64,7 @@ class FormsCase(unittest.TestCase):
     def setUp(self):
         fixture.ServiceCase.setUp(self)
         PROCESS.update(setpoint=20.0, start=20.0, since=time.monotonic(), tau=0.2, offset=0.0, drift=0.0, noise=0.0,
-                       sequence=deque(), rng=random.Random(3), reads=0)
+                       sequence=deque(), rng=random.Random(3), reads=0, status={})
         self.client.register({'id': 'loop', 'driver': __name__ + ':Loop'})
 
     tearDown = fixture.ServiceCase.tearDown
@@ -298,6 +305,23 @@ class FormsCase(unittest.TestCase):
                     {'id': 'loop.near', 'description': 'Near', 'verify': change,
                      'accept': {'target': 20, 'within': '5 mV' if change is read else '5 mK'}}]}, expected_revision=1)
 
+    def test_one_condition_is_written_for_every_channel_and_judged_by_status_bits(self):
+        # Bit 2 (value 4) is a fault; bit 0 is information and does not matter.
+        PROCESS['status'].update({2: 4, 3: 1})
+        self.bench({'id': 'loop.channel{channel}_ok', 'description': 'Channel {channel} reports no fault',
+                    'each': {'channel': [1, 2, 3]},
+                    'verify': {'device': 'loop', 'operation': 'status', 'arguments': {'channel': '{channel}'}},
+                    'accept': {'bits': 4},
+                    'correct': {'device': 'loop', 'operation': 'clear', 'arguments': {'channel': '{channel}'}}})
+        conditions = self.client.platform('bench')['definition']['conditions']
+        self.assertEqual([c['id'] for c in conditions], ['loop.channel1_ok', 'loop.channel2_ok', 'loop.channel3_ok'])
+        self.assertEqual(conditions[1]['verify']['arguments'], {'channel': 2})
+        report = {e['condition']: e for e in self.client.maintain('bench')['report']}
+        self.assertEqual(report['loop.channel1_ok']['result'], 'verified')
+        self.assertEqual((report['loop.channel2_ok']['found'], report['loop.channel2_ok']['result']), ('drifted', 'corrected'))
+        self.assertEqual((report['loop.channel3_ok']['result'], report['loop.channel3_ok']['value']), ('verified', 1))
+        self.assertEqual(PROCESS['status'], {3: 1})
+
     def test_an_instrument_states_its_own_agreement_with_its_setpoint(self):
         own = {'id': 'at_setpoint', 'description': 'At its setpoint', 'verify': {'operation': 'read'},
                'accept': {'target': {'operation': 'setpoint'}, 'within': '500 mK'}}
@@ -338,7 +362,11 @@ class FormDefinitionCase(unittest.TestCase):
                 ({'accept': {'statistic': 'std', 'maximum': 1}}, 'std, span and slope compare several readings'),
                 ({'accept': {'maximum': 1}, 'samples': 0}, 'samples is the number of readings'),
                 ({'accept': {'maximum': 1}, 'samples': 3, 'interval': -1}, 'interval is the time between samples'),
-                ({'accept': {'maximum': 1}, 'usable': 'valid'}, 'usable gives value')):
+                ({'accept': {'maximum': 1}, 'usable': 'valid'}, 'usable gives value'),
+                ({'accept': {'bits': 4, 'maximum': 1}}, 'bits takes no minimum, maximum, equals or statistic'),
+                ({'accept': {'bits': 0}}, 'bits is a positive integer mask'),
+                ({'accept': {'maximum': 1}, 'each': {'channel': [1, 2]}}, r'the id names \{channel\}'),
+                ({'accept': {'maximum': 1}, 'each': ['CH1', 'CH2']}, 'each maps names to the lists of values')):
             with self.assertRaisesRegex(ValueError, message):
                 check([{**base, **change}])
         checked = check([{**base, 'accept': {'target': {'device': 'loop', 'operation': 'setpoint'}, 'within': 1}}])[0]

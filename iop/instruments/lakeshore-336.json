@@ -69,20 +69,13 @@
   },
   "conditions": [
     {
-      "id": "heater1_ok",
+      "id": "heater{output}_ok",
       "kind": "operating_point",
-      "description": "Heater 1 reported no open load or short since the previous observation",
-      "verify": {"operation": "heater_error", "arguments": {"output": 1}},
+      "each": {"output": [1, 2]},
+      "description": "Heater {output} reported no open load or short since the previous observation",
+      "verify": {"operation": "heater_error", "arguments": {"output": "{output}"}},
       "accept": {"value": ["value"], "equals": 0},
-      "note": "An open load is a disconnected or broken heater; a short is a heater or lead shorted. Querying clears the error, so the next observation shows whether it returned. A temperature controlled through this output while it delivered no power was not held at its setpoint."
-    },
-    {
-      "id": "heater2_ok",
-      "kind": "operating_point",
-      "description": "Heater 2 reported no open load or short since the previous observation",
-      "verify": {"operation": "heater_error", "arguments": {"output": 2}},
-      "accept": {"value": ["value"], "equals": 0},
-      "note": "As for heater 1. Experiments that use only heater 1 require heater1_ok; selected-condition maintenance can omit this output."
+      "note": "An open load is a disconnected or broken heater; a short is a heater or lead shorted. Querying clears the error, so the next observation shows whether it returned. A temperature controlled through this output while it delivered no power was not held at its setpoint. An experiment that uses one output requires only that output's condition; maintenance of selected conditions can leave the other out."
     }
   ]
 }

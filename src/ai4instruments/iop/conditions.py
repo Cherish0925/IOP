@@ -44,11 +44,11 @@ from .store import dumps, now
 KINDS = ('environment', 'equilibrium', 'reference', 'calibration', 'alignment', 'lock', 'operating_point', 'signal')
 OUTCOMES = ('holds', 'drifted', 'unusable')
 FIELDS = {'id', 'description', 'kind', 'after', 'verify', 'samples', 'interval', 'accept', 'usable', 'reference',
-          'correct', 'settle', 'valid_for', 'note'}
+          'correct', 'settle', 'valid_for', 'note', 'each'}
 # What a tolerance can judge in the samples of a verification: their mean, their standard deviation (repeatability),
 # their span (peak to peak) or the slope of a straight line through them per second (drift).
 STATISTICS = ('mean', 'std', 'span', 'slope')
-TOLERANCE = {'value', 'minimum', 'maximum', 'equals', 'statistic', 'target', 'within', 'relative'}
+TOLERANCE = {'value', 'minimum', 'maximum', 'equals', 'bits', 'statistic', 'target', 'within', 'relative'}
 RECORDS = 20
 # Passes an experiment's upkeep runs in a row without one of its operations starting, before it gives up.
 RENEWALS = 3
@@ -64,7 +64,8 @@ def criterion(value, what):
     value it must have, or the target it must agree with."""
     if not isinstance(value, dict) or value.keys() - TOLERANCE:
         raise ValueError(what + ' gives value (a path into the result) with minimum, maximum or equals, '
-                                'or with a target and within or relative; statistic chooses mean, std, span or slope')
+                                'with bits (status bits that must be clear), or with a target and within or relative; '
+                                'statistic chooses mean, std, span or slope')
     path = value.get('value', ['value'])
     if not isinstance(path, list) or any(isinstance(p, bool) or not isinstance(p, (str, int)) for p in path):
         raise ValueError(what + ': value is a list of result keys or indices')
@@ -90,6 +91,12 @@ def criterion(value, what):
         return {**value, 'value': path, 'target': target}
     if value.keys() & {'within', 'relative'}:
         raise ValueError(what + ': within and relative belong to a target')
+    if 'bits' in value:
+        if value.keys() & {'minimum', 'maximum', 'equals', 'statistic'}:
+            raise ValueError(what + ': bits takes no minimum, maximum, equals or statistic')
+        if isinstance(value['bits'], bool) or not isinstance(value['bits'], int) or value['bits'] < 1:
+            raise ValueError(what + ': bits is a positive integer mask of the status bits that must be clear')
+        return {**value, 'value': path}
     for key in ('minimum', 'maximum'):
         if key in value and (isinstance(value[key], bool) or not isinstance(value[key], (int, float))
                              or not math.isfinite(value[key])):
@@ -174,6 +181,15 @@ def judge(spec, results, times=None, target=None):
         for key in spec['value']:
             value = value[key]
         values.append(value)
+    if 'bits' in spec:
+        # A status register: the condition holds while none of these bits is set in any sample.
+        try:
+            register = 0
+            for value in values:
+                register |= int(float(value))
+        except (TypeError, ValueError):
+            raise ValueError(f'{value!r} is not a status register value') from None
+        return register, register & spec['bits'] == 0
     name = spec.get('statistic', 'mean' if len(values) > 1 else None)
     if name:
         if not all(number(v) for v in values):
@@ -308,6 +324,57 @@ def label(item):
     return (item['device'] + '.' if 'device' in item else '') + item['operation']
 
 
+def each(definitions):
+    """Conditions written once for several channels, inputs, outputs or axes, one for each value of ``each``.
+
+    "{name}" in the id, the description, the note, after, and in arguments is replaced by the value; an argument
+    that is exactly "{name}" takes the value itself, so a number stays a number.
+    """
+    if not isinstance(definitions, list):
+        return definitions
+    expanded = []
+    for condition in definitions:
+        if not isinstance(condition, dict) or 'each' not in condition:
+            expanded.append(condition)
+            continue
+        what = 'Condition ' + str(condition.get('id'))
+        values = condition['each']
+        if (not isinstance(values, dict) or not values or any(not isinstance(k, str) or not re.fullmatch(r'[A-Za-z_]\w*', k)
+                                                              for k in values)
+                or any(not isinstance(v, list) or not v or len(v) > 100 for v in values.values())):
+            raise ValueError(what + ': each maps names to the lists of values the condition is written for, '
+                                    'such as {"channel": ["CH1", "CH2"]}')
+        missing = [k for k in values if '{' + k + '}' not in str(condition.get('id'))]
+        if missing:
+            raise ValueError(what + ': the id names {' + '}, {'.join(missing) + '}, so that each one is distinct')
+        combinations = [{}]
+        for key, items in values.items():
+            combinations = [{**c, key: item} for c in combinations for item in items]
+
+        def put(value, chosen, inside=False):
+            if isinstance(value, str):
+                for key, item in chosen.items():
+                    if inside and value == '{' + key + '}':
+                        return item
+                    value = value.replace('{' + key + '}', str(item))
+                return value
+            if isinstance(value, dict):
+                return {k: put(v, chosen, inside) for k, v in value.items()}
+            if isinstance(value, list):
+                return [put(v, chosen, inside) for v in value]
+            return value
+        for chosen in combinations:
+            copy_ = {k: v for k, v in condition.items() if k != 'each'}
+            for key in ('id', 'description', 'note', 'after'):
+                if key in copy_:
+                    copy_[key] = put(copy_[key], chosen)
+            for key in ('verify', 'correct', 'accept', 'usable'):
+                if key in copy_:
+                    copy_[key] = put(copy_[key], chosen, inside=True)
+            expanded.append(copy_)
+    return expanded
+
+
 def check(definitions, taken=(), external=(), unit_of=None):
     """Validate the conditions of one platform or instrument.
 
@@ -317,6 +384,7 @@ def check(definitions, taken=(), external=(), unit_of=None):
     """
     if not isinstance(definitions, list) or any(not isinstance(c, dict) for c in definitions):
         raise ValueError('Platform conditions must be a list of objects')
+    definitions = each(definitions)
     if unit_of is not None:
         definitions = [in_reading_unit(c, unit_of) for c in definitions]
     names = strings([c.get('id') for c in definitions], 'Condition names')
@@ -429,6 +497,7 @@ def instrument(device_id, definitions, unit_of=None):
     """
     if not isinstance(definitions, list) or any(not isinstance(c, dict) for c in definitions):
         raise ValueError('Instrument conditions must be a list of objects')
+    definitions = each(definitions)
     for local in strings([c.get('id') for c in definitions], 'Instrument condition names'):
         if not LOCAL.fullmatch(local):
             raise ValueError(f'Instrument condition {local}: use letters, digits, _ and -; the device name is added')

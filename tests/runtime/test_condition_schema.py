@@ -32,3 +32,22 @@ class ConditionSchemaCase(unittest.TestCase):
                         for key in tolerance))
             for malformed in ({'value': 25}, {'value': True, 'unit': 'K'}, {'value': 25, 'unit': 'K', 'units': 'K'}):
                 self.assertFalse(validator.is_valid({'target': malformed, 'within': 0.02}))
+
+    def test_status_bits_and_one_condition_for_several_channels_are_described(self):
+        from jsonschema import Draft202012Validator
+        root = Path(__file__).resolve().parents[2] / 'iop/schema'
+        condition = {'id': 'output{output}_ok', 'description': 'Output {output} is not in protection',
+                     'each': {'output': [1, 2]}, 'accept': {'bits': 3},
+                     'verify': {'operation': 'protection', 'arguments': {'output': '{output}'}}}
+        for name, items in (('platform', lambda d: d['properties']['conditions']['items']),
+                            ('device', lambda d: d['$defs']['instrumentCondition']),
+                            ('instrument-profile', lambda d: d['$defs']['instrumentCondition'])):
+            document = json.loads((root / (name + '.schema.json')).read_text())
+            validator = Draft202012Validator({'$defs': document['$defs'], **items(document)})
+            written = dict(condition, verify={**condition['verify'], 'device': 'psu'}) if name == 'platform' else condition
+            with self.subTest(schema=name):
+                validator.validate(written)
+                self.assertFalse(validator.is_valid({**written, 'accept': {'bits': 0}}))
+                self.assertFalse(validator.is_valid({**written, 'each': {'output': []}}))
+        expanded = conditions.instrument('psu', [condition])
+        self.assertEqual([c['id'] for c in expanded], ['psu.output1_ok', 'psu.output2_ok'])

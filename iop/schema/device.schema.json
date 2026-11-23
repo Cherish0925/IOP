@@ -267,6 +267,11 @@
           "required": [
             "target"
           ]
+        },
+        {
+          "required": [
+            "bits"
+          ]
         }
       ],
       "properties": {
@@ -363,6 +368,11 @@
               "$ref": "#/$defs/quantity"
             }
           ]
+        },
+        "bits": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "A status register: met while none of these bits is set in the reading."
         }
       }
     },
@@ -378,8 +388,18 @@
       "properties": {
         "id": {
           "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,47}$",
-          "description": "Local name; the laboratory name is <device>.<id>."
+          "pattern": "^[A-Za-z0-9{][A-Za-z0-9_{}-]{0,47}$",
+          "description": "Local name; the laboratory name is <device>.<id>. With each, it names every {name} it uses."
+        },
+        "each": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100
+          },
+          "description": "Write the condition once for several channels, inputs, outputs or axes: {\"channel\": [\"CH1\", \"CH2\"]} makes one condition for each value; \"{channel}\" in the id, description, note, after and arguments is replaced by it."
         },
         "description": {
           "type": "string",
