@@ -293,6 +293,19 @@
           "verify": {
             "$ref": "#/$defs/conditionStep"
           },
+          "samples": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000,
+            "default": 1,
+            "description": "Readings one verification takes; a tolerance judges their statistic."
+          },
+          "interval": {
+            "type": "number",
+            "minimum": 0,
+            "default": 0,
+            "description": "Seconds between samples."
+          },
           "accept": {
             "$ref": "#/$defs/tolerance"
           },
@@ -438,6 +451,11 @@
           "required": [
             "equals"
           ]
+        },
+        {
+          "required": [
+            "target"
+          ]
         }
       ],
       "properties": {
@@ -457,7 +475,37 @@
         "maximum": {
           "type": "number"
         },
-        "equals": {}
+        "equals": {},
+        "statistic": {
+          "enum": [
+            "mean",
+            "std",
+            "span",
+            "slope"
+          ],
+          "description": "With samples: judge the mean (default), the standard deviation, the span or the slope per second of the readings."
+        },
+        "target": {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "$ref": "#/$defs/targetReading"
+            }
+          ],
+          "description": "A nominal or certified value, or the reading that gives it, such as the setpoint the instrument holds. The value judged is the deviation from it."
+        },
+        "within": {
+          "type": "number",
+          "minimum": 0,
+          "description": "With target: the absolute tolerance of the deviation."
+        },
+        "relative": {
+          "type": "number",
+          "minimum": 0,
+          "description": "With target: the tolerance as a fraction of the target; added to within."
+        }
       }
     },
     "conditionTuning": {
@@ -963,6 +1011,37 @@
           "minimum": 0,
           "default": 0,
           "description": "The smallest improvement that counts, above the noise of a reading"
+        }
+      }
+    },
+    "targetReading": {
+      "type": "object",
+      "required": [
+        "operation"
+      ],
+      "additionalProperties": false,
+      "description": "The reading that gives a target: one operation and the path to the number in its result.",
+      "properties": {
+        "device": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "arguments": {
+          "type": "object"
+        },
+        "value": {
+          "type": "array",
+          "items": {
+            "type": [
+              "string",
+              "integer"
+            ]
+          },
+          "description": "Path into its result; default [\"value\"]."
         }
       }
     }

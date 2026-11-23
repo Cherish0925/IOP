@@ -31,4 +31,6 @@ When a verification finds a condition lost, each operation in progress since it 
 
 ## Defining
 
+A tolerance can judge several readings: `"samples": 10, "interval": 2` with `"statistic": "std"`, `"span"` or `"slope"` and a `maximum` states that readings are steady; and agreement with a value: `"accept": {"target": {"device": "oven", "operation": "read_setpoint"}, "within": 0.5}` compares the reading with the setpoint the instrument holds, `"target": 100.0, "relative": 0.001` with the certified value of a standard. The value recorded is then the deviation.
+
 Conditions are part of a platform definition (`configure_platform`) or of an instrument's record. Add or revise them from what the experiment requires, the instrument's manual and what the operator knows; `configuration_schema("platform")` gives the fields. A correction can be an operation, a saved operation, or `tune`, a bounded local adjustment of settings against the verification value; it is not a global optimizer.

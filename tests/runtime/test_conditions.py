@@ -541,7 +541,7 @@ class DefinitionCase(unittest.TestCase):
                 ({'verify': {'operation': ''}}, 'verify is one operation'),
                 ({'kind': ''}, 'kind'),
                 ({'valid_for': 0}, 'valid_for is a duration'),
-                ({'interval': 5}, 'unknown fields interval')):
+                ({'every': 5}, 'unknown fields every')):
             with self.assertRaisesRegex(ValueError, message):
                 check([SOURCE, {**PATH, **change}])
         self.assertEqual(check([{**SOURCE, 'kind': 'sample_integrity'}])[0]['kind'], 'sample_integrity')

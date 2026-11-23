@@ -349,6 +349,11 @@
           "required": [
             "equals"
           ]
+        },
+        {
+          "required": [
+            "target"
+          ]
         }
       ],
       "properties": {
@@ -368,7 +373,37 @@
         "maximum": {
           "type": "number"
         },
-        "equals": {}
+        "equals": {},
+        "statistic": {
+          "enum": [
+            "mean",
+            "std",
+            "span",
+            "slope"
+          ],
+          "description": "With samples: judge the mean (default), the standard deviation, the span or the slope per second of the readings."
+        },
+        "target": {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "$ref": "#/$defs/instrumentTarget"
+            }
+          ],
+          "description": "A nominal or certified value, or the reading that gives it, such as the setpoint the instrument holds. The value judged is the deviation from it."
+        },
+        "within": {
+          "type": "number",
+          "minimum": 0,
+          "description": "With target: the absolute tolerance of the deviation."
+        },
+        "relative": {
+          "type": "number",
+          "minimum": 0,
+          "description": "With target: the tolerance as a fraction of the target; added to within."
+        }
       }
     },
     "instrumentCondition": {
@@ -404,6 +439,19 @@
         },
         "verify": {
           "$ref": "#/$defs/instrumentStep"
+        },
+        "samples": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000,
+          "default": 1,
+          "description": "Readings one verification takes; a tolerance judges their statistic."
+        },
+        "interval": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0,
+          "description": "Seconds between samples."
         },
         "accept": {
           "$ref": "#/$defs/instrumentTolerance"
@@ -572,6 +620,37 @@
               "const": "array"
             }
           }
+        }
+      }
+    },
+    "instrumentTarget": {
+      "type": "object",
+      "required": [
+        "operation"
+      ],
+      "additionalProperties": false,
+      "description": "The reading of this instrument that gives a target, such as its setpoint; device may be omitted.",
+      "properties": {
+        "device": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "arguments": {
+          "type": "object"
+        },
+        "value": {
+          "type": "array",
+          "items": {
+            "type": [
+              "string",
+              "integer"
+            ]
+          },
+          "description": "Path into its result; default [\"value\"]."
         }
       }
     }

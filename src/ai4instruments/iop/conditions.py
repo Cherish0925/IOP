@@ -4,6 +4,12 @@ Dependencies and acceptable measurements are supplied by the experimenter. Maint
 ordinary operations and the existing scheduler; it does not infer physical causality. The
 dependency-graph approach is informed by Kelly et al., arXiv:1803.03226.
 
+A tolerance judges one reading against a range, or several readings by a statistic: their mean,
+standard deviation, span or drift per second, which states that a quantity is steady. It may
+instead compare the reading with a target, a nominal or certified value or the setpoint the
+instrument reports, within an absolute and a relative tolerance. These forms do not depend on
+the kind of quantity or instrument.
+
 An instrument's own conditions (warm-up, references, overloads, self-calibration) belong to its
 device record, or to the model description that supplies it, and are named ``<device>.<id>``. They
 use only that instrument's operations, so they travel with the model to every laboratory; platform
@@ -24,6 +30,7 @@ import threading
 import uuid
 from collections import deque
 from datetime import datetime, timezone
+from time import monotonic
 from . import batches, library
 from .engine import SATISFIED
 from .drivers import parameters
@@ -34,8 +41,12 @@ from .store import dumps, now
 # Suggested labels. Dependencies come from each platform's explicit `after` relationships.
 KINDS = ('environment', 'equilibrium', 'reference', 'calibration', 'alignment', 'lock', 'operating_point', 'signal')
 OUTCOMES = ('holds', 'drifted', 'unusable')
-FIELDS = {'id', 'description', 'kind', 'after', 'verify', 'accept', 'usable', 'reference', 'correct', 'settle',
-          'valid_for', 'note'}
+FIELDS = {'id', 'description', 'kind', 'after', 'verify', 'samples', 'interval', 'accept', 'usable', 'reference',
+          'correct', 'settle', 'valid_for', 'note'}
+# What a tolerance can judge in the samples of a verification: their mean, their standard deviation (repeatability),
+# their span (peak to peak) or the slope of a straight line through them per second (drift).
+STATISTICS = ('mean', 'std', 'span', 'slope')
+TOLERANCE = {'value', 'minimum', 'maximum', 'equals', 'statistic', 'target', 'within', 'relative'}
 RECORDS = 20
 # Passes an experiment's upkeep runs in a row without one of its operations starting, before it gives up.
 RENEWALS = 3
@@ -47,12 +58,36 @@ def seconds(text):
 
 
 def criterion(value, what):
-    """A tolerance: where the value is in the result and the range or value it must have."""
-    if not isinstance(value, dict) or value.keys() - {'value', 'minimum', 'maximum', 'equals'}:
-        raise ValueError(what + ' gives value (a path into the result) with minimum, maximum or equals')
+    """A tolerance: where the value is in the result, which statistic of the samples is judged, and the range or
+    value it must have, or the target it must agree with."""
+    if not isinstance(value, dict) or value.keys() - TOLERANCE:
+        raise ValueError(what + ' gives value (a path into the result) with minimum, maximum or equals, '
+                                'or with a target and within or relative; statistic chooses mean, std, span or slope')
     path = value.get('value', ['value'])
     if not isinstance(path, list) or any(isinstance(p, bool) or not isinstance(p, (str, int)) for p in path):
         raise ValueError(what + ': value is a list of result keys or indices')
+    if 'statistic' in value and value['statistic'] not in STATISTICS:
+        raise ValueError(what + ': statistic is one of ' + ', '.join(STATISTICS))
+    if 'target' in value:
+        if value.keys() & {'minimum', 'maximum', 'equals'}:
+            raise ValueError(what + ': a target takes within or relative, not minimum, maximum or equals')
+        target = value['target']
+        if not number(target):
+            if not isinstance(target, dict):
+                raise ValueError(what + ': target is a number, or the reading that gives it: '
+                                        '{"device", "operation", "arguments", "value"}')
+            where = target.get('value', ['value'])
+            if not isinstance(where, list) or any(isinstance(p, bool) or not isinstance(p, (str, int)) for p in where):
+                raise ValueError(what + ' target: value is a list of result keys or indices')
+            target = {**step({k: v for k, v in target.items() if k != 'value'}, what + ' target'), 'value': where}
+        if not {'within', 'relative'} & value.keys():
+            raise ValueError(what + ': give within, an absolute tolerance, or relative, a fraction of the target, or both')
+        for key in ('within', 'relative'):
+            if key in value and (not number(value[key]) or value[key] < 0):
+                raise ValueError(f'{what}: {key} is a nonnegative number')
+        return {**value, 'value': path, 'target': target}
+    if value.keys() & {'within', 'relative'}:
+        raise ValueError(what + ': within and relative belong to a target')
     for key in ('minimum', 'maximum'):
         if key in value and (isinstance(value[key], bool) or not isinstance(value[key], (int, float))
                              or not math.isfinite(value[key])):
@@ -64,11 +99,46 @@ def criterion(value, what):
     return {**value, 'value': path}
 
 
-def judge(spec, result):
-    """The value a tolerance looks at and whether it is satisfied; raises when it cannot be read."""
-    value = result
-    for key in spec['value']:
-        value = value[key]
+def statistic(name, values, times):
+    """One statistic of the samples of a verification; ``times`` are when they were taken, in seconds."""
+    if name == 'mean':
+        return statistics.fmean(values)
+    if name == 'std':
+        return statistics.stdev(values)
+    if name == 'span':
+        return max(values) - min(values)
+    mt, mv = statistics.fmean(times), statistics.fmean(values)
+    spread = sum((t - mt) ** 2 for t in times)
+    if not spread:
+        raise ValueError('samples taken at one instant have no slope')
+    return sum((t - mt) * (v - mv) for t, v in zip(times, values)) / spread
+
+
+def judge(spec, results, times=None, target=None):
+    """The value a tolerance looks at in the samples and whether it is satisfied; raises when it cannot be read.
+
+    Several samples are judged by their statistic, the mean unless another is named. With a target the value
+    judged is the deviation from it, accepted within an absolute and a relative tolerance.
+    """
+    results = results if isinstance(results, list) else [results]
+    values = []
+    for result in results:
+        value = result
+        for key in spec['value']:
+            value = value[key]
+        values.append(value)
+    name = spec.get('statistic', 'mean' if len(values) > 1 else None)
+    if name:
+        if not all(number(v) for v in values):
+            raise ValueError('the samples are not all finite numbers')
+        value = statistic(name, values, times if times is not None else list(range(len(values))))
+    else:
+        value = values[0]
+    if 'target' in spec:
+        if not number(value) or not number(target):
+            raise ValueError('a deviation needs a finite number and target')
+        deviation = value - target
+        return deviation, abs(deviation) <= spec.get('within', 0) + spec.get('relative', 0) * abs(target)
     met = not ('equals' in spec and value != spec['equals'])
     for key in ('minimum', 'maximum'):
         if key in spec:
@@ -91,6 +161,16 @@ GOALS = ('maximize', 'minimize', 'center')
 
 def number(value):
     return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+
+
+def bounds(spec):
+    """The lowest and highest value a tolerance accepts, where they are fixed numbers; for a target, of the deviation."""
+    if 'target' in spec:
+        if spec.get('relative') and not number(spec['target']):
+            return None, None
+        width = spec.get('within', 0) + spec.get('relative', 0) * abs(spec['target'] if number(spec['target']) else 0)
+        return -width, width
+    return spec.get('minimum'), spec.get('maximum')
 
 
 def tuning(value, accept, what):
@@ -120,13 +200,15 @@ def tuning(value, accept, what):
         if not number(resolution) or not 0 < resolution <= knob['step']:
             raise ValueError(what + ': resolution is the smallest step worth taking, at most step')
         checked.append({**knob, 'resolution': resolution, 'read': {**read, 'value': read.get('value', ['value'])}})
-    if 'equals' in accept or not {'minimum', 'maximum'} & accept.keys():
-        raise ValueError(what + ': tune needs a numeric tolerance (minimum or maximum) to improve on')
-    goal = value.get('goal', 'center' if {'minimum', 'maximum'} <= accept.keys() else 'maximize' if 'minimum' in accept else 'minimize')
+    targeted = 'target' in accept
+    if not targeted and ('equals' in accept or not {'minimum', 'maximum'} & accept.keys()):
+        raise ValueError(what + ': tune needs a numeric tolerance (minimum, maximum or a target) to improve on')
+    two_sided = targeted or {'minimum', 'maximum'} <= accept.keys()
+    goal = value.get('goal', 'center' if two_sided else 'maximize' if 'minimum' in accept else 'minimize')
     if goal not in GOALS:
         raise ValueError(what + ': goal is one of ' + ', '.join(GOALS))
-    if goal == 'center' and not {'minimum', 'maximum'} <= accept.keys():
-        raise ValueError(what + ': center needs both minimum and maximum in accept')
+    if goal == 'center' and not two_sided:
+        raise ValueError(what + ': center needs both minimum and maximum in accept, or a target')
     evaluations = value.get('evaluations', 40)
     if isinstance(evaluations, bool) or not isinstance(evaluations, int) or not 1 <= evaluations <= 1000:
         raise ValueError(what + ': evaluations is the number of settings that may be tried, 1 to 1000')
@@ -144,9 +226,19 @@ def setting(knob, position):
             'arguments': {**knob.get('arguments', {}), knob['argument']: position}}
 
 
-def operations_used(condition):
-    """Every operation a condition may call: its observation, its corrections and both ends of a tuned range."""
+def readings(condition):
+    """What a verification observes: its operation, and the readings that give the targets of its tolerances."""
     items = [condition['verify']]
+    for key in ('accept', 'usable'):
+        target = (condition.get(key) or {}).get('target')
+        if isinstance(target, dict):
+            items.append({k: v for k, v in target.items() if k != 'value'})
+    return items
+
+
+def operations_used(condition):
+    """Every operation a condition may call: its observations, its corrections and both ends of a tuned range."""
+    items = readings(condition)
     for correction in condition['correct']:
         if 'tune' in correction:
             for knob in correction['tune']:
@@ -201,7 +293,15 @@ def check(definitions, taken=(), external=()):
                 raise ValueError(f'{what}: {key} is a duration in seconds')
         if not isinstance(condition.get('note', ''), str):
             raise ValueError(what + ': note is text')
+        samples = condition.get('samples', 1)
+        if isinstance(samples, bool) or not isinstance(samples, int) or not 1 <= samples <= 1000:
+            raise ValueError(what + ': samples is the number of readings a verification takes, 1 to 1000')
+        if 'interval' in condition and (not number(condition['interval']) or condition['interval'] < 0):
+            raise ValueError(what + ': interval is the time between samples in seconds')
         accept = criterion(condition.get('accept'), what + ' accept')
+        for spec in (accept, condition.get('usable') or {}):
+            if spec.get('statistic') in ('std', 'span', 'slope') and samples < 2:
+                raise ValueError(what + ': std, span and slope compare several readings; set samples to 2 or more')
         checked.append({**condition, 'after': after, 'verify': step(condition.get('verify'), what + ' verify'),
                         'accept': accept,
                         **({'usable': criterion(condition['usable'], what + ' usable')} if 'usable' in condition else {}),
@@ -275,7 +375,10 @@ def instrument(device_id, definitions):
         what = 'Instrument condition ' + condition['id']
         after, corrections = condition.get('after', []), condition.get('correct', [])
         corrections = [corrections] if isinstance(corrections, dict) else corrections
-        named.append({**condition, 'id': prefix + condition['id'],
+        tolerances = {key: {**condition[key], 'target': own(condition[key]['target'], f'{what} {key} target')}
+                      for key in ('accept', 'usable') if isinstance(condition.get(key), dict)
+                      and isinstance(condition[key].get('target'), dict)}
+        named.append({**condition, **tolerances, 'id': prefix + condition['id'],
                       'after': [prefix + a if isinstance(a, str) else a for a in after] if isinstance(after, list) else after,
                       'verify': own(condition.get('verify'), what + ' verify'),
                       'correct': [own(item, what + ' correct') for item in corrections] if isinstance(corrections, list)
@@ -326,27 +429,40 @@ def order(definitions, targets):
     return result
 
 
-def outcome(condition, result):
-    """Classify a verification result: holds, drifted (measurable but out of tolerance) or unusable."""
-    value, kept = None, {}
+def outcome(condition, results, times=None, targets=None):
+    """Classify a verification: holds, drifted (measurable but out of tolerance) or unusable.
+
+    ``results`` are the readings of its samples (one result is one sample) taken at ``times``; ``targets``
+    holds what was read for each tolerance whose target is a reading.
+    """
+    results = results if isinstance(results, list) else [results]
+    value, kept, targets = None, {}, targets or {}
+
+    def judged(key):
+        spec = condition[key]
+        return judge(spec, results, times, spec['target'] if number(spec.get('target')) else targets.get(key))
     try:
-        value, met = judge(condition['accept'], result)
-    except (KeyError, IndexError, TypeError, ValueError):
+        value, met = judged('accept')
+    except (KeyError, IndexError, TypeError, ValueError, statistics.StatisticsError):
         return 'unusable', None, kept
     if 'usable' in condition:
         try:
-            if not judge(condition['usable'], result)[1]:
+            if not judged('usable')[1]:
                 return 'unusable', value, kept
-        except (KeyError, IndexError, TypeError, ValueError):
+        except (KeyError, IndexError, TypeError, ValueError, statistics.StatisticsError):
             return 'unusable', value, kept
     for key, path in condition.get('reference', {}).items():
-        item = result
-        try:
-            for part in path:
-                item = item[part]
-        except (KeyError, IndexError, TypeError):
-            item = None
-        kept[key] = item
+        found = []
+        for result in results:
+            item = result
+            try:
+                for part in path:
+                    item = item[part]
+            except (KeyError, IndexError, TypeError):
+                item = None
+            found.append(item)
+        # A reference several samples give is their mean, as a dark level or a baseline is averaged.
+        kept[key] = statistics.fmean(found) if len(found) > 1 and all(number(v) for v in found) else found[-1]
     return ('holds' if met else 'drifted'), value, kept
 
 
@@ -388,7 +504,8 @@ def summary(condition, rows):
         intercept = my - slope * mx
         residual = math.sqrt(sum((y - intercept - slope * x) ** 2 for x, y in zip(xs, ys)) / len(xs))
         trend = {'per_hour': slope * 3600, 'points': len(points), 'residual': residual}
-        bound = condition['accept'].get('maximum' if slope > 0 else 'minimum')
+        low, high = bounds(condition['accept'])
+        bound = high if slope > 0 else low
         if slope and bound is not None:
             crossing = (bound - intercept) / slope
             if crossing > xs[-1] and math.isfinite(crossing):
@@ -463,7 +580,7 @@ class Conditions:
 
     def _devices(self, condition):
         devices = set()
-        for item in [condition['verify']] + condition['correct']:
+        for item in readings(condition) + condition['correct']:
             if 'tune' in item:
                 devices.update(d for knob in item['tune'] for d in (knob['device'], knob['read']['device']))
                 continue
@@ -481,7 +598,8 @@ class Conditions:
         return result
 
     def _measurement_basis(self, condition):
-        result = {k: condition[k] for k in ('verify', 'accept', 'usable', 'after', 'reference') if k in condition}
+        result = {k: condition[k] for k in ('verify', 'samples', 'interval', 'accept', 'usable', 'after', 'reference')
+                  if k in condition}
         try:
             steps, calls, _ = library.expand([{'id': 'verify', **condition['verify']}], self.engine.library.get)
             result['operations'] = {c['operation']: c['revision'] for c in calls.values()}
@@ -515,7 +633,7 @@ class Conditions:
         if 'upkeep' in definition:
             definition['upkeep'] = upkeep(definition['upkeep'], [c['id'] for c in conditions] + sorted(external))
         for condition in conditions:
-            for item in [condition['verify']] + condition['correct']:
+            for item in readings(condition) + condition['correct']:
                 if 'tune' in item:
                     for knob in item['tune']:
                         if {knob['device'], knob['read']['device']} - set(definition['devices']):
@@ -976,13 +1094,33 @@ class Conditions:
                 self.engine.store.save_maintenance(job)
         return done[entry['condition']]
 
+    def _observe(self, job, condition):
+        """The readings of one verification: its samples, ``interval`` apart, and the targets it compares with."""
+        results, times, targets = [], [], {}
+        for index in range(condition.get('samples', 1)):
+            if index and self.stopping.wait(condition.get('interval', 0)):
+                raise Stopped()
+            results.append(self._execute(job, 'verify', condition['verify']))
+            times.append(monotonic())
+        for key in ('accept', 'usable'):
+            target = (condition.get(key) or {}).get('target')
+            if isinstance(target, dict):
+                found = self._execute(job, 'target', {k: v for k, v in target.items() if k != 'value'})
+                try:
+                    for part in target['value']:
+                        found = found[part]
+                except (KeyError, IndexError, TypeError):
+                    found = None
+                targets[key] = found
+        return results, times, targets
+
     def _verify(self, job, condition):
         try:
-            result = self._execute(job, 'verify', condition['verify'])
+            observed = self._observe(job, condition)
         except StepFailed as error:
             self.verified(condition['id'], 'unusable', None, {}, job['run_id'], str(error))
             return 'unusable', None
-        found, value, kept = outcome(condition, result)
+        found, value, kept = outcome(condition, *observed)
         self.verified(condition['id'], found, value, kept, job['run_id'])
         return found, value
 
@@ -1210,7 +1348,8 @@ class Conditions:
         """
         knobs, goal, gain = item['tune'], item['goal'], item['gain']
         accept = condition['accept']
-        middle = (accept['minimum'] + accept['maximum']) / 2 if goal == 'center' else None
+        # A target is met at zero deviation; a range at its middle.
+        middle = (0 if 'target' in accept else (accept['minimum'] + accept['maximum']) / 2) if goal == 'center' else None
 
         def score(reading):
             if not number(reading):
@@ -1238,7 +1377,7 @@ class Conditions:
         if positions != start:
             if self.stopping.wait(condition.get('settle', 0)):
                 raise Stopped()
-            initial_outcome, value, _ = outcome(condition, self._execute(job, 'verify', condition['verify']))
+            initial_outcome, value, _ = outcome(condition, *self._observe(job, condition))
             used += 1
         best, met = score(value) if initial_outcome != 'unusable' else -math.inf, False
         met = item['until'] == 'accept' and initial_outcome == 'holds'
@@ -1256,7 +1395,7 @@ class Conditions:
                         self._execute(job, 'set', self._set(knob, candidate))
                         if self.stopping.wait(condition.get('settle', 0)):
                             raise Stopped()
-                        found, reading, _ = outcome(condition, self._execute(job, 'verify', condition['verify']))
+                        found, reading, _ = outcome(condition, *self._observe(job, condition))
                         used += 1
                         candidate_score = score(reading) if found != 'unusable' else -math.inf
                         if candidate_score > best + gain:
