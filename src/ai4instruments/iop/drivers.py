@@ -7,7 +7,7 @@ import math
 import socket
 import time
 from concurrent.futures import CancelledError
-from . import arrays, text_protocol
+from . import arrays, text_protocol, units
 from .store import now
 
 
@@ -20,6 +20,30 @@ def span(field):
     if "minimum" in field and "maximum" in field:
         return f"outside {field['minimum']} to {field['maximum']}{unit(field)}"
     return f"above {field['maximum']}{unit(field)}" if "maximum" in field else f"below {field['minimum']}{unit(field)}"
+
+
+def in_unit(name, field, value):
+    """A number given with its unit, {"value": 5, "unit": "mV"} or "5 mV", in the unit the parameter declares.
+
+    A unit of another quantity is refused, as is a unit for a parameter that declares none."""
+    try:
+        given = units.quantity(value)
+    except ValueError as error:
+        raise ValueError(f"{name}: {error}") from None
+    if given is None:
+        return value
+    if not isinstance(field.get("unit"), str) or not field["unit"]:
+        raise ValueError(f"{name} declares no unit; give a plain number")
+    try:
+        converted = units.convert(given[0], given[1], field["unit"])
+    except ValueError as error:
+        raise ValueError(f"{name} is in {field['unit']}: {error}") from None
+    if field.get("type") == "integer":
+        rounded = round(converted)
+        if abs(converted - rounded) > 1e-9 * max(1.0, abs(converted)):
+            raise ValueError(f"{name} is {given[0]} {given[1]} = {converted:g} {field['unit']}, not an integer")
+        return rounded
+    return converted
 
 
 def parameters(spec, supplied):
@@ -41,6 +65,7 @@ def parameters(spec, supplied):
             value = supplied[name]
         kind = field.get("type")
         if kind in {"number", "integer"}:
+            value = in_unit(name, field, value)
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
                 raise ValueError(name + " must be a finite number")
             if kind == "integer" and not isinstance(value, int):

@@ -47,6 +47,10 @@ New local operation parameters follow the [parameter contract](operations.md): b
 
 These commands and ranges illustrate the format; use those specified for the actual model. The driver formats named parameters into a command, reads query responses and optionally polls completion. Numeric results include their configured unit and acquisition timestamp. / 示例中的命令和范围需要替换为实际型号的定义。
 
+### Units / 单位
+
+A parameter's `unit` is the unit the instrument takes. A request may give the number with its own unit, `{"value": 250, "unit": "mV"}` or `"250 mV"`: it is converted to the declared unit before `minimum`, `maximum` and the record's `limits` apply, and the operation record holds the converted number. A unit of another quantity is refused before the instrument is called, as is a unit for a parameter without one. Dimensions follow the SI base quantities, with plane angle kept apart so that rad/s is not taken for Hz; `°C` and `°F` convert with their offset when they stand alone. Units the table does not know, and logarithmic units such as `dBm`, are accepted only as the declared unit itself. Declare units with SI symbols so that conversions apply. / 参数的 `unit` 是仪器接受的单位。请求可带上自己的单位给出数值，如 `{"value": 250, "unit": "mV"}` 或 `"250 mV"`：先换算到声明的单位，再按 `minimum`、`maximum` 与设备记录的 `limits` 核对，操作记录保存换算后的数值。量纲不同的单位在调用仪器之前即被拒绝；未声明单位的参数不接受带单位的数值。量纲按 SI 基本量，平面角单独计，因而 rad/s 不会被当作 Hz；`°C`、`°F` 单独出现时按偏移换算。表中没有的单位以及 `dBm` 等对数单位，只接受与声明完全相同的写法。声明单位时请用 SI 符号，以便换算。
+
 | Transport / 连接 | `config` fields / 字段 |
 | --- | --- |
 | TCP | `transport: "tcp"`, `host`, `port` (default 5025) |
