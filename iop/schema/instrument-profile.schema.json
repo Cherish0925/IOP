@@ -139,7 +139,54 @@
               },
               "result": {
                 "type": "object",
-                "description": "scpi: type (number, integer, boolean, string or array), unit, match, scale, offset, map"
+                "description": "scpi: type (number, integer, boolean, string or array), unit, match, scale, offset, map; any adapter: minimum and maximum of the measuring interval, saturation where the instrument clips"
+              },
+              "quality": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "The status read after this reading: scpi query, or another observe operation of the instrument with arguments (\"{parameter}\" passes the reading's argument) and value, its path; a reply other than equals, or with any of bits set, marks the reading uncertain",
+                "properties": {
+                  "query": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "equals": {},
+                  "bits": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "operation": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "arguments": {
+                    "type": "object"
+                  },
+                  "value": {
+                    "type": "array",
+                    "items": {
+                      "type": [
+                        "string",
+                        "integer"
+                      ]
+                    }
+                  }
+                },
+                "anyOf": [
+                  {
+                    "required": [
+                      "query"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "operation"
+                    ]
+                  }
+                ]
               },
               "data": {
                 "type": "object",

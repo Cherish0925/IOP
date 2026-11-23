@@ -87,6 +87,25 @@ class EPICSCase(unittest.TestCase):
         self.assertTrue(run.info()['operation_records'][0]['outcome_unknown'])
         self.assertIn('device:beamline', self.engine.resource_holds)
 
+    def test_an_alarm_on_the_validity_of_a_value_makes_it_uncertain(self):
+        from types import SimpleNamespace
+        from caproto import AlarmSeverity, AlarmStatus
+        from ai4instruments.iop.epics_driver import EPICS
+        entry = {'kind': 'DOUBLE', 'unit': 'mm', 'count': 1, 'labels': []}
+
+        def read(severity, status):
+            metadata = SimpleNamespace(severity=severity.value, status=status.value, timestamp=time.time())
+            return EPICS._reading(None, 'get.MOT:RBV', entry, SimpleNamespace(metadata=metadata, data=[2.5]), None)
+        self.assertNotIn('quality', read(AlarmSeverity.NO_ALARM, AlarmStatus.NO_ALARM))
+        # A limit alarm is the state of the process; the value is what it is.
+        limited = read(AlarmSeverity.MAJOR_ALARM, AlarmStatus.HIHI)
+        self.assertEqual((limited['alarm'], 'quality' in limited), ({'severity': 'MAJOR_ALARM', 'status': 'HIHI'}, False))
+        # A failed link or no communication says the value may not be what the process is.
+        self.assertEqual(read(AlarmSeverity.MAJOR_ALARM, AlarmStatus.COMM)['quality'],
+                         {'level': 'uncertain', 'source': 'epics', 'detail': 'MAJOR_ALARM COMM'})
+        with self.assertRaisesRegex(RuntimeError, 'INVALID'):
+            read(AlarmSeverity.INVALID_ALARM, AlarmStatus.UDF)
+
     def test_missing_pvs_are_named(self):
         with self.assertRaisesRegex(Exception, 'No IOC answered for BL:NOPE'):
             self.client.register({'id': 'gone', 'driver': 'epics', 'config': {'pvs': ['BL:NOPE'], 'timeout': 0.5}})

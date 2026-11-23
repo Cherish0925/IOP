@@ -19,6 +19,7 @@ Describe an instrument with an installed adapter, taking commands, ranges and un
 Register with `register_instrument(definition)`, or several at once with `register_instruments`. In the record:
 
 - `allowed_operations` keeps only the operations whose names match;
+- an operation's `result` states its measuring interval with `minimum` and `maximum`, and `saturation` where it clips; `quality` names the status read after a reading: for text commands `{"query": "STAT:QUES:COND?", "bits": 32767}` or `{"query": "RDGST? {input}", "equals": 0}`, for any adapter another observe operation, `{"operation": "status", "arguments": {"channel": "{channel}"}, "value": ["overrange"], "equals": false}`. A reading outside the interval, at saturation, or with a bad status is kept as uncertain and in doubt;
 - `limits` bounds what this setup tolerates, within what the instrument takes: `{"set_current": {"current": {"maximum": 0.05, "note": "The diode is damaged above 50 mA"}}}`. Arguments beyond are refused before the instrument is called, with the note.
 
 `instrument_configuration` reads earlier versions and saves a replacement while the instrument is idle. `release_instrument` hands an idle instrument to other software; `reconnect_instrument` takes it back.

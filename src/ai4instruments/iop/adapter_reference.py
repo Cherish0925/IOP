@@ -45,8 +45,11 @@ REFERENCE = {
         'operation': {
             'query': 'command whose reply is the result; {name} inserts a parameter',
             'write': 'command without a result; exactly one of query or write',
-            'result': ('{type: number | integer | boolean | string, unit, match: pattern whose first group is the value, '
-                       'scale, offset, map: {reply: value}}, or ' + ARRAY + ' with encoding block | ascii'),
+            'result': ('{type: number | integer | boolean | string, unit, minimum and maximum of the measuring interval, '
+                       'saturation, match: pattern whose first group is the value, scale, offset, map: {reply: value}}, or '
+                       + ARRAY + ' with encoding block | ascii'),
+            'quality': ('{query, equals | bits}: the status command read after a query; a reply other than equals, or with '
+                        'any of the bits set, marks the reading uncertain and in doubt'),
             'completion': '{query, equals | match, interval, timeout}: asked until the reply agrees',
             'reply': 'on a write: true | false | {match} when the instrument acknowledges it with one line',
             'data': '{parameter, dtype, byte_order}: that array parameter is sent as a binary block after the write',
@@ -54,7 +57,8 @@ REFERENCE = {
         'builtin': 'identify (*IDN?), query and write with a command argument',
         'example': {'id': 'power-meter', 'driver': 'scpi', 'config': {
             'transport': 'tcp', 'host': '192.168.1.50', 'port': 5025, 'operations': {
-                'read_power': {'query': 'MEAS:POW?', 'effect': 'observe', 'result': {'type': 'number', 'unit': 'W'}},
+                'read_power': {'query': 'MEAS:POW?', 'effect': 'observe', 'result': {'type': 'number', 'unit': 'W'},
+                               'quality': {'query': 'STAT:QUES:COND?', 'bits': 32767}},
                 'set_wavelength': {'write': 'SENS:CORR:WAV {nm}',
                                    'parameters': {'nm': {'type': 'number', 'minimum': 400, 'maximum': 1100, 'unit': 'nm'}},
                                    'completion': {'query': '*OPC?', 'equals': '1', 'timeout': 30}}}}},

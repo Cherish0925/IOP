@@ -25,7 +25,7 @@ A condition is something an experiment relies on: an alignment, a lock, a warm-u
 
 ## Data in doubt
 
-When a verification finds a condition lost, each operation in progress since it last held is marked `in_doubt`, with `since`, `found` and `outcome`; a disturbance reported while an operation ran marks it with the outcome `disturbed`. `experiment(run_id, in_doubt=true)` lists only those.
+A reading its instrument reports as uncertain (`quality`: overload, invalid input, outside the measuring interval) is marked `in_doubt.quality`, and a verification that reads it is unusable. When a verification finds a condition lost, each operation in progress since it last held is marked `in_doubt`, with `since`, `found` and `outcome`; a disturbance reported while an operation ran marks it with the outcome `disturbed`. `experiment(run_id, in_doubt=true)` lists only those.
 
 `"retake": true` on a sweep or repetition of a device operation in a step graph takes those points again once the condition is restored, before the next point; the sweep gathers what the retakes read, and the first readings stay with `retaken_by`. Declared bindings retain their input operation IDs; results that consumed doubtful inputs keep `in_doubt.source_operations`. Retakes do not clear those downstream records or replay actions whose arguments came from doubtful data.
 

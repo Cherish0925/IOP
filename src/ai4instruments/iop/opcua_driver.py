@@ -429,6 +429,7 @@ class OPCUA(Driver):
             result = self._reading(data.Value.Value if data.Value is not None else None, entry, cancelled, operation)
             if status is not None and status.is_uncertain():
                 result['status'] = status.name
+                result['quality'] = {'level': 'uncertain', 'source': 'opcua', 'detail': status.name}
             result['time'] = data.SourceTimestamp.isoformat() if data.SourceTimestamp else now()
             result['source'] = 'device'
             return result

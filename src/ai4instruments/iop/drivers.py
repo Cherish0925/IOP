@@ -151,6 +151,42 @@ def operation_parameters(operations, where='Operations'):
         parameter_definitions(spec.get('parameters', {}), f'{where}.{name} parameters')
 
 
+def quality_spec(spec):
+    """Check how the validity of a reading is read: a status query, good when equal to a value or with none of some bits."""
+    quality = spec['quality']
+    if isinstance(quality, dict) and 'operation' in quality:
+        return quality  # Another operation of the instrument; checked against its description at registration.
+    if 'query' not in spec:
+        raise ValueError('quality qualifies a reading; it belongs to a query')
+    if (not isinstance(quality, dict) or quality.keys() - {'query', 'equals', 'bits', 'description'}
+            or not isinstance(quality.get('query'), str) or not quality['query'] or len({'equals', 'bits'} & quality.keys()) != 1):
+        raise ValueError('quality is {"query": status command, "equals": the reply of a valid reading} or '
+                         '{"query": ..., "bits": the status bits that mark it invalid}')
+    if 'bits' in quality and (isinstance(quality['bits'], bool) or not isinstance(quality['bits'], int) or quality['bits'] < 1):
+        raise ValueError('quality bits is a positive integer mask')
+    return quality
+
+
+def judged_quality(quality, reply):
+    """Whether a status reply, text or a value read from a result, says the reading is valid."""
+    text = reply.strip().strip('"') if isinstance(reply, str) else reply
+    if 'bits' in quality:
+        return int(float(text)) & quality['bits'] == 0
+    expected = quality['equals']
+    if not isinstance(text, str):
+        return text == expected
+    if isinstance(expected, (int, float)) and not isinstance(expected, bool):
+        try:
+            return float(text) == expected
+        except ValueError:
+            return False
+    return text == str(expected)
+
+
+def uncertain(detail, source='instrument'):
+    return {'level': 'uncertain', 'source': source, 'detail': detail}
+
+
 class UnconfirmedChange(RuntimeError):
     """A change command may have reached the instrument, but its completion was not confirmed."""
 
@@ -291,6 +327,8 @@ class SCPI(Driver):
                 if 'write' not in spec:
                     raise ValueError('binary data is sent with a write command')
                 self.writes[name] = arrays.check_data(spec['data'], spec.get('parameters', {}))
+            if 'quality' in spec:
+                quality_spec(spec)
         except ValueError as error:
             raise ValueError(f'Operation {name}: {error}') from None
 
@@ -551,6 +589,16 @@ class SCPI(Driver):
                 result["reply"] = value
         if completion:
             result["completion_response"] = observed
+        if is_query and 'quality' in spec:
+            # The instrument's own word on whether the reading is valid: overrange, unlocked, invalid input.
+            status = spec['quality']['query'].format_map(arguments)
+            try:
+                reply = self.exchange(status, True)
+                self._accept(status, reply)
+                if not judged_quality(spec['quality'], reply):
+                    result['quality'] = uncertain(f'{status} returned {reply.strip()}')
+            except Exception as error:
+                result['quality'] = uncertain(f'{status} gave no status ({type(error).__name__}: {error})')
         return result
 
     def _coordinates(self, axes, arguments):

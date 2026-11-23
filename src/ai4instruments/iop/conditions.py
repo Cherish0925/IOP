@@ -461,6 +461,10 @@ def outcome(condition, results, times=None, targets=None):
     """
     results = results if isinstance(results, list) else [results]
     value, kept, targets = None, {}, targets or {}
+    # A reading its instrument reports as uncertain cannot show that the condition holds or drifted.
+    if any(isinstance(r, dict) and isinstance(r.get('quality'), dict) and r['quality'].get('level', 'good') != 'good'
+           for r in results):
+        return 'unusable', None, kept
 
     def judged(key):
         spec = condition[key]
