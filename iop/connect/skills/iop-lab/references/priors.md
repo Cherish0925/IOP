@@ -1,0 +1,95 @@
+# Physical priors
+
+An apparatus in any field measures what it is meant to only at its operating point: warmed up, at equilibrium, zeroed, calibrated against a standard, within its measuring interval, aligned, locked, in a still and quiet environment, with the sample in the state the method assumes. Establishing and keeping that point takes much of experimental work, and what it takes is mostly known to the people who run the apparatus. Write it as conditions (`guide("conditions")`): the Runtime then establishes the operating point before an experiment, keeps it during one, and records with each reading what held.
+
+## From what the operator knows to a condition
+
+Ask the operator, or read the manual, for each question; each answer is one field of the condition saved with `configure_platform(definition)`, or of an instrument's record when it belongs to that instrument wherever it is used.
+
+| Question | Field |
+| --- | --- |
+| Which short reading shows that it holds? One operation or a saved one; a saved one can return a value from an array view, such as a fitted peak | `verify` |
+| Is one reading enough, or does it take several to see that the quantity is steady? | `samples`, `interval` |
+| Which values does this experiment accept? Derive them from the uncertainty the measurement can bear | `accept`: a range, or a `target` with `within` and `relative` |
+| Is it about the level, the scatter or the drift of the readings? | `statistic`: `mean`, `std`, `span`, `slope` |
+| Below which value does the reading say nothing about it, such as no signal reaching the detector? | `usable` |
+| What restores it, in order of preference? An operation, a saved procedure, `tune`, then a step for a person | `correct` |
+| How long after a correction is the reading representative: thermal, mechanical, chemical, electronic settling? | `settle` |
+| How long does an accepted reading stay true? Start short and lengthen it from the records | `valid_for` |
+| What must hold first? | `after` |
+| Which value does the analysis use: zero, blank, background, baseline, dark level, time zero? | `reference` |
+| What should the next person know: what disturbs it, how fast it drifts, what to avoid? | `note` |
+
+- One quantity per condition; "at temperature and steady" is one condition with a target and samples, "aligned and locked" is two joined by `after`.
+- A correction acts on the system; a `reference` acts on the data. A zero, a blank or a dark level has no correction other than measuring it again.
+- Settings adjusted against each other belong to one saved operation or to one `tune` over several settings; the graph stays acyclic.
+- A correction never requires the condition it restores.
+- Events the Runtime cannot observe, such as an opened enclosure, a reconnected cable or a changed sample, are reported with `operating_conditions(invalidate="what happened", conditions=[...])`.
+
+## The forms
+
+Every prior below is one of a few forms, whatever the quantity and the field:
+
+| Form | Tolerance | Typical `kind` |
+| --- | --- | --- |
+| Steady after switch-on or a change | `samples` with `statistic` `std`, `span` or `slope` and a `maximum` | `equilibrium` |
+| At its setpoint or commanded state | `target`: the reading of the setpoint, with `within` | `equilibrium`, `operating_point` |
+| Agrees with a measurement standard | `target`: the certified value, with `within` or `relative` | `calibration` |
+| Inside the measuring interval | `minimum` and `maximum` of the reading, such as a fraction of full scale | `operating_point` |
+| Zero, blank or background known | a reading kept as `reference`, with `valid_for` | `reference` |
+| Influence quantity in range | `minimum`, `maximum` or a steady `statistic` of an environment reading | `environment` |
+| Locked or synchronized | a status or error reading `equals` its locked value | `lock` |
+| Signal sufficient | signal-to-noise, contrast or count rate above a `minimum` | `signal` |
+
+## Priors by concept
+
+Each concept names what to observe and gives cases from several fields; the values belong to the apparatus and the experiment.
+
+- **Warm-up and equilibrium.** After switch-on or a change of setting a quantity settles with a time constant; measure once its drift is below what the result can bear. Furnaces, hot plates, thermal stages and cryostats; lamps, lasers and X-ray tubes; amplifiers and frequency references after power-on; chromatographic baselines and column ovens; incubator CO₂ and humidity; vacuum after pump-down; a balance after power-on.
+- **Setpoint and commanded state.** A controlled quantity is at the value the experiment set: temperature, pressure, flow, voltage or current of a source, magnetic field, rotation speed of a centrifuge or stirrer, position of a stage or goniometer. Compare the reading with the setpoint the instrument reports, not with a number copied into the condition.
+- **Zero, offset, blank, background.** What the instrument reads without the stimulus: dark counts, the tare of a balance, the zero of a pressure gauge or power meter, a solvent blank in spectroscopy, the baseline of a chromatogram, a background spectrum, the open/short of an impedance fixture. Keep it as a `reference` so the analysis subtracts the value that held when the data were taken.
+- **Calibration against a standard.** Reading a reference whose value is known: reference weights, pH and conductivity buffers, wavelength lines of a calibration lamp, a frequency or time reference, a network-analysis calibration kit, thermometric fixed points, certified concentration standards. Records of how fast it drifts set `valid_for`.
+- **Measuring interval and linearity.** A reading means what the method assumes only inside the interval where the response is linear: below saturation, overload or compression, above the noise floor and the limit of detection. Detectors and cameras, analog-to-digital converters, amplifiers and receivers, load cells, electrodes with a known slope.
+- **Influence quantities.** Quantities that are not measured but change the result: ambient temperature, humidity, pressure, vibration, air currents, stray light, mains and radio-frequency pickup, magnetic fields, static charge. Balances and drafts, interferometers and vibration, electrophysiology and mains pickup, electron microscopes and stray fields, cell culture and humidity.
+- **Alignment, contact and position.** A path or a probe meets the sample where it should: optical paths and fiber or waveguide coupling, probe contact on a wafer, tip–sample distance, electrode placement, sample height in a diffractometer, focus. A `tune` over the actuators restores most of them.
+- **Locks and synchronization.** Phase-locked loops, frequency and cavity locks, clocks on a shared reference, trigger timing, a lock-in amplifier's reference. Instruments that latch an unlock or an overload until it is read report it reliably between observations.
+- **Order of bring-up.** Vacuum before high voltage, cooling before current, warm-up before calibration, calibration before alignment, alignment before signal: write the order the operator follows as `after`.
+- **Interaction between instruments.** One instrument disturbs another: heater switching and ground loops, pump vibration, radio-frequency pickup, a shared supply. Write the disturbing state as a condition of the disturbed measurement, or keep conflicting operations apart with shared resources.
+- **Sample state.** The sample is in the state the method assumes: equilibrated at temperature, degassed, not bleached or damaged by the measurement, at its concentration, viable. Use `kind` `sample_integrity`.
+- **History.** Backlash, magnetic and mechanical hysteresis, piezo creep: approach every position from the same side inside the saved operation that sets it, and say so in `note`.
+- **Computation.** A solver or a simulation has converged, a residual is below its tolerance, a mesh or time step no longer changes the result: conditions of a computed platform are written the same way.
+
+## Order
+
+Write `after` in the order the apparatus is brought up. A common order:
+
+environment → equilibrium → calibration → alignment → lock → reference → operating_point → signal
+
+`kind` labels a condition with one of these words or another; only `after` defines dependencies.
+
+## Example
+
+A pH meter calibrated against two buffers, a chromatograph whose baseline has settled, and a cryostat at its setpoint: three fields, the same forms.
+
+```json
+[
+  {"id": "ph.calibrated", "kind": "calibration", "description": "The electrode reads the pH 7.00 buffer",
+   "verify": {"device": "ph_meter", "operation": "read_ph"}, "samples": 3, "interval": 10,
+   "accept": {"target": 7.0, "within": 0.02},
+   "correct": {"operation": "ph.two_point_calibration"}, "valid_for": 28800,
+   "note": "Buffers at 25 °C; rinse between buffers"},
+  {"id": "hplc.baseline", "kind": "equilibrium", "description": "The detector baseline has settled",
+   "verify": {"device": "hplc", "operation": "read_absorbance"}, "samples": 30, "interval": 2,
+   "accept": {"statistic": "slope", "maximum": 3e-8}, "reference": {"baseline": ["value"]},
+   "correct": {"device": "hplc", "operation": "wait", "arguments": {"seconds": 600}},
+   "note": "3e-8 AU/s is about 1e-4 AU per hour"},
+  {"id": "cryostat.at_setpoint", "kind": "equilibrium", "description": "The sample stage is at its setpoint",
+   "verify": {"device": "cryostat", "operation": "read_kelvin", "arguments": {"input": "A"}}, "samples": 5, "interval": 2,
+   "accept": {"target": {"device": "cryostat", "operation": "read_setpoint", "arguments": {"output": 1}}, "within": 0.02},
+   "correct": {"device": "cryostat", "operation": "wait", "arguments": {"seconds": 120}}}
+]
+```
+
+## What the records teach
+
+`operating_conditions(condition="hplc.baseline")` returns how often it held, drifted or was unusable, the intervals it held, how often each correction restored it, and a drift trend with the time it is expected to reach the tolerance. Revise `valid_for`, tolerances and the order of corrections from these, and write the reason in `note`: they are this apparatus's own experience.

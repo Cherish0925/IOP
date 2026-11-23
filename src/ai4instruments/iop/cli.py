@@ -115,7 +115,7 @@ def parser():
     p.add_argument('--toolsets', help=toolset_help)
     p = sub.add_parser('guide', help='Print how to work with a laboratory, or one part of it with examples')
     p.add_argument('topic', nargs='?', default='overview',
-                   help='overview, steps, sweeps, arrays, conditions, experiments, setup or episodes')
+                   help='overview, steps, sweeps, arrays, measurements, conditions, priors, experiments, programs, setup or episodes')
     p = sub.add_parser('register'); p.add_argument('file')
     p = sub.add_parser('reconnect'); p.add_argument('device')
     p = sub.add_parser('release', help='Release an idle instrument connection'); p.add_argument('device')

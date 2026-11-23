@@ -19,7 +19,7 @@ PROMPT_STEPS = 8000
 # descriptions and the guide are always offered. Every tool belongs to exactly one toolset.
 ALWAYS = ('lab_context', 'describe_instrument', 'describe_platform', 'guide')
 # What an agent reads when a task needs it, so that tool descriptions, read on every turn, stay short.
-GUIDES = ('steps', 'sweeps', 'arrays', 'measurements', 'conditions', 'experiments', 'programs', 'setup', 'episodes')
+GUIDES = ('steps', 'sweeps', 'arrays', 'measurements', 'conditions', 'priors', 'experiments', 'programs', 'setup', 'episodes')
 TOOLSETS = {
     'setup': ('configuration_schema', 'register_instrument', 'instrument_configuration', 'register_instruments',
               'discover_instruments', 'identify_instrument', 'instrument_profiles', 'save_instrument_profile',
@@ -204,7 +204,7 @@ def create_server(client, *, http=False, selection=None):
         return client.platform(platform)
 
     @tool(annotations=read_only)
-    def guide(topic: Literal['overview', 'steps', 'sweeps', 'arrays', 'measurements', 'conditions', 'experiments', 'programs', 'setup', 'episodes'] = 'overview') -> str:
+    def guide(topic: Literal['overview', 'steps', 'sweeps', 'arrays', 'measurements', 'conditions', 'priors', 'experiments', 'programs', 'setup', 'episodes'] = 'overview') -> str:
         """Read the working method or one topic when needed. steps: ordering, bindings, saved operations. sweeps: scans, repeat, seek, stopping. arrays: selections and fits. measurements: averaging, shared calibration errors, reference normalization. conditions: requires and upkeep. experiments: submission and continuation. programs: SDK and saved progress. setup: instruments and platforms. episodes: research trajectories."""
         return guide_text(topic)
 

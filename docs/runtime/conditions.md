@@ -32,6 +32,8 @@ The dependency-graph approach draws on Kelly et al., *Physical qubit calibration
 
 Use additional labels such as `sample_integrity` where needed. A coupled adjustment can be one saved operation rather than a cycle in the condition graph. / 可按需要增加 `sample_integrity` 等标签。需要相互迭代的联合调节可以封装为一个保存的操作，条件依赖图本身保持无环。
 
+The guide `priors` (`iop guide priors`, `guide("priors")`) turns what an operator knows of an apparatus into these fields and lists priors by measurement concept, with cases from several fields: warm-up and equilibrium, setpoint, zero and blank, calibration against a standard, measuring interval and linearity, influence quantities, alignment and contact, locks, order of bring-up, interaction between instruments, sample state, history and computation. / 指南 `priors` 说明如何把操作者对平台的了解写成上述字段，并按计量概念列出各领域的常见先验：预热与平衡、设定值、零点与空白、对照标准的校准、测量区间与线性、影响量、对准与接触、锁定、建立次序、仪器间相互作用、样品状态、历史效应与计算。
+
 ## A condition / 一个条件
 
 Conditions are part of the platform description (`conditions`) and are saved with `configure_platform`. Names are unique in the laboratory. / 条件是平台说明的一部分（`conditions`），随 `configure_platform` 保存；名称在实验室内唯一。

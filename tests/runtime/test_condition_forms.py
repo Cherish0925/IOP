@@ -152,6 +152,16 @@ class FormDefinitionCase(unittest.TestCase):
         checked = check([{**base, 'accept': {'target': {'device': 'loop', 'operation': 'setpoint'}, 'within': 1}}])[0]
         self.assertEqual(checked['accept']['target']['value'], ['value'])
 
+    def test_the_example_of_the_priors_guide_is_a_set_of_conditions(self):
+        import json
+        import re
+        from ai4instruments.iop import mcp
+        # A checkout may end lines with CR LF.
+        example = json.loads(re.search(r'```json\r?\n(.*?)```', mcp.guide_text('priors'), re.S).group(1))
+        checked = check(example)
+        self.assertEqual([c['accept'].get('statistic') or type(c['accept'].get('target')).__name__ for c in checked],
+                         ['float', 'slope', 'dict'])
+
 
 if __name__ == '__main__':
     unittest.main()
