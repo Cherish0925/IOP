@@ -10,7 +10,7 @@ Ask the operator, or read the manual, for each question; each answer is one fiel
 | --- | --- |
 | Which short reading shows that it holds? One operation or a saved one; a saved one can return a value from an array view, such as a fitted peak | `verify` |
 | Is one reading enough, or does it take several to see that the quantity is steady? | `samples`, `interval` |
-| Which values does this experiment accept? Derive them from the uncertainty the measurement can bear | `accept`: a range, or a `target` with `within` and `relative` |
+| Which values does this experiment accept? Derive them from the uncertainty the measurement can bear | `accept`: a range, a `target` with `within` and `relative`, or the `bits` of a status register that must be clear |
 | Is it about the level, the scatter or the drift of the readings? | `statistic`: `mean`, `std`, `span`, `slope` |
 | Below which value does the reading say nothing about it, such as no signal reaching the detector? | `usable` |
 | What restores it, in order of preference? An operation, a saved procedure, `tune`, then a step for a person | `correct` |
@@ -20,7 +20,7 @@ Ask the operator, or read the manual, for each question; each answer is one fiel
 | Which value does the analysis use: zero, blank, background, baseline, dark level, time zero? | `reference` |
 | What should the next person know: what disturbs it, how fast it drifts, what to avoid? | `note` |
 
-- One decision per condition. "At temperature" compares a mean with a target; "steady" constrains a standard deviation, span or slope. Use separate conditions when both matter: a mean near the target can conceal oscillation. Join conditions with `after` only when one observation depends on another.
+- One decision per condition. "At temperature" compares a mean with a target; "steady" constrains a standard deviation, span or slope. Use separate conditions when both matter: a mean near the target can conceal oscillation. Join conditions with `after` only when one observation depends on another. A condition that holds for every channel, input or axis is written once with `each`.
 - Tolerances may be given with their unit, `"within": "20 mK"`, `"maximum": "1 K/min"` with `slope`, `"relative": "0.1 %"`, when the description states the unit of the reading; they are kept in that unit. Arguments of corrections may be given with theirs, such as `"5 min"`.
 - A dynamic target with a declared unit is converted to the verification unit. Without declared units both readings must already use the same numeric convention; check configurable instrument units rather than assuming them.
 - `usable` checks every sample unless it explicitly selects a statistic; one invalid reading must not be hidden by averaging.
@@ -41,7 +41,8 @@ The built-in forms cover common scalar observations. Saved methods and programs 
 | Inside the measuring interval | `minimum` and `maximum` of the reading, such as a fraction of full scale | `operating_point` |
 | Zero, blank or background known | a reading kept as `reference`, with `valid_for` | `reference` |
 | Influence quantity in range | `minimum`, `maximum` or a steady `statistic` of an environment reading | `environment` |
-| Locked or synchronized | a status or error reading `equals` its locked value | `lock` |
+| Locked or synchronized | a status reading `equals` its locked value | `lock` |
+| No fault or error reported | `bits` of a status register that must be clear, such as 60 for `*ESR?` | `operating_point` |
 | Signal sufficient | signal-to-noise, contrast or count rate above a `minimum` | `signal` |
 
 ## Priors by concept

@@ -196,7 +196,7 @@ iop conditions                                     # states now
 
 The pass is an experiment of its own, so every verification and correction is an ordinary operation with its record, reservation and monitors. The pass reserves the devices and shared resources used by all its dependencies and corrections together. Independent resources remain available to other experiments. Inside an existing experiment, reserve these resources when starting it and finish its current batch before maintenance. / 一轮保持本身是一次实验，每次观察和校正都是普通操作。整轮共同占用观察、依赖和校正所需的设备与共享资源，其他独立资源仍可并行使用。在已有实验中执行时，启动实验就要预留这些资源，并在当前批次完成后调用。
 
-Saved operations used for observations or corrections keep their own `requires`. Declare those prerequisites in the condition graph where appropriate, or establish them before maintenance. A correction should not require the condition it is meant to restore. / 观察或校正采用的已保存操作，仍保留其自身的 `requires`。把实际前提写入条件依赖图，或在保持前建立这些条件；校正方法不应要求其所要恢复的条件已经成立。
+Saved operations used for observations or corrections keep their own `requires`. Declare what they need in the condition graph with `after`, or establish it before maintenance. A correction should not require the condition it is meant to restore. / 观察或校正采用的已保存操作，仍保留其自身的 `requires`。把它们需要的条件以 `after` 写入依赖图，或在保持前建立；校正方法不应要求其所要恢复的条件已经成立。
 
 ## State / 状态
 
@@ -307,11 +307,11 @@ Record the knowledge needed by the intended experiment, then revise it as the pl
 
 1. Before a measurement counts, what must be true? Use the labels relevant to this platform. / 测量算数之前什么必须成立？采用与本平台有关的分类。
 2. For each, which short measurement tells, and which value is acceptable? / 每一项用哪个简短的测量判断，什么数值可以接受？
-3. When that measurement shows nothing at all, what do you look at first? Which are actual prerequisites? Put those in `after`. / 测量没有有效结果时先看哪里？其中哪些确实是前提？把前提写入 `after`。
+3. When that measurement shows nothing at all, what do you look at first? Which of those must hold first? Put them in `after`. / 测量没有有效结果时先看哪里？其中哪些必须先成立？写入 `after`。
 4. How do you restore it, and what do you try when that does not work? / 怎么恢复，不行时再试什么？
-5. How long does it stay true, and what disturbs it? / 能维持多久，什么会扰动它？
+5. How long does it stay true, and what disturbs it? Name the events in [`disturbances`](#disturbances--扰动). / 能维持多久，什么会扰动它？把这些事件写入 [`disturbances`](#disturbances--扰动)。
 
-Settling times, warm-up times and safe ranges come from the instrument manuals; tolerances and `valid_for` are then corrected from the records. / 稳定时间、预热时间和安全范围来自仪器手册；容差和 `valid_for` 之后根据记录修正。
+Settling times, warm-up times and safe ranges come from the instrument manuals; tolerances and `valid_for` are then corrected from the records. The guide `priors` gives the questions field by field and the priors common to apparatus of every kind. / 稳定时间、预热时间和安全范围来自仪器手册；容差和 `valid_for` 之后根据记录修正。指南 `priors` 逐个字段给出问题，以及各类装置共有的物理先验。
 
 ## Interfaces / 接口
 

@@ -40,7 +40,7 @@ run.save_result(reading.to_dict())
 
 The [reference-measurement example](https://github.com/EnvFoundry/IOP/tree/main/examples/iop/reference-measurement) runs configurable signal/reference/dark operations, optional preparation steps and precision-based stopping. Every round saves its raw operation records, a reduction and progress. Lost replies can be repeated under stable request IDs; a resumed program retains completed measurements. On explicit continuation, this method replaces a known failed reading under a new stable ID while keeping its failure record. Unknown outcomes and failed preparation graphs require explicit method-specific recovery.
 
-## Model conditions
+## Assumptions of the model
 
 Nonlinear propagation uses first-order derivatives, following [JCGM 100, §5](https://www.iso.org/sites/JCGM/GUM/JCGM100/C045315e-html/C045315e_FILES/MAIN_C045315e/05_e.html). The mean's repeatability assumes independent observations of a stationary quantity. Drift, autocorrelation, detector saturation and model discrepancy need their own model or correction. Invalid/nonfinite data are refused, never silently dropped. `normalize` refuses a zero corrected reference; near-zero references may need a nonlinear uncertainty model. The example reports no ratio when the reference's relative standard uncertainty exceeds its configured limit. A precision target is a stopping rule for this estimated uncertainty, not a confidence-interval coverage guarantee.
 
