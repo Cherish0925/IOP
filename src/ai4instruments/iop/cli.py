@@ -99,6 +99,11 @@ def parser():
     p.add_argument('--platform'); p.add_argument('--device', help='One instrument and its own conditions')
     p.add_argument('--maintain', action='store_true', help='Verify what is due and correct what drifted')
     p.add_argument('--force', action='store_true', help='With --maintain, also verify what still holds')
+    p.add_argument('--disturbance', metavar='EVENT', help='With --platform, an event the platform lists, such as an opened '
+                   'enclosure: the conditions it acts on are verified again; --invalidate adds what happened')
+    p.add_argument('--invalidate', metavar='REASON',
+                   help='Record a disturbance, such as an opened enclosure or a knocked table: the condition, or every '
+                        'condition of --platform or --device, and what depends on it are verified again before use')
     p = sub.add_parser('desktop', help='Open the native desktop window'); p.add_argument('--view', default='overview')
     sub.add_parser('shortcuts', help='Install desktop and browser application entries')
     p = sub.add_parser('context', help='Read the laboratory configuration for an agent or program')
@@ -115,7 +120,7 @@ def parser():
     p.add_argument('--toolsets', help=toolset_help)
     p = sub.add_parser('guide', help='Print how to work with a laboratory, or one part of it with examples')
     p.add_argument('topic', nargs='?', default='overview',
-                   help='overview, steps, sweeps, arrays, conditions, experiments, setup or episodes')
+                   help='overview, steps, sweeps, arrays, measurements, conditions, priors, experiments, programs, setup or episodes')
     p = sub.add_parser('register'); p.add_argument('file')
     p = sub.add_parser('reconnect'); p.add_argument('device')
     p = sub.add_parser('release', help='Release an idle instrument connection'); p.add_argument('device')
@@ -241,7 +246,15 @@ def main():
             else:
                 output(client.saved_operation(args.name) if args.name else client.saved_operations())
         elif args.command == 'conditions':
-            if args.maintain:
+            if args.disturbance:
+                output(client.invalidate([args.name] if args.name else [], args.invalidate, platform=args.platform,
+                                         disturbance=args.disturbance))
+            elif args.invalidate:
+                if not (args.name or args.platform or args.device):
+                    raise ValueError('Name the condition, --platform or --device that was disturbed')
+                names = [args.name] if args.name else [row['id'] for row in client.conditions(args.platform, args.device)]
+                output(client.invalidate(names, args.invalidate))
+            elif args.maintain:
                 output(client.maintain(args.platform, [args.name] if args.name else None, device=args.device, force=args.force))
             else:
                 output(client.condition(args.name) if args.name else client.conditions(args.platform, args.device))

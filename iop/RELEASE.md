@@ -1,24 +1,28 @@
-# IOP 0.14.0
+# IOP 0.15.0
 
-## Research methods
+## Physical conditions and measurements
 
-- Add `measurements.Estimate`, a scalar result with units and named signed standard-uncertainty contributions. Arithmetic and first-order propagation preserve covariance from a shared dark reading, reference or calibration. Shared calibration terms do not shrink with repeated sampling.
-- Add serializable, mergeable `RunningMean` for constant-memory mean and repeatability estimates. Nonlinear reduction states its first-order assumptions; unit conversion remains explicit.
-- Add a configurable reference-normalized measurement program: signal/reference/optional dark, preparation steps, raw acquisitions, result stream, uncertainty targets and resumable statistics. The included configuration runs against the ideal simulated polarization apparatus.
-- Save initial progress before the first instrument call in both resumable example programs and the program guide. An interruption during the first round can now use the existing resume operation and reuse completed readings.
-- On explicit continuation, the reference method replaces a recorded failed reading with a stable new request while reusing completed readings, including replacements. Unknown instrument outcomes and failed preparation steps require method-specific recovery.
+- Conditions can judge repeated readings by mean, standard deviation, span or slope, or compare a reading with a fixed reference or the instrument's current setpoint. Agreement and stability are separate decisions; each experiment selects the conditions it needs.
+- Arguments and tolerances accept unit-bearing strings or quantity objects. Conversion precedes parameter limits, including array items. Dynamic targets convert between declared units; absolute temperatures and temperature differences use their respective conversions. Incompatible dimensions are refused.
+- Keep instrument-reported quality with readings from SCPI status queries, status operations, EPICS alarms and OPC UA status codes. Existing non-good quality is preserved when interval or saturation checks add a reason. Native snapshots retain affected channel names and status information.
+- Verification, target and tuning readbacks retain the quality of the data they use, including selected results of saved operations. Unrelated diagnostic branches do not invalidate a usable result. A per-sample usability check cannot be hidden by averaging; an explicit statistic still selects an aggregate.
+- Revisions to a dynamic target's device or method make prior observations due. Cancelling maintenance interrupts sampling and settling waits. Tuning keeps an acceptable trial even when its gain is smaller than the search threshold.
 
-## Execution and clients
+## Platforms and agent interfaces
 
-- Keep native SDK request deadlines and cancellation responsive when a driver stops reading its input pipe. Large requests no longer block the control loop.
-- Refuse invalid or overflowing program deadlines before opening output files or launching the program.
-- Compose TypeScript caller cancellation with the connection timeout for JSON, uploads, downloads and stream writes. Providing an AbortSignal no longer removes the timeout; older hosts without AbortSignal.any retain the same behavior. Archive streaming remains caller-controlled.
-- Add the on-demand `measurements` guide across MCP, HTTP, CLI, Python, TypeScript and host packages. Measurement prompts choose between step graphs, continuous experiments and full programs. Refresh the architecture and contributor entry points.
+- Platforms name physical disturbances and the conditions each affects. MCP can invalidate a named condition, a list, a platform or a device; dependent conditions become due through the existing dependency graph.
+- Add the on-demand `priors` guide across HTTP, CLI, MCP and clients. It explains reference/sample context, calibration, equilibrium, transient experiments, measurement intervals and apparatus-specific dependencies.
+- Add a simulated fiber-coupled optical bench with warm-up, mechanical and thermal drift, coupling, saturation and dark references. Its device models remain separate from the runtime's general scheduling and condition mechanisms.
+- Add a Lake Shore Model 336 description for temperature, input validity, setpoints and heater state. Setpoints follow the control sensor's preferred units; the description does not assume kelvin. The profile covers the listed commands and is exercised with protocol fixtures.
 
-IOP Connect is 1.8.0; runtime, native executor, TypeScript client and DeepSeek package are 0.14.0. Existing records and interfaces are retained.
+IOP Connect and the source plugin manifests are 1.9.0. The runtime, native executor, TypeScript client and DeepSeek package are 0.15.0. Existing stored experiments and numeric result shapes are retained. Unit-bearing inputs are optional. Sampled `usable` guards now check each sample by default; use an explicit `statistic` for an aggregate guard.
 
 ## 中文
 
-新增保留共享误差的测量归约：带单位和具名误差分量的估计值、协方差与一阶传播、可保存和合并的流式均值。参考归一化程序可配置仪器和准备步骤，保存原始采集、结果流与统计进度，并按标准不确定度目标或最大次数停止。示例使用理想偏振模拟装置。
+工作条件新增重复读数的均值、标准差、极差和斜率判断，以及对固定参考值或仪器当前设定值的比较。达到目标与保持稳定分别判断；各实验自行选择依赖条件。参数和容差支持带单位字符串及数量对象，数组元素同样先换算再判断范围，动态目标按已声明单位换算，绝对温度与温差分别处理。
 
-两个可续跑示例都在第一次仪器操作前保存初始进度，首次采集期间中断也可恢复。Rust 执行器在驱动不读取大请求时继续响应时限与控制消息；无效时限在启动和写文件前拒绝。TypeScript 同时保留调用方取消与请求时限。新增测量指南并更新宿主入口、研究提示和架构说明，保留已有数据与接口。
+读数保留 SCPI、EPICS、OPC UA 和状态操作提供的质量信息。核对、目标和调节回读使用实际数据来源的质量，封装方法不会因提取标量而丢掉它，无关的诊断分支也不会使有效结果失效。默认逐样本检查可用性，避免平均掩盖无效样本；显式指定统计量时仍可判断整体。目标方法或设备修订后重新观察，取消保持过程可中断采样和稳定等待。
+
+平台可以声明扰动及其影响的条件。新增按需读取的物理先验指南、包含预热与漂移等机制的光纤耦合模拟平台，以及 Lake Shore 336 部分命令的型号说明。指南区分参考物与未知样品，按具体方法定义依赖，不规定所有领域共用一套实验顺序。
+
+IOP Connect 与源码插件清单统一为 1.9.0，其余发行组件为 0.15.0，保留已有实验记录和数值结果结构。新增仪器型号以协议模拟验证，未在本次开发环境中连接实物。

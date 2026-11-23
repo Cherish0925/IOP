@@ -31,6 +31,7 @@ def setUpModule():
         readback = pvproperty(value=0.0, name='BL:MOT:RBV', units='mm', read_only=True)
         shutter = pvproperty(value='Closed', name='BL:SHUTTER', enum_strings=['Closed', 'Open'], dtype=ChannelType.ENUM)
         spectrum = pvproperty(value=[float(n) for n in range(500)], name='BL:DET:SPECTRUM', read_only=True)
+        bias = pvproperty(value=[0.0, 0.0], name='BL:DET:BIAS', units='V')
         label = pvproperty(value='sample A', name='BL:DET:LABEL', dtype=ChannelType.STRING)
 
         @position.putter
@@ -86,6 +87,59 @@ class EPICSCase(unittest.TestCase):
         self.assertEqual(run.wait(10)['state'], 'failed')
         self.assertTrue(run.info()['operation_records'][0]['outcome_unknown'])
         self.assertIn('device:beamline', self.engine.resource_holds)
+
+    def test_array_puts_convert_each_item_to_the_pv_unit(self):
+        self.register(pvs=['DET:BIAS'])
+        run = self.client.submit([
+            {'id': 'set', 'device': 'beamline', 'operation': 'set.DET:BIAS',
+             'arguments': {'value': ['250 mV', {'value': 1, 'unit': 'V'}]}},
+            {'id': 'read', 'device': 'beamline', 'operation': 'get.DET:BIAS'}])
+        self.assertEqual(run.result(10)['read']['values'], [0.25, 1])
+        self.assertEqual(run.info()['operation_records'][0]['arguments']['value'], [0.25, 1])
+
+    def test_an_alarm_on_the_validity_of_a_value_makes_it_uncertain(self):
+        from types import SimpleNamespace
+        from caproto import AlarmSeverity, AlarmStatus
+        from ai4instruments.iop.epics_driver import EPICS
+        entry = {'kind': 'DOUBLE', 'unit': 'mm', 'count': 1, 'labels': []}
+
+        def read(severity, status):
+            metadata = SimpleNamespace(severity=severity.value, status=status.value, timestamp=time.time())
+            return EPICS._reading(None, 'get.MOT:RBV', entry, SimpleNamespace(metadata=metadata, data=[2.5]), None)
+        self.assertNotIn('quality', read(AlarmSeverity.NO_ALARM, AlarmStatus.NO_ALARM))
+        # A limit alarm is the state of the process; the value is what it is.
+        limited = read(AlarmSeverity.MAJOR_ALARM, AlarmStatus.HIHI)
+        self.assertEqual((limited['alarm'], 'quality' in limited), ({'severity': 'MAJOR_ALARM', 'status': 'HIHI'}, False))
+        # A failed link or no communication says the value may not be what the process is.
+        self.assertEqual(read(AlarmSeverity.MAJOR_ALARM, AlarmStatus.COMM)['quality'],
+                         {'level': 'uncertain', 'source': 'epics', 'detail': 'MAJOR_ALARM COMM'})
+        with self.assertRaisesRegex(RuntimeError, 'INVALID'):
+            read(AlarmSeverity.INVALID_ALARM, AlarmStatus.UDF)
+
+    def test_snapshots_keep_alarm_quality_and_refuse_invalid_values(self):
+        from types import SimpleNamespace
+        from caproto import AlarmSeverity, AlarmStatus
+        from ai4instruments.iop.epics_driver import EPICS
+        driver = object.__new__(EPICS)
+        driver.timeout, driver.pvs = 0.1, {}
+        for name, severity, status in (('valid', AlarmSeverity.NO_ALARM, AlarmStatus.NO_ALARM),
+                                       ('limit', AlarmSeverity.MAJOR_ALARM, AlarmStatus.HIHI),
+                                       ('link', AlarmSeverity.MAJOR_ALARM, AlarmStatus.COMM)):
+            response = SimpleNamespace(data=[2.5], metadata=SimpleNamespace(
+                severity=severity.value, status=status.value, timestamp=time.time()))
+            channel = SimpleNamespace(read=lambda callback, response=response, **kwargs: callback(response))
+            driver.pvs[name] = {'channel': channel, 'kind': 'DOUBLE', 'unit': 'mm', 'count': 1, 'labels': []}
+        result = driver._snapshot()
+        self.assertEqual(result['variables'], {'valid': 2.5, 'limit': 2.5, 'link': 2.5})
+        self.assertEqual(result['alarms']['limit'], {'severity': 'MAJOR_ALARM', 'status': 'HIHI'})
+        self.assertEqual(result['quality'], {'level': 'uncertain', 'source': 'epics',
+                                              'detail': 'link: MAJOR_ALARM COMM'})
+        del driver.pvs['link']
+        self.assertNotIn('quality', driver._snapshot())
+        response.metadata.severity, response.metadata.status = AlarmSeverity.INVALID_ALARM, AlarmStatus.UDF
+        driver.pvs['invalid'] = {'channel': channel, 'kind': 'DOUBLE', 'unit': 'mm', 'count': 1, 'labels': []}
+        with self.assertRaisesRegex(RuntimeError, 'snapshot invalid.*INVALID'):
+            driver._snapshot()
 
     def test_missing_pvs_are_named(self):
         with self.assertRaisesRegex(Exception, 'No IOC answered for BL:NOPE'):

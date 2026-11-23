@@ -9,6 +9,10 @@ A step is one operation. With `device` it is a Basic Operation of that instrumen
   "bindings": {"angle_deg": {"step": "m", "path": ["angle"]}}}]
 ```
 
+## Quantities with units
+
+A numeric argument whose parameter declares a unit can be given with its own: `{"value": 250, "unit": "mV"}` or `"250 mV"`. It is converted to the declared unit before limits are applied, and the record holds the converted number. A unit of another quantity is refused, so are rad/s for Hz, and so is a unit for a parameter that declares none. Units are SI symbols with prefixes and powers (`mK`, `µm`, `m/s^2`, `J/(mol K)`), `°C`, `°F`, `deg`, `min`, `h`, `bar`, `Torr`, `atm`, `psi`, `eV`, `L`, `G`, `%` and `ppm`; logarithmic units such as `dBm` are given as plain numbers in the declared unit. Sweep and seek ranges are numbers in the declared unit.
+
 ## Order
 
 - `submit_experiment`: a step starts once the steps it names in `after` have completed and its instruments are free; steps without `after` are independent and may overlap. A binding also makes its source a predecessor.

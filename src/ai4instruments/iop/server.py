@@ -208,7 +208,8 @@ class Handler(BaseHTTPRequestHandler):
             elif parts == ['v1', 'upkeep'] and method == 'GET':
                 result = engine.conditions.upkeep_status(query.get('platform'))
             elif parts == ['v1', 'conditions', 'invalidate'] and method == 'POST':
-                result = engine.conditions.invalidate(body['conditions'], body['reason'])
+                result = engine.conditions.invalidate(body.get('conditions', []), body.get('reason'), body.get('platform'),
+                                                      body.get('disturbance'))
             elif len(parts) == 3 and parts[:2] == ['v1', 'conditions'] and method == 'GET':
                 result = engine.conditions.describe(parts[2])
             elif len(parts) == 3 and parts[:2] == ['v1', 'maintenance'] and method == 'GET':

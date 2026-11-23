@@ -115,6 +115,30 @@ class OPCUACase(unittest.TestCase):
         self.client.resolve_resources(['device:reactor'], 'Setpoint reads 25 on the controller panel')
         self.assertEqual(self.client.invoke('reactor', 'get.Reactor.Setpoint')['value'], 25.0)
 
+    def test_native_quality_is_preserved_by_reads_and_snapshots(self):
+        from asyncua import ua
+        self.register()
+        self.nodes['setpoint'].write_attribute(ua.AttributeIds.Value, ua.DataValue(
+            ua.Variant(25.0, ua.VariantType.Float), StatusCode=ua.StatusCode(ua.StatusCodes.UncertainSensorNotAccurate)))
+        for operation in ('get.Reactor.Setpoint', 'snapshot'):
+            run = self.client.submit([{'id': 'read', 'device': 'reactor', 'operation': operation}])
+            reading = run.result(10)['read']
+            self.assertEqual(reading['quality']['level'], 'uncertain')
+            self.assertEqual(reading['quality']['source'], 'opcua')
+            self.assertIn('UncertainSensorNotAccurate', reading['quality']['detail'])
+            self.assertIn('quality', run.info()['operation_records'][0]['in_doubt'])
+            if operation == 'snapshot':
+                self.assertEqual(reading['variables']['Reactor.Setpoint'], 25.0)
+                self.assertEqual(reading['statuses']['Reactor.Setpoint'], 'UncertainSensorNotAccurate')
+            else:
+                self.assertEqual(reading['value'], 25.0)
+                self.assertEqual(reading['status'], 'UncertainSensorNotAccurate')
+        self.nodes['setpoint'].write_attribute(ua.AttributeIds.Value, ua.DataValue(
+            ua.Variant(25.0, ua.VariantType.Float), StatusCode=ua.StatusCode(ua.StatusCodes.BadSensorFailure)))
+        for operation in ('get.Reactor.Setpoint', 'snapshot'):
+            with self.assertRaisesRegex(Exception, 'BadSensorFailure'):
+                self.client.invoke('reactor', operation)
+
     def test_configuration_is_checked_before_connecting(self):
         from ai4instruments.iop.drivers import make_driver
         for config, message in (({}, 'endpoint'), ({'endpoint': self.endpoint, 'password': 'x'}, 'password_env'),

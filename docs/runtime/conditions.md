@@ -32,6 +32,8 @@ The dependency-graph approach draws on Kelly et al., *Physical qubit calibration
 
 Use additional labels such as `sample_integrity` where needed. A coupled adjustment can be one saved operation rather than a cycle in the condition graph. / 可按需要增加 `sample_integrity` 等标签。需要相互迭代的联合调节可以封装为一个保存的操作，条件依赖图本身保持无环。
 
+The guide `priors` (`iop guide priors`, `guide("priors")`) turns what an operator knows of an apparatus into these fields and lists priors by measurement concept, with cases from several fields: warm-up and equilibrium, setpoint, zero and blank, calibration against a standard, measuring interval and linearity, influence quantities, alignment and contact, locks, order of bring-up, interaction between instruments, sample state, history and computation. / 指南 `priors` 说明如何把操作者对平台的了解写成上述字段，并按计量概念列出各领域的常见先验：预热与平衡、设定值、零点与空白、对照标准的校准、测量区间与线性、影响量、对准与接触、锁定、建立次序、仪器间相互作用、样品状态、历史效应与计算。
+
 ## A condition / 一个条件
 
 Conditions are part of the platform description (`conditions`) and are saved with `configure_platform`. Names are unique in the laboratory. / 条件是平台说明的一部分（`conditions`），随 `configure_platform` 保存；名称在实验室内唯一。
@@ -53,14 +55,50 @@ Conditions are part of the platform description (`conditions`) and are saved wit
 | Field | Meaning / 含义 |
 | --- | --- |
 | `verify` | A short reference measurement: one device operation, or a saved operation without `device`, whose named results can come from [views of arrays](operations.md), such as the frequency of a resonance / 一次简短的基准测量：一个设备操作，或不带 `device` 的已保存操作，其具名结果可以取自[数组的视图](operations.md)，例如谐振频率 |
-| `accept` | The tolerance: `value` is the path into the result, with `minimum`, `maximum` or `equals` / 容差：`value` 是结果中的路径，配 `minimum`、`maximum` 或 `equals` |
-| `usable` | Whether the reading is usable for this decision; otherwise maintenance revisits declared dependencies / 读数是否适用于这次判断；否则保持过程会重新查看已声明的依赖 |
+| `samples`, `interval` | Readings one verification takes and the seconds between them; a tolerance judges a statistic of them / 一次核对取的读数个数及其间隔秒数；容差判断它们的统计量 |
+| `accept` | The tolerance: `value` is the path into the result, with `minimum`, `maximum` or `equals`; or with a `target` and `within`, `relative` or both. `statistic` chooses what several samples give: `mean` (default), `std`, `span` or `slope` per second / 容差：`value` 是结果中的路径，配 `minimum`、`maximum` 或 `equals`；或配 `target` 与 `within`、`relative`。`statistic` 选择多个读数的统计量：`mean`（默认）、`std`、`span` 或每秒 `slope` |
+| `usable` | Every sample must pass unless an explicit `statistic` selects an aggregate; otherwise maintenance revisits declared dependencies / 默认每个样本均须可用；显式指定 `statistic` 时判断统计量，否则保持过程重新查看已声明的依赖 |
 | `reference` | Values of the accepted verification kept with the experiments that rely on it, such as a dark level used in the analysis / 通过核对时保留的数值，随依赖它的实验保存，例如分析时要扣除的暗计数 |
 | `correct` | What restores the condition, tried in order, each followed by a verification: an operation, or [`tune`](#tuning--调节). A step of a `manual` device asks a person / 恢复该条件的做法，按顺序尝试，每个之后核对一次：一个操作，或 [`tune`](#tuning--调节)；`manual` 设备的步骤交给人 |
 | `settle` | Seconds between a correction and its verification / 校正之后到核对之前等待的秒数 |
 | `valid_for` | Seconds an accepted verification is trusted; without it there is no time-based expiry / 一次通过的观察有效的秒数；不写则没有按时间到期的规则 |
 | `after` | Conditions of this platform that must hold first / 必须先成立的本平台条件 |
 | `kind`, `note` | An extensible category and contextual explanation / 可扩展的分类与背景说明 |
+
+### Forms that hold for any instrument / 适用于任何仪器的形式
+
+Two forms of tolerance express what most operating points come down to, whatever the quantity: / 两种容差形式覆盖大多数工作点，与被测量的种类无关：
+
+- **Steady readings** (stability, repeatability, drift): several samples, judged by their standard deviation, span or slope. A furnace or a cryostat at equilibrium, a laser's power, a pressure, a flow, a balance after taring, a baseline before a titration. / **读数稳定**（稳定性、重复性、漂移）：取多个读数，以标准差、极差或斜率判断。炉温或低温恒温器达到平衡、激光功率、压力、流量、去皮后的天平、滴定前的基线。
+
+```json
+{"id": "furnace.steady", "kind": "equilibrium", "description": "The furnace temperature has settled",
+ "verify": {"device": "furnace", "operation": "read_temperature"}, "samples": 10, "interval": 6,
+ "accept": {"statistic": "slope", "maximum": 0.001},
+ "correct": {"device": "furnace", "operation": "wait", "arguments": {"seconds": 300}}}
+```
+
+- **Agreement with a value** (deviation from a setpoint or a reference value): the reading compared with the setpoint the instrument holds, or with the certified value of a standard, within an absolute tolerance, a relative one or their sum. A temperature, a pressure or a voltage at its setpoint; a stage at its commanded position; a reference weight, a buffer solution, a frequency standard or a calibration kit reading its certified value. The value recorded is the deviation, so the drift trend and its forecast follow it. / **与给定值一致**（相对设定值或标准值的偏差）：读数与仪器保持的设定值、或标准器的标称值比较，容差为绝对值、相对值或二者之和。温度、压力、电压达到设定值；位移台到达指令位置；标准砝码、缓冲溶液、频率标准或校准件读出其标称值。记录的数值是偏差，漂移趋势和预测都据此计算。
+
+```json
+{"id": "cryostat.at_setpoint", "kind": "equilibrium", "description": "The sample is at its setpoint",
+ "verify": {"device": "cryostat", "operation": "read_kelvin", "arguments": {"input": "A"}}, "samples": 5, "interval": 2,
+ "accept": {"target": {"device": "cryostat", "operation": "read_setpoint", "arguments": {"output": 1}}, "within": 0.02}}
+```
+
+```json
+{"id": "balance.calibrated", "kind": "calibration", "description": "The 100 g reference weight reads its certified mass",
+ "verify": {"device": "balance", "operation": "read_mass"}, "samples": 3,
+ "accept": {"target": 100.0002, "within": 0.0003}, "correct": {"device": "balance", "operation": "calibrate_internal"}}
+```
+
+Tolerances may be given with their units when the description states the unit of the reading: `"within": "20 mK"`, `"target": "-253.15 °C"`, `"maximum": "1 K/min"` with `slope`, `"maximum": "5 mK"` with `std`, `"relative": "0.1 %"`. They are kept in the unit of the reading, spreads and drifts as differences, and a unit of another quantity is refused. / 当说明写明读数单位时，容差可带单位给出，按读数单位保存，标准差、极差与漂移按差值换算；量纲不同的单位被拒绝。
+
+Agreement and stability are separate decisions: a mean near the target can hide oscillation. Declare both conditions when the measurement needs both. Dynamic targets convert between declared units; without declarations, their numeric units must already agree. A Lake Shore 336 setpoint uses its control sensor’s preferred units, so it must not be assumed to be in kelvin. / 达到设定值与稳定是不同判断，均值接近目标可能掩盖振荡；两者都需要时分别声明条件。动态目标按已声明单位换算，未声明时须已使用相同数值单位。Lake Shore 336 的设定值采用控制传感器的首选单位，不能默认按开尔文解释。
+
+Quantity objects such as `{"value": 20, "unit": "mK"}` and strings such as `"20 mK"` express the same tolerance. Unreliable verification, target or setting readbacks cannot establish a condition or initiate tuning from that readback. Cancelling maintenance interrupts sampling and settling waits. / 数量对象与带单位字符串等价。不可靠的核对、目标值或设定值回读不能使条件成立，也不能据此开始调节。取消保持过程会中断采样间隔和稳定等待。
+
+A `reference` taken over several samples keeps their mean, as a dark level or a baseline is averaged. `tune` works on either form: on a target it brings the deviation to zero. / 多个读数下的 `reference` 保留其平均值，如暗电平或基线取平均。`tune` 对两种形式都适用：对目标值时把偏差调到零。
 
 A correction acts on the system. A `reference` acts on the data: the condition "the dark level was measured within the last half hour" has no correction beyond measuring again, and its value travels with every experiment that requires it. / 校正作用于系统；`reference` 作用于数据：“半小时内测过暗计数”这个条件的校正就是再测一次，它的数值随每个依赖它的实验保存。
 
@@ -84,6 +122,8 @@ Some conditions belong to one instrument wherever it is used: a laser diode at i
 - A model description can carry them. Every instrument that registers with that description, or is identified as that model, gets those conditions unless its record defines the same name; a condition is left out when an operation it needs is not among the instrument's operations or `allowed_operations`. / 型号说明可以携带它们。按该说明登记或被识别为该型号的每台仪器都会得到这些条件，记录中同名的条件优先；所需操作不在仪器操作或 `allowed_operations` 中的条件不加入。
 
 The built-in SR830 description carries four: `reference_locked`, `input_in_range`, `filter_in_range` and `output_in_range`, each read from one LIA status bit. These bits stay set until they are read, so an observation reports whether an unlock or overload occurred since the previous one; data taken in between by experiments that relied on the condition are marked `in_doubt`. / 内置的 SR830 说明带有四个条件，各读一个 LIA 状态位。这些位读取前保持置位，所以一次观察说明的是自上次观察以来是否发生过失锁或过载；依赖该条件的实验在这期间采集的数据被标为 `in_doubt`。
+
+The Lake Shore 336 description carries `heater1_ok` and `heater2_ok`, read with HTRST?: an open load or a short stays reported until it is read, so a cryostat temperature controlled while its heater delivered no power is found at the next observation. / Lake Shore 336 说明带有 `heater1_ok` 与 `heater2_ok`，由 HTRST? 读取：加热器开路或短路在读取前一直保留，因此加热器未输出功率期间的控温会在下一次观察时被发现。
 
 ## Tuning / 调节
 
@@ -115,6 +155,8 @@ iop platform apply examples/iop/conditions.json
 iop conditions --platform demo-bench --maintain   # verifies, corrects, reports
 iop conditions                                     # states now
 ```
+
+[`examples/iop/optical-bench`](../../examples/iop/optical-bench/README.md) simulates a fiber-coupled laser bench whose warm-up, thermal drift, mechanical disturbances, camera saturation and dark current follow physical models, and keeps each as a condition. / 该实例模拟一台光纤耦合激光平台，其预热、热漂移、机械扰动、相机饱和与暗电流均按物理模型给出，并各自作为工作条件维持。
 
 ## Maintaining / 保持
 
@@ -158,6 +200,29 @@ Before each dependent step starts, the Runtime checks the recorded condition sta
 ## Disturbances / 扰动
 
 `invalidate(conditions, reason)` records that something happened (the enclosure was opened, a cable was changed) and makes those conditions and their dependents due. Re-observing only the upstream condition does not silently restore downstream validity. A monitor reading that leaves its limits does the same for the conditions verified or corrected with that device. / `invalidate(conditions, reason)` 记录发生了什么（开过罩子、换过线缆），使这些条件及下游依赖待确认。只重新观察上游，不会自动恢复下游条件。监视读数越限时，用到该设备的条件同样变为待核对。
+
+A platform names the disturbances its operators report and what each acts on, so that the knowledge of which conditions an event disturbs stays with the platform: / 平台写明操作者会报告的扰动及其作用的条件，哪个事件影响哪些条件的知识随平台保存：
+
+```json
+"disturbances": {
+  "enclosure_opened": {"description": "Air currents and a temperature step for several minutes",
+                       "conditions": ["path.aligned"]},
+  "sample_changed": {"description": "A new sample: its equilibrium and its baseline are new",
+                     "conditions": ["sample.equilibrated", "detector.baseline"]},
+  "power_cycled": {"description": "The source was switched off and on again: it warms up anew",
+                   "conditions": ["source.stable"]}
+}
+```
+
+`invalidate(platform=..., disturbance="enclosure_opened")` makes the listed conditions and their dependents due; the reason recorded is the event with its description, or with what the operator saw when a reason is given. List only what the event acts on directly; what depends on it follows. / `invalidate(platform=..., disturbance="enclosure_opened")` 使所列条件及其下游待核对；记录的原因为事件名加其说明，给出 reason 时为事件名加操作者看到的情况。只列出事件直接作用的条件，下游依赖自动跟随。
+
+At the bench: / 在平台旁：
+
+```sh
+iop conditions --platform bench --disturbance enclosure_opened
+iop conditions --platform bench --disturbance sample_changed --invalidate "sample 12, a thinner film"
+iop conditions path.aligned --invalidate "the table was knocked"
+```
 
 ## What the records say / 记录能说明什么
 

@@ -101,6 +101,33 @@ class MCPCase(unittest.TestCase):
     setUp = fixture.ServiceCase.setUp
     tearDown = fixture.ServiceCase.tearDown
 
+    def test_invalidation_resolves_the_selected_condition_platform_or_device(self):
+        import asyncio
+        from ai4instruments.iop import mcp
+        server = mcp.create_server(self.client)
+        for device in ('axis', 'other'):
+            self.client.register({'id': device, 'driver': 'simulated', 'config': {'kind': 'stage'},
+                'conditions': [{'id': 'position', 'description': 'Position is in range',
+                    'verify': {'operation': 'position'},
+                    'accept': {'value': ['angle_actual'], 'minimum': -90, 'maximum': 90}}]})
+            self.client.configure_platform({'schema_version': 1, 'id': device + '-bench', 'devices': [device]})
+            self.assertTrue(self.client.maintain(device=device)['holds'])
+
+        def invalidate(**selection):
+            found = asyncio.run(server.call_tool('operating_conditions',
+                dict(invalidate='The mount was adjusted', **selection)))
+            content = found[0] if isinstance(found, tuple) else getattr(found, 'content', found)
+            return json.loads(content[0].text)
+
+        for selection in ({'condition': 'axis.position'}, {'platform': 'axis-bench'}, {'device': 'axis'}):
+            rows = invalidate(**selection)
+            self.assertEqual([row['id'] for row in rows], ['axis.position'])
+            self.assertEqual(rows[0]['reason'], 'The mount was adjusted')
+            self.assertEqual(self.client.condition('other.position')['state'], 'holds')
+        rows = invalidate(condition='axis.position', conditions=['axis.position', 'other.position'])
+        self.assertEqual({row['id'] for row in rows}, {'axis.position', 'other.position'})
+        self.assertEqual(len(rows), 2)
+
     def test_guides_are_read_when_needed_and_name_what_exists(self):
         import asyncio
         import re
@@ -421,6 +448,11 @@ class MCPCase(unittest.TestCase):
                 self.assertEqual(call('operating_conditions', {'condition':'aux.in_range'})['statistics']['verifications'], 1)
                 due = call('operating_conditions', {'invalidate':'the mount was touched', 'conditions':['aux.in_range']})
                 self.assertEqual((due[0]['state'], due[0]['reason']), ('due', 'the mount was touched'))
+                touched = {'mount_touched': {'description': 'Someone touched the mount', 'conditions': ['aux.in_range']}}
+                call('configure_platform', {'definition':{'schema_version':1, 'id':'aux-bench', 'devices':['aux'],
+                                                         'conditions':[ready], 'disturbances':touched}, 'expected_revision':1})
+                due = call('operating_conditions', {'disturbance':'mount_touched', 'platform':'aux-bench'})
+                self.assertEqual((due[0]['state'], due[0]['reason']), ('due', 'mount_touched: Someone touched the mount'))
                 # A program is named, and relies on conditions, as the other forms of experiment do.
                 with tempfile.TemporaryDirectory() as folder:
                     Path(folder, 'experiment.py').write_bytes(b'')

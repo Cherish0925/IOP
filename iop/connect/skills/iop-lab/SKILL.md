@@ -5,7 +5,7 @@ description: Use IOP to operate instruments or scientific software, submit exper
 
 # Operate a laboratory
 
-The laboratory is a service that keeps instruments, platforms, methods, experiments and their records. It goes on working when this connection closes. These guides describe IOP 0.14.0; check `lab_context.service.version` and upgrade an older service while idle before using newer options.
+The laboratory is a service that keeps instruments, platforms, methods, experiments and their records. It goes on working when this connection closes. These guides describe IOP 0.15.0; check `lab_context.service.version` and upgrade an older service while idle before using newer options.
 
 ## Working method
 
@@ -32,6 +32,7 @@ Each is short, with examples. Read one when the task needs it: `guide(topic)`, o
 | `arrays` | `read_array`: summaries, windows, maps, lines, crossings, fits |
 | `measurements` | Streaming means, correlated uncertainty, dark/reference correction, precision stopping |
 | `conditions` | What an experiment relies on: `requires`, maintenance, `upkeep`, data in doubt |
+| `priors` | Writing what is known of an apparatus as conditions: the questions, the general forms, priors by concept across fields |
 | `experiments` | The three forms, following a run, failure and continuation, files, archives |
 | `programs` | Writing a research program: the package, the SDK inside it, saved progress |
 | `setup` | Describing an instrument, platforms, limits, manual steps, held resources |
@@ -41,6 +42,8 @@ Each is short, with examples. Read one when the task needs it: `guide(topic)`, o
 
 - Record what was observed: `resolve_resources` takes the instrument state that was seen, `report_manual_step` what the person stated.
 - A failed operation retains its record when continued under the same experiment. An unknown instrument outcome keeps its resources held until the instrument state is observed and resolved; it is not retried automatically.
+- A reading the instrument reports as uncertain, or outside the measuring interval its description states, carries `quality` and is in doubt; a verification that reads it is unusable.
+- A number given with its unit is converted to the unit the operation declares; a unit of another quantity is refused before the instrument is called.
 - Nothing asked for is left out without a word: a tool argument, a submission field or a step field that does not exist is refused, and what is refused names the step and the nearest names that exist.
 - Timing that needs a hardware clock or trigger stays on the instrument.
 - Paths of programs, downloads and archives are on the computer that runs this connection.

@@ -16,6 +16,8 @@ Each point is an ordinary operation with its own record; what the points return 
 
 ## repeat
 
+`"retake": true` takes again, before the next point, a point whose reading was uncertain or taken while a condition it relied on was lost: `guide("conditions")`.
+
 `"repeat": 20` runs the step 20 times in turn, at each point of its sweep if it has one; the readings are gathered over a last axis named `repeat`, whose summary gives their mean, spread and error.
 
 ## until

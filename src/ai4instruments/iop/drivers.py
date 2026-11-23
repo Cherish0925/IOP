@@ -7,7 +7,8 @@ import math
 import socket
 import time
 from concurrent.futures import CancelledError
-from . import arrays, text_protocol
+from decimal import Decimal, InvalidOperation
+from . import arrays, text_protocol, units
 from .store import now
 
 
@@ -20,6 +21,32 @@ def span(field):
     if "minimum" in field and "maximum" in field:
         return f"outside {field['minimum']} to {field['maximum']}{unit(field)}"
     return f"above {field['maximum']}{unit(field)}" if "maximum" in field else f"below {field['minimum']}{unit(field)}"
+
+
+def in_unit(name, field, value):
+    """A number given with its unit, {"value": 5, "unit": "mV"} or "5 mV", in the unit the parameter declares.
+
+    A unit of another quantity is refused, as is a unit for a parameter that declares none."""
+    try:
+        given = units.quantity(value)
+    except ValueError as error:
+        raise ValueError(f"{name}: {error}") from None
+    if given is None:
+        return value
+    if not isinstance(field.get("unit"), str) or not field["unit"]:
+        raise ValueError(f"{name} declares no unit; give a plain number")
+    try:
+        converted = units.convert(given[0], given[1], field["unit"])
+    except ValueError as error:
+        raise ValueError(f"{name} is in {field['unit']}: {error}") from None
+    if field.get("type") == "integer":
+        if not math.isfinite(converted):
+            raise ValueError(name + " must be a finite number")
+        rounded = round(converted)
+        if abs(converted - rounded) > 1e-9:
+            raise ValueError(f"{name} is {given[0]} {given[1]} = {converted:g} {field['unit']}, not an integer")
+        return rounded
+    return converted
 
 
 def parameters(spec, supplied):
@@ -41,6 +68,7 @@ def parameters(spec, supplied):
             value = supplied[name]
         kind = field.get("type")
         if kind in {"number", "integer"}:
+            value = in_unit(name, field, value)
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
                 raise ValueError(name + " must be a finite number")
             if kind == "integer" and not isinstance(value, int):
@@ -57,8 +85,8 @@ def parameters(spec, supplied):
             if len(value) < field.get("minItems",0) or len(value) > field.get("maxItems",1000000):
                 raise ValueError(name + " has an unsupported length")
             if "items" in field:
-                for item in value:
-                    parameters({"parameters":{"item":field["items"]}},{"item":item})
+                item_field = {**({'unit': field['unit']} if 'unit' in field else {}), **field['items']}
+                value = [parameters({"parameters": {"item": item_field}}, {"item": item})['item'] for item in value]
         elif kind == "object" and not isinstance(value,dict):
             raise ValueError(name + " must be an object")
         if "enum" in field and value not in field["enum"]:
@@ -124,6 +152,48 @@ def operation_parameters(operations, where='Operations'):
         raise ValueError(where + ' maps operation names to description objects')
     for name, spec in operations.items():
         parameter_definitions(spec.get('parameters', {}), f'{where}.{name} parameters')
+
+
+def quality_spec(spec):
+    """Check how the validity of a reading is read: a status query, good when equal to a value or with none of some bits."""
+    quality = spec['quality']
+    if isinstance(quality, dict) and 'operation' in quality:
+        return quality  # Another operation of the instrument; checked against its description at registration.
+    if 'query' not in spec:
+        raise ValueError('quality qualifies a reading; it belongs to a query')
+    if (not isinstance(quality, dict) or quality.keys() - {'query', 'equals', 'bits', 'description'}
+            or not isinstance(quality.get('query'), str) or not quality['query'] or len({'equals', 'bits'} & quality.keys()) != 1):
+        raise ValueError('quality is {"query": status command, "equals": the reply of a valid reading} or '
+                         '{"query": ..., "bits": the status bits that mark it invalid}')
+    if 'bits' in quality and (isinstance(quality['bits'], bool) or not isinstance(quality['bits'], int) or quality['bits'] < 1):
+        raise ValueError('quality bits is a positive integer mask')
+    return quality
+
+
+def judged_quality(quality, reply):
+    """Whether a status reply, text or a value read from a result, says the reading is valid."""
+    text = reply.strip().strip('"') if isinstance(reply, str) else reply
+    if 'bits' in quality:
+        try:
+            status = Decimal(str(text))
+        except InvalidOperation:
+            raise ValueError('a status bit mask must be an integer') from None
+        if not status.is_finite() or status != status.to_integral_value():
+            raise ValueError('a status bit mask must be an integer')
+        return int(status) & quality['bits'] == 0
+    expected = quality['equals']
+    if not isinstance(text, str):
+        return text == expected
+    if isinstance(expected, (int, float)) and not isinstance(expected, bool):
+        try:
+            return Decimal(text) == Decimal(str(expected))
+        except InvalidOperation:
+            return False
+    return text == str(expected)
+
+
+def uncertain(detail, source='instrument'):
+    return {'level': 'uncertain', 'source': source, 'detail': detail}
 
 
 class UnconfirmedChange(RuntimeError):
@@ -266,6 +336,8 @@ class SCPI(Driver):
                 if 'write' not in spec:
                     raise ValueError('binary data is sent with a write command')
                 self.writes[name] = arrays.check_data(spec['data'], spec.get('parameters', {}))
+            if 'quality' in spec:
+                quality_spec(spec)
         except ValueError as error:
             raise ValueError(f'Operation {name}: {error}') from None
 
@@ -526,6 +598,17 @@ class SCPI(Driver):
                 result["reply"] = value
         if completion:
             result["completion_response"] = observed
+        if is_query and 'query' in spec.get('quality', {}):
+            # The instrument's own word on whether the reading is valid: overrange, unlocked, invalid input.
+            status = spec['quality']['query']
+            try:
+                status = status.format_map(arguments)
+                reply = self.exchange(status, True)
+                self._accept(status, reply)
+                if not judged_quality(spec['quality'], reply):
+                    result['quality'] = uncertain(f'{status} returned {reply.strip()}')
+            except Exception as error:
+                result['quality'] = uncertain(f'{status} gave no status ({type(error).__name__}: {error})')
         return result
 
     def _coordinates(self, axes, arguments):
@@ -582,9 +665,9 @@ def make_driver(record, registry):
         return ProcessDriver(record['id'], record.get('config', {}), registry)
     name = record["driver"]
     from .adapters import Modbus, HTTP
-    from .simulation import Laboratory
+    from .simulation import Laboratory, Optics
     from .software import Command
-    builtins = {"simulated":Simulated, "simulated-lab":Laboratory, "scpi":SCPI, "modbus":Modbus, "http":HTTP, "command":Command}
+    builtins = {"simulated":Simulated, "simulated-lab":Laboratory, "simulated-optics":Optics, "scpi":SCPI, "modbus":Modbus, "http":HTTP, "command":Command}
     if name in builtins:
         cls = builtins[name]
     elif name == 'qcodes':

@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "id": "fiber-bench",
+  "name": "Fiber-coupled laser bench",
+  "devices": ["laser", "mirror", "table", "power_meter", "camera"],
+  "conditions": [
+    {"id": "table.quiet", "kind": "environment", "description": "The table is still",
+     "verify": {"device": "table", "operation": "read_vibration"}, "accept": {"value": ["value"], "maximum": 2},
+     "correct": {"device": "table", "operation": "wait", "arguments": {"seconds": 30}},
+     "note": "A knock rings down with a time constant of a few seconds; it can also displace the beam."},
+    {"id": "fiber.coupled", "kind": "alignment", "description": "The beam is coupled into the fiber core",
+     "after": ["laser.warm", "table.quiet"],
+     "verify": {"device": "power_meter", "operation": "read_power"},
+     "accept": {"value": ["value"], "minimum": 8.0}, "usable": {"value": ["value"], "minimum": 0.1},
+     "correct": {"tune": [
+       {"device": "mirror", "operation": "set_x", "argument": "x", "read": {"device": "mirror", "operation": "where", "value": ["x"]},
+        "step": 0.1, "resolution": 0.005, "minimum": -2, "maximum": 2},
+       {"device": "mirror", "operation": "set_y", "argument": "y", "read": {"device": "mirror", "operation": "where", "value": ["y"]},
+        "step": 0.1, "resolution": 0.005, "minimum": -2, "maximum": 2}],
+       "evaluations": 80, "gain": 0.01},
+     "valid_for": 600,
+     "note": "Thermal drift of the table walks the beam off the core by a few tenths of a milliradian per hour. Below 0.1 mW no light reaches the fiber: look upstream."},
+    {"id": "image.linear", "kind": "operating_point", "description": "The camera images the fiber output within its linear range",
+     "after": ["fiber.coupled"],
+     "verify": {"device": "camera", "operation": "acquire"}, "accept": {"value": ["peak"], "minimum": 1500, "maximum": 3700},
+     "correct": {"tune": {"device": "camera", "operation": "set_exposure", "argument": "exposure",
+                          "read": {"device": "camera", "operation": "exposure"}, "step": 1, "resolution": 0.01,
+                          "minimum": 0.05, "maximum": 20}},
+     "note": "Full scale is 4095 counts; the peak is kept between about 35 % and 90 % of it."},
+    {"id": "image.dark", "kind": "reference", "description": "The dark level at the present exposure is known",
+     "after": ["image.linear"],
+     "verify": {"device": "camera", "operation": "acquire_dark"}, "samples": 4, "accept": {"value": ["mean"], "maximum": 400},
+     "reference": {"dark": ["mean"], "sensor_c": ["sensor_c"]}, "valid_for": 600,
+     "note": "Dark current doubles about every 6 K of sensor temperature, and the sensor warms after start; a new exposure needs a new dark level."}
+  ],
+  "disturbances": {
+    "knock": {"description": "The table was knocked or a door slammed: it rings, and the beam may move", "conditions": ["table.quiet"]},
+    "enclosure_opened": {"description": "Air currents and a temperature step move the beam for several minutes", "conditions": ["fiber.coupled"]},
+    "fiber_reconnected": {"description": "A reconnected fiber changes the coupling", "conditions": ["fiber.coupled"]},
+    "laser_restarted": {"description": "The laser was switched off and on again: it warms up anew", "conditions": ["laser.warm"]}
+  }
+}

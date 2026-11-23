@@ -16,6 +16,7 @@ def adapters():
         ('process', 'Independent SDK workers using JSON lines'),
         ('simulated', 'In-process demonstration instruments'),
         ('simulated-lab', 'Simulated laboratory components'),
+        ('simulated-optics', 'Simulated fiber-coupled laser bench whose drift, warm-up, dark level and saturation follow physical models'),
     ]
     result = [{'name': name, 'source': 'builtin', 'description': description} for name, description in builtin]
     result[0]['connection_parameters'] = {

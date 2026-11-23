@@ -19,7 +19,7 @@ PROMPT_STEPS = 8000
 # descriptions and the guide are always offered. Every tool belongs to exactly one toolset.
 ALWAYS = ('lab_context', 'describe_instrument', 'describe_platform', 'guide')
 # What an agent reads when a task needs it, so that tool descriptions, read on every turn, stay short.
-GUIDES = ('steps', 'sweeps', 'arrays', 'measurements', 'conditions', 'experiments', 'programs', 'setup', 'episodes')
+GUIDES = ('steps', 'sweeps', 'arrays', 'measurements', 'conditions', 'priors', 'experiments', 'programs', 'setup', 'episodes')
 TOOLSETS = {
     'setup': ('configuration_schema', 'register_instrument', 'instrument_configuration', 'register_instruments',
               'discover_instruments', 'identify_instrument', 'instrument_profiles', 'save_instrument_profile',
@@ -204,8 +204,8 @@ def create_server(client, *, http=False, selection=None):
         return client.platform(platform)
 
     @tool(annotations=read_only)
-    def guide(topic: Literal['overview', 'steps', 'sweeps', 'arrays', 'measurements', 'conditions', 'experiments', 'programs', 'setup', 'episodes'] = 'overview') -> str:
-        """Read the working method or one topic when needed. steps: ordering, bindings, saved operations. sweeps: scans, repeat, seek, stopping. arrays: selections and fits. measurements: averaging, shared calibration errors, reference normalization. conditions: requires and upkeep. experiments: submission and continuation. programs: SDK and saved progress. setup: instruments and platforms. episodes: research trajectories."""
+    def guide(topic: Literal['overview', 'steps', 'sweeps', 'arrays', 'measurements', 'conditions', 'priors', 'experiments', 'programs', 'setup', 'episodes'] = 'overview') -> str:
+        """Read the working method or one topic when needed. steps: ordering, bindings, saved operations. sweeps: scans, repeat, seek, stopping. arrays: selections and fits. measurements: averaging and shared errors. conditions: requires and upkeep. priors: physical operating conditions. experiments: submission and continuation. programs: SDK and saved progress. setup: instruments and platforms. episodes: research trajectories."""
         return guide_text(topic)
 
     @tool(annotations=read_only)
@@ -271,12 +271,15 @@ def create_server(client, *, http=False, selection=None):
                              maintain: bool = False,
                              conditions: list[str] | None = None, run_id: str | None = None,
                              request_id: str | None = None, force: bool = False, invalidate: str | None = None,
-                             maintenance: str | None = None, wait: float = 0) -> dict | list:
-        """Read conditions and their states; platform/device filters them, condition returns one with records. maintain=true verifies and corrects in dependency order: pass platform, device or conditions, request_id, and run_id inside an experiment. force verifies again what holds. Replies wait up to 25 s; continue with maintenance=<id>. invalidate=<reason> marks conditions due after a disturbance. guide("conditions") explains requires and upkeep."""
+                             disturbance: str | None = None, maintenance: str | None = None, wait: float = 0) -> dict | list:
+        """Read conditions and their states; platform/device filters them, condition returns one with records. maintain=true verifies and corrects in dependency order: pass platform, device or conditions, request_id, and run_id inside an experiment. force verifies again what holds. Replies wait up to 25 s; continue with maintenance=<id>. invalidate=<reason> marks the selected condition(s), platform or device due; disturbance=<event> reports a platform's named event. guide("conditions") explains requires and upkeep."""
         if maintenance:
             return client.request('/v1/maintenance/' + quote(maintenance, safe='') + waiting(wait))
-        if invalidate:
-            return client.invalidate(conditions or [], invalidate)
+        if invalidate or disturbance:
+            names = list(dict.fromkeys([*(conditions or []), *([condition] if condition else [])]))
+            if not names and not disturbance and (platform or device):
+                names = [row['id'] for row in client.conditions(platform, device)]
+            return client.invalidate(names, invalidate, platform=platform, disturbance=disturbance)
         if maintain:
             return client.request('/v1/conditions/maintain' + waiting(wait), {
                 'platform': platform, 'conditions': conditions, 'run_id': run_id, 'request_id': request_id, 'force': force,

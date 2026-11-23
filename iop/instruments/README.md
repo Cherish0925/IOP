@@ -2,16 +2,19 @@
 
 [仪器接入](../instrument-setup.zh-CN.md) · [Instrument setup](../instrument-setup.md) · [Schema](../schema/instrument-profile.schema.json)
 
-型号说明将制造商与型号对应到具体命令、寄存器或接口路径，以及参数、单位和原始资料。SCPI 说明按读出的身份自动匹配；Modbus 与 HTTP 说明在登记时以 `instrument_profile` 指定。说明只覆盖所列操作，不代表该型号的全部功能。0.8.1 包含下列 9 个型号的部分操作；其他 SCPI 仪器仍可识别并使用通用查询和命令。
+型号说明将制造商与型号对应到具体命令、寄存器或接口路径，以及参数、单位和原始资料。SCPI 说明按读出的身份自动匹配；Modbus 与 HTTP 说明在登记时以 `instrument_profile` 指定。说明只覆盖所列操作，不代表该型号的全部功能。其他 SCPI 仪器仍可识别并使用通用查询和命令。
 
-Model descriptions map manufacturer/model names to documented commands, registers or HTTP paths. SCPI descriptions are matched from the reported identity; Modbus and HTTP descriptions are named with `instrument_profile` at registration. They cover selected operations, not every instrument feature. Version 0.8.1 contains the following nine models; other SCPI instruments retain generic identification, queries and commands.
+Model descriptions map manufacturer/model names to documented commands, registers or HTTP paths. SCPI descriptions are matched from the reported identity; Modbus and HTTP descriptions are named with `instrument_profile` at registration. They cover selected operations, not every instrument feature. Other SCPI instruments retain generic identification, queries and commands.
 
 | File | Models | Operations | Source |
 | --- | --- | --- | --- |
 | [srs-sr830.json](srs-sr830.json) | SR830 | X, Y, magnitude, phase, simultaneous X/Y, reference frequency; LIA status bits 0–3 (input, filter and output overload, reference unlock) with four instrument conditions | [SRS manual](https://www.thinksrs.com/downloads/pdfs/manuals/SR830m.pdf), Remote Programming, pp. 5-4, 5-15, 5-19, 5-20, 5-23 |
+| [lakeshore-336.json](lakeshore-336.json) | Model 336 | Kelvin reading of inputs A–D, qualified by their input status, setpoint of loops 1–4, heater output, range and error of heaters 1–2; two instrument conditions: no open load or short on heater 1 or 2 | [Lake Shore manual](https://www.lakeshore.com/docs/default-source/product-downloads/336manual.pdf), [manufacturer driver](https://github.com/lakeshorecryotronics/python-driver/blob/main/lakeshore/model_336.py); [manual mirror with page references](https://lmu.web.psi.ch/docu/manuals/bulk_manuals/LakeShore/LS336/336_Manual.pdf), section 6.6: pp. 115 (\*IDN?), 121 (HTR?), 122 (HTRST?), 125 (KRDG?), 129 (RANGE), 130 (RDGST?), 131 (SETP) |
 | [rigol-dp800-three-channel.json](rigol-dp800-three-channel.json) | DP831, DP831A, DP832, DP832A | Channel voltage/current/power, output state, output enable | [RIGOL programming guide, manufacturer document hosted by Batronix](https://www.batronix.com/pdf/Rigol/ProgrammingGuide/DP800_ProgrammingGuide_EN.pdf), pp. 2-34–2-36, 2-63 |
 | [rigol-dp800-two-channel.json](rigol-dp800-two-channel.json) | DP821, DP821A | Same operations with two-channel selection | Same guide |
 | [rigol-dp800-one-channel.json](rigol-dp800-one-channel.json) | DP811, DP811A | Same operations with CH1 | Same guide |
+
+The Model 336 setpoint uses the control sensor’s preferred units; configure or describe those units before comparing it with a kelvin reading. Conditions for each heater are available separately: experiments select the outputs they rely on with `requires`, and maintenance can select condition IDs. / Model 336 设定值采用控制传感器的首选单位；与开尔文读数比较前，应配置或说明该单位。各加热器的条件独立提供，实验用 `requires` 选择实际依赖的输出，保持过程可按条件名称选择。
 
 Discovery only reads identity. Measurement and output commands run when an experiment or operator requests them. Local descriptions take precedence over installed packages, which take precedence over built-in descriptions. Within a source tier, narrower identity matches take precedence; equally applicable descriptions remain explicit alternatives. Existing device operations take precedence. Descriptions are stored in `config.json.instrument_profiles` and packaged in distributions.
 

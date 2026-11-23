@@ -147,6 +147,49 @@ class ConditionsCase(unittest.TestCase):
         self.assertEqual((states['path.aligned']['state'], states['path.aligned']['reason']),
                          ('due', 'dependency disturbed: correction started: source.stabilize'))
 
+    def test_a_disturbance_the_platform_lists_makes_what_it_acts_on_due(self):
+        events = {'enclosure_opened': {'description': 'Air currents and a temperature step move the beam',
+                                       'conditions': ['path.aligned']},
+                  'source_switched_off': {'description': 'The source cools down', 'conditions': ['source.stable']}}
+        self.client.configure_platform({**platform(SOURCE, PATH), 'disturbances': events}, expected_revision=1)
+        self.client.maintain('chain')
+        rows = self.client.invalidate(platform='chain', disturbance='enclosure_opened')
+        self.assertEqual([(r['id'], r['state'], r['reason']) for r in rows],
+                         [('path.aligned', 'due', 'enclosure_opened: Air currents and a temperature step move the beam')])
+        self.assertEqual(self.states(), {'source.stable': 'holds', 'path.aligned': 'due'})
+        # What the operator saw replaces the description; what depends on the condition follows it.
+        self.client.maintain('chain')
+        self.client.invalidate(platform='chain', disturbance='source_switched_off', reason='the mains failed')
+        rows = {r['id']: r for r in self.client.conditions('chain')}
+        self.assertEqual((rows['source.stable']['reason'], rows['path.aligned']['reason']),
+                         ('source_switched_off: the mains failed', 'dependency disturbed: source_switched_off: the mains failed'))
+        with self.assertRaisesRegex(IOPError, 'Platform chain lists no disturbance enclosure_open; closest: enclosure_opened'):
+            self.client.invalidate(platform='chain', disturbance='enclosure_open')
+        with self.assertRaisesRegex(IOPError, 'Name the platform that lists the disturbance knock'):
+            self.client.invalidate(disturbance='knock')
+        with self.assertRaisesRegex(IOPError, 'Name the conditions that were disturbed, or a disturbance the platform lists'):
+            self.client.invalidate([], 'something happened')
+        with self.assertRaisesRegex(IOPError, 'Disturbance knock: path.aligne is not a condition of this platform or its '
+                                              'instruments; closest: path.aligned'):
+            self.client.configure_platform({**platform(SOURCE, PATH), 'disturbances': {
+                'knock': {'description': 'The table was knocked', 'conditions': ['path.aligne']}}}, expected_revision=2)
+        with self.assertRaisesRegex(IOPError, 'Disturbance knock: say what happens'):
+            self.client.configure_platform({**platform(SOURCE, PATH), 'disturbances': {
+                'knock': {'conditions': ['path.aligned']}}}, expected_revision=2)
+        # The operator reports at the bench, by event or by condition.
+        import contextlib, io, os
+        from ai4instruments.iop import cli
+        self.client.maintain('chain')
+        for arguments, reason in ((['--platform', 'chain', '--disturbance', 'enclosure_opened'],
+                                   'enclosure_opened: Air currents and a temperature step move the beam'),
+                                  (['path.aligned', '--invalidate', 'a cable was moved'], 'a cable was moved')):
+            command = ['iop', '--home', self.temp.name, '--endpoint', self.client.endpoint, 'conditions', *arguments]
+            with patch('sys.argv', command), patch.dict(os.environ, {'IOP_TOKEN': self.config['token']}), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                cli.main()
+            rows = {r['id']: r for r in self.client.conditions('chain')}
+            self.assertEqual((rows['path.aligned']['state'], rows['path.aligned']['reason']), ('due', reason))
+
     def test_a_verification_is_trusted_for_a_time(self):
         # Long enough for a slow machine to read the state while it still holds.
         self.client.configure_platform(platform(SOURCE, {**PATH, 'valid_for': 2.0}), expected_revision=1)
@@ -460,6 +503,25 @@ class ConditionsCase(unittest.TestCase):
         self.assertFalse(report['holds'])
         self.assertEqual((WORLD['x'], WORLD['y']), (0, 0))
 
+    def test_tuning_does_not_move_from_an_uncertain_setting_readback(self):
+        self.client.configure_platform(self.tuned(), expected_revision=1)
+        WORLD['x0'] = 0.5
+        driver = self.engine.devices['coupler']
+        invoke = driver.invoke
+
+        def uncertain(operation, arguments, cancelled):
+            result = invoke(operation, arguments, cancelled)
+            if operation == 'where':
+                result['quality'] = {'level': 'uncertain', 'detail': 'Position encoder is not referenced'}
+            return result
+
+        with patch.object(driver, 'invoke', uncertain):
+            report = self.client.maintain('chain')
+        self.assertFalse(report['holds'])
+        self.assertEqual((WORLD['x'], WORLD['y']), (0, 0))
+        self.assertFalse(any(action in WORLD['log'] for action in ('coupler.set_x', 'coupler.set_y')))
+        self.assertIn('uncertain', self.client.condition('path.aligned')['records'][-1]['error'])
+
     def test_a_monitored_reading_outside_its_limits_makes_conditions_due(self):
         current = self.client.device_history('source')[0]
         self.client.configure_platform({'schema_version': 1, 'id': 'chain', 'devices': ['source', 'coupler', 'detector']}, expected_revision=1)
@@ -541,7 +603,7 @@ class DefinitionCase(unittest.TestCase):
                 ({'verify': {'operation': ''}}, 'verify is one operation'),
                 ({'kind': ''}, 'kind'),
                 ({'valid_for': 0}, 'valid_for is a duration'),
-                ({'interval': 5}, 'unknown fields interval')):
+                ({'every': 5}, 'unknown fields every')):
             with self.assertRaisesRegex(ValueError, message):
                 check([SOURCE, {**PATH, **change}])
         self.assertEqual(check([{**SOURCE, 'kind': 'sample_integrity'}])[0]['kind'], 'sample_integrity')

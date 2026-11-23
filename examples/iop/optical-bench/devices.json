@@ -1,0 +1,13 @@
+[
+  {"id": "laser", "driver": "simulated-optics", "config": {"kind": "laser", "power_mw": 10, "warmup_s": 300},
+   "conditions": [
+     {"id": "warm", "kind": "equilibrium", "description": "The diode is at its set temperature after switch-on",
+      "verify": {"operation": "read_temperature"}, "accept": {"target": 25, "within": 0.1},
+      "correct": {"operation": "wait", "arguments": {"seconds": 1500}},
+      "note": "Temperature and power settle with one time constant after switch-on; 0.1 K needs about 3.4 of them, the wait allows 5."}]},
+  {"id": "mirror", "driver": "simulated-optics", "config": {"kind": "mirror"}},
+  {"id": "table", "driver": "simulated-optics", "config": {"kind": "table", "drift_mrad_per_h": 0.3, "quiet_s": 5}},
+  {"id": "power_meter", "driver": "simulated-optics",
+   "config": {"kind": "power_meter", "laser": "laser", "mirror": "mirror", "table": "table"}},
+  {"id": "camera", "driver": "simulated-optics", "config": {"kind": "camera", "power_meter": "power_meter", "exposure_ms": 2}}
+]

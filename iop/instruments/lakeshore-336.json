@@ -1,0 +1,88 @@
+{
+  "id": "lakeshore-336",
+  "match": {
+    "manufacturer": ["LSCI"],
+    "model": ["MODEL336"]
+  },
+  "driver": "scpi",
+  "documentation": [
+    "https://www.lakeshore.com/docs/default-source/product-downloads/336manual.pdf",
+    "https://github.com/lakeshorecryotronics/python-driver/blob/main/lakeshore/model_336.py",
+    "https://lmu.web.psi.ch/docu/manuals/bulk_manuals/LakeShore/LS336/336_Manual.pdf"
+  ],
+  "config": {
+    "operations": {
+      "read_kelvin": {
+        "description": "Read the temperature of a sensor input in kelvin; RDGST? is read after it, and a reading with an invalid, underrange or overrange status is kept as uncertain.",
+        "parameters": {"input": {"type": "string", "enum": ["A", "B", "C", "D"]}},
+        "query": "KRDG? {input}",
+        "result": {"type": "number", "unit": "K"},
+        "quality": {"query": "RDGST? {input}", "equals": 0},
+        "effect": "observe"
+      },
+      "read_status": {
+        "description": "Read the status of a sensor input as the sum of its flags: 0 a valid reading; 1 invalid reading, 16 temperature underrange, 32 temperature overrange, 64 sensor units zero, 128 sensor units overrange.",
+        "parameters": {"input": {"type": "string", "enum": ["A", "B", "C", "D"]}},
+        "query": "RDGST? {input}",
+        "result": {"type": "integer"},
+        "effect": "observe"
+      },
+      "read_setpoint": {
+        "description": "Read the setpoint of a control loop, in the preferred units of its control sensor.",
+        "parameters": {"output": {"type": "integer", "enum": [1, 2, 3, 4]}},
+        "query": "SETP? {output}",
+        "result": {"type": "number"},
+        "effect": "observe"
+      },
+      "set_setpoint": {
+        "description": "Set the setpoint of a control loop, in the preferred units of its control sensor (kelvin when the sensor's units are kelvin).",
+        "parameters": {"output": {"type": "integer", "enum": [1, 2, 3, 4]}, "value": {"type": "number"}},
+        "write": "SETP {output},{value}"
+      },
+      "read_heater": {
+        "description": "Read the output of heater 1 or 2 in percent of full scale. Outputs 3 and 4 are read with AOUT?.",
+        "parameters": {"output": {"type": "integer", "enum": [1, 2]}},
+        "query": "HTR? {output}",
+        "result": {"type": "number", "unit": "%"},
+        "effect": "observe"
+      },
+      "read_range": {
+        "description": "Read the range of heater 1 or 2: 0 off, 1 low, 2 medium, 3 high.",
+        "parameters": {"output": {"type": "integer", "enum": [1, 2]}},
+        "query": "RANGE? {output}",
+        "result": {"type": "integer"},
+        "effect": "observe"
+      },
+      "set_range": {
+        "description": "Set the range of heater 1 or 2: 0 off, 1 low, 2 medium, 3 high.",
+        "parameters": {"output": {"type": "integer", "enum": [1, 2]}, "range": {"type": "integer", "enum": [0, 1, 2, 3]}},
+        "write": "RANGE {output},{range}"
+      },
+      "heater_error": {
+        "description": "Read and clear the error of heater 1 or 2: 0 no error, 1 heater open load, 2 heater short. Querying clears the error and the front panel message.",
+        "parameters": {"output": {"type": "integer", "enum": [1, 2]}},
+        "query": "HTRST? {output}",
+        "result": {"type": "integer"},
+        "effect": "observe"
+      }
+    }
+  },
+  "conditions": [
+    {
+      "id": "heater1_ok",
+      "kind": "operating_point",
+      "description": "Heater 1 reported no open load or short since the previous observation",
+      "verify": {"operation": "heater_error", "arguments": {"output": 1}},
+      "accept": {"value": ["value"], "equals": 0},
+      "note": "An open load is a disconnected or broken heater; a short is a heater or lead shorted. Querying clears the error, so the next observation shows whether it returned. A temperature controlled through this output while it delivered no power was not held at its setpoint."
+    },
+    {
+      "id": "heater2_ok",
+      "kind": "operating_point",
+      "description": "Heater 2 reported no open load or short since the previous observation",
+      "verify": {"operation": "heater_error", "arguments": {"output": 2}},
+      "accept": {"value": ["value"], "equals": 0},
+      "note": "As for heater 1. Experiments that use only heater 1 require heater1_ok; selected-condition maintenance can omit this output."
+    }
+  ]
+}

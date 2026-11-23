@@ -4,6 +4,7 @@ import base64
 import copy
 import io
 import json
+import math
 import mimetypes
 import os
 import signal
@@ -379,6 +380,51 @@ class Engine:
         """A retry delay or pending retakes prevents this operation from starting."""
         return (bool(self.retaking.get(op['run_id'])) and not (op.get('retakes') or op.get('maintenance'))
                 or 'retry_at' in op and stamp(op['retry_at']) > time.time())
+
+    def _status(self, op):
+        """The status operation that qualifies this reading, when its description names one, with its arguments:
+        "{parameter}" passes an argument of the reading."""
+        operations = self.descriptions.get(op['device'], {}).get('operations', {})
+        quality = operations.get(op['operation'], {}).get('quality')
+        if not isinstance(quality, dict) or 'operation' not in quality:
+            return None
+        arguments = {key: op['arguments'].get(value[1:-1]) if isinstance(value, str) and value.startswith('{')
+                     and value.endswith('}') else value for key, value in quality.get('arguments', {}).items()}
+        try:
+            arguments = parameters(operations[quality['operation']], arguments)
+        except (KeyError, ValueError):
+            pass  # The status call then reports what is wrong, and the reading is kept as uncertain.
+        return {**quality, 'arguments': arguments}
+
+    def _qualify(self, op):
+        """A reading the instrument reports as uncertain, or outside the measuring interval its description declares,
+        is in doubt with the reason; a sweep that retakes its points takes it again."""
+        result = op.get('result')
+        if not isinstance(result, dict):
+            return
+        reasons = []
+        quality = result.get('quality')
+        if isinstance(quality, dict) and quality.get('level', 'good') != 'good':
+            reasons.append(str(quality.get('detail') or quality['level']))
+        spec = self.descriptions.get(op['device'], {}).get('operations', {}).get(op['operation'], {}).get('result')
+        value = result.get('value')
+        if isinstance(spec, dict) and isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+            low, high, clip = (spec.get(k) for k in ('minimum', 'maximum', 'saturation'))
+            if isinstance(clip, (int, float)) and value >= clip:
+                reasons.append(f'{value} reaches saturation at {clip}')
+            elif isinstance(low, (int, float)) and value < low or isinstance(high, (int, float)) and value > high:
+                reasons.append(f'{value} is outside the measuring interval {low} to {high}')
+        if reasons:
+            detail = '; '.join(dict.fromkeys(reasons))
+            prior = quality if isinstance(quality, dict) else {}
+            level = prior.get('level', 'good')
+            result['quality'] = {**prior, 'level': level if level != 'good' else 'uncertain', 'detail': detail}
+            entry = {'since': op.get('started') or now(), 'found': now(), 'outcome': 'uncertain', 'reason': detail}
+            op.setdefault('in_doubt', {})['quality'] = entry
+            run = self.runs.get(op['run_id'])
+            if run is not None and 'quality' not in run.setdefault('in_doubt', {}):
+                run['in_doubt']['quality'] = entry
+                self.store.put('runs', run)
 
     def doubt(self, run_id, condition_id, after, entry):
         """Its data may have been taken while a condition did not hold: mark each operation of this experiment
@@ -1673,6 +1719,7 @@ class Engine:
                 if op['operation'] == 'identify' and self.device_records[op['device']]['driver'] == 'scpi' and op['result'].get('identity'):
                     self.learn_identity(op['device'], op['result']['identity'])
                 op['state'] = 'completed'
+                self._qualify(op)
             except CancelledError:
                 op['state'] = 'cancelled'
                 if run['state'] == 'running':
@@ -1893,10 +1940,10 @@ class Engine:
                 future = Future(); future.set_exception(error)
                 self.refused.add(op_id)
             elif getattr(self.devices[op['device']], 'dedicated_thread', False):
-                future = self._own_thread(self._call, self.devices[op['device']], op, context)
+                future = self._own_thread(self._call, self.devices[op['device']], op, context, self._status(op))
                 self.waiting_steps.add(op_id)
             else:
-                future = self.pool.submit(self._call, self.devices[op['device']], op, context)
+                future = self.pool.submit(self._call, self.devices[op['device']], op, context, self._status(op))
             self.futures[op_id] = future
             def completed(_, oid=op_id):
                 self.completed.put(oid)
@@ -1945,10 +1992,37 @@ class Engine:
                 del self.operations[op['id']]
 
     @staticmethod
-    def _call(driver, op, context):
+    def _call(driver, op, context, status=None):
         """Run one operation on its driver outside the scheduler lock. Its result is made JSON here, and the
-        views that bindings and named results read from its arrays are computed from the files it saved."""
+        views that bindings and named results read from its arrays are computed from the files it saved.
+        ``status`` is the operation of the same instrument that says whether the reading is valid."""
         result = driver.invoke(op['operation'], op['arguments'], context)
+        if status is not None and isinstance(result, dict):
+            from .drivers import judged_quality
+            arguments = status.get('arguments', {})
+            label = status['operation'] + (' ' + json.dumps(arguments) if arguments else '')
+            reason = None
+            try:
+                found = driver.invoke(status['operation'], arguments, context)
+                quality = found.get('quality') if isinstance(found, dict) else None
+                if isinstance(quality, dict) and quality.get('level', 'good') != 'good':
+                    reason = f"{label} reported {quality['level']}: {quality.get('detail', quality['level'])}"
+                else:
+                    for key in status.get('value', ['value']):
+                        found = found[key]
+                    if not judged_quality(status, found):
+                        reason = f'{label} returned {found}'
+            except CancelledError:
+                raise
+            except Exception as error:
+                reason = f'{label} gave no status ({type(error).__name__}: {error})'
+            if reason:
+                prior = result.get('quality')
+                prior = prior if isinstance(prior, dict) else {}
+                level = prior.get('level', 'good')
+                reasons = [str(prior.get('detail') or level), reason] if level != 'good' else [reason]
+                result = {**result, 'quality': {**prior, 'level': level if level != 'good' else 'uncertain',
+                          'source': prior.get('source', 'instrument'), 'detail': '; '.join(dict.fromkeys(reasons))}}
         try:
             result = json.loads(dumps(result))
         except ValueError:

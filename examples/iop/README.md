@@ -5,6 +5,7 @@
 | Example | Purpose / 用途 | Runs without hardware / 无仪器运行 |
 | --- | --- | --- |
 | `multi-instrument/` | Temperature, measured dosing, weighing and acquisition / 温控、反馈加液、称量与信号采集 | Yes, explicitly simulated / 是，标明模拟 |
+| `optical-bench/` | Laser warm-up, fiber coupling with thermal drift, camera exposure and dark level kept as conditions / 激光预热、热漂移下的光纤耦合、相机曝光与暗电平作为工作条件维持 | Yes, explicitly simulated / 是，标明模拟 |
 | `parallel.json` | Parallel preparation and dependent acquisition / 并行准备与顺序采集 | `iop init --demo` |
 | `polarization/` | Repeated scan, retained device setup and CSV / 扫描、持续设备占用与 CSV | `iop init --demo` |
 | `scpi-meter.json` | SCPI instrument description / SCPI 仪器说明 | Replace address and model commands / 需真实地址与型号命令 |

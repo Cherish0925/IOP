@@ -136,7 +136,7 @@ export class IOP {
   deviceHistory(device: string) { return this.request<{id: string; revision: number; definition: Record<string, unknown>}[]>(`/v1/devices/${encodeURIComponent(device)}/history`); }
   configureDevice(device: string, definition: Record<string, unknown>, expectedRevision: number) { return this.request(`/v1/devices/${encodeURIComponent(device)}/configuration`, { definition, expected_revision: expectedRevision }); }
   /** How to work with this laboratory, as text: the working method, or one part of it with examples. */
-  async guide(topic: 'overview' | 'steps' | 'sweeps' | 'arrays' | 'conditions' | 'experiments' | 'programs' | 'measurements' | 'setup' | 'episodes' = 'overview') {
+  async guide(topic: 'overview' | 'steps' | 'sweeps' | 'arrays' | 'conditions' | 'priors' | 'experiments' | 'programs' | 'measurements' | 'setup' | 'episodes' = 'overview') {
     return (await this.request<{ topic: string; text: string }>('/v1/guides/' + topic)).text;
   }
   schema(name: 'device' | 'platform' | 'workflow' | 'instrument-profile' | 'operation') { return this.request<Record<string, unknown>>('/v1/schemas/' + name); }
@@ -220,7 +220,10 @@ export class IOP {
   }
   /** Platforms whose conditions the Runtime keeps: settings, pending reasons, the next foreseen pass and the last one. */
   upkeep(platform?: string) { return this.request<UpkeepStatus[]>('/v1/upkeep' + (platform ? '?' + new URLSearchParams({ platform }) : '')); }
-  invalidate(conditions: string[], reason: string) { return this.request<ConditionState[]>('/v1/conditions/invalidate', { conditions, reason }); }
+  /** Record a disturbance; `disturbance` with `platform` names an event the platform lists and adds the conditions it acts on. */
+  invalidate(conditions: string[], reason?: string, options: { platform?: string; disturbance?: string } = {}) {
+    return this.request<ConditionState[]>('/v1/conditions/invalidate', { conditions, ...(reason === undefined ? {} : { reason }), ...options });
+  }
   platforms() { return this.request<Platform[]>('/v1/platforms'); }
   platform(id: string) { return this.request<Platform>('/v1/platforms/' + encodeURIComponent(id)); }
   configurePlatform(definition: PlatformDefinition, expectedRevision = 0) {

@@ -26,7 +26,34 @@ def allowed(record, description):
         description = {**description, 'operations': operations}
     if 'limits' in record:
         description = {**description, 'operations': limited(record['limits'], description.get('operations', {}))}
+    for name, spec in description.get('operations', {}).items():
+        if isinstance(spec, dict) and isinstance(spec.get('quality'), dict) and 'operation' in spec['quality']:
+            quality_operation(name, spec, description['operations'])
     return description
+
+
+def quality_operation(name, spec, operations):
+    """Check a reading's quality read by another operation of the same instrument, for any adapter: its status,
+    good when equal to a value or with none of some bits; "{parameter}" passes an argument of the reading."""
+    quality, what = spec['quality'], f'Operation {name} quality'
+    if (quality.keys() - {'operation', 'arguments', 'value', 'equals', 'bits', 'description'}
+            or len({'equals', 'bits'} & quality.keys()) != 1):
+        raise ValueError(what + ' is {"operation", "arguments", "value": path, "equals" or "bits"}')
+    status = operations.get(quality['operation'])
+    if not isinstance(status, dict) or status.get('effect') != 'observe':
+        raise ValueError(f"{what}: {quality['operation']} must be an operation of this instrument with effect observe")
+    arguments = quality.get('arguments', {})
+    if not isinstance(arguments, dict):
+        raise ValueError(what + ': arguments is an object')
+    for key, value in arguments.items():
+        if isinstance(value, str) and value.startswith('{') and value.endswith('}') \
+                and value[1:-1] not in spec.get('parameters', {}):
+            raise ValueError(f'{what}: {value} names no parameter of {name}')
+    path = quality.get('value', ['value'])
+    if not isinstance(path, list) or any(isinstance(p, bool) or not isinstance(p, (str, int)) for p in path):
+        raise ValueError(what + ': value is a list of result keys or indices')
+    if 'bits' in quality and (isinstance(quality['bits'], bool) or not isinstance(quality['bits'], int) or quality['bits'] < 1):
+        raise ValueError(what + ': bits is a positive integer mask')
 
 
 def limited(limits, operations):

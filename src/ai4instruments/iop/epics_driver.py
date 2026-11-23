@@ -34,6 +34,9 @@ def plain(data, kind):
     return [text(v) for v in values] if kind == 'STRING' else values
 
 
+# Alarm statuses that concern the validity of a value rather than the state of the process.
+VALIDITY = ('READ', 'COMM', 'TIMEOUT', 'HWLIMIT', 'LINK', 'UDF', 'SIMM', 'CALC', 'BAD_SUB', 'DISABLE', 'READ_ACCESS')
+
 class EPICS(Driver):
     """Config: pvs (names, or objects with name, wait and put_timeout), optional prefix, timeout,
     put_timeout and unconfirmed_change."""
@@ -165,7 +168,12 @@ class EPICS(Driver):
             if entry['kind'] == 'ENUM' and isinstance(value, int) and value < len(entry['labels']):
                 result['label'] = entry['labels'][value]
         if severity != AlarmSeverity.NO_ALARM:
-            result['alarm'] = {'severity': severity.name, 'status': AlarmStatus(metadata.status).name}
+            status = AlarmStatus(metadata.status).name
+            result['alarm'] = {'severity': severity.name, 'status': status}
+            # A limit alarm says the process is outside its alarm limits, not that the value is wrong; these say the
+            # value itself may not be what the process is: a failed read or link, no communication, simulation.
+            if status in VALIDITY:
+                result['quality'] = {'level': 'uncertain', 'source': 'epics', 'detail': f'{severity.name} {status}'}
         result['time'] = datetime.fromtimestamp(metadata.timestamp, timezone.utc).isoformat()
         result['source'] = 'device'
         return result
@@ -217,11 +225,20 @@ class EPICS(Driver):
         if not done.wait(self.timeout):
             missing = sorted(set(names) - set(replies))
             raise RuntimeError('snapshot: no reply for ' + ', '.join(missing))
-        values = {}
+        values, alarms, doubtful = {}, {}, []
         for name in names:
-            data = plain(replies[name].data, self.pvs[name]['kind'])
-            values[name] = data[0] if len(data) == 1 else data
-        return {'variables': values, 'time': datetime.now(timezone.utc).isoformat(), 'source': 'device'}
+            reading = self._reading('snapshot ' + name, self.pvs[name], replies[name], None)
+            values[name] = reading['value']
+            if 'alarm' in reading:
+                alarms[name] = reading['alarm']
+            if 'quality' in reading:
+                doubtful.append(f"{name}: {reading['quality']['detail']}")
+        result = {'variables': values, 'time': datetime.now(timezone.utc).isoformat(), 'source': 'device'}
+        if alarms:
+            result['alarms'] = alarms
+        if doubtful:
+            result['quality'] = {'level': 'uncertain', 'source': 'epics', 'detail': '; '.join(doubtful)}
+        return result
 
     def close(self):
         context = getattr(self, 'context', None)
