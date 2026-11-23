@@ -207,8 +207,8 @@ class OPCUA(Driver):
             self.types[key] = data_type_to_variant_type(self.client.get_node(datatype))
         return self.types[key]
 
-    def _read(self, items):
-        """Read (NodeId, attribute) pairs in few requests; unreadable values are None."""
+    def _read(self, items, *, data_values=False):
+        """Read (NodeId, attribute) pairs in few requests; keep native status on request, otherwise unreadable values are None."""
         from asyncua import ua
         values, size = [], self.batch['read']
         for start in range(0, len(items), size):
@@ -217,7 +217,7 @@ class OPCUA(Driver):
                                       for node, attribute in items[start:start + size]]
             for data in self.loop.post(self.client.aio_obj.uaclient.read(parameters)):
                 good = data.Value is not None and (data.StatusCode is None or data.StatusCode.is_good())
-                values.append(data.Value.Value if good else None)
+                values.append(data if data_values else data.Value.Value if good else None)
         return values
 
     def _references(self, nodes, reference):
@@ -416,20 +416,27 @@ class OPCUA(Driver):
         kind, _, path = operation.partition('.')
         if operation == 'snapshot':
             paths = [p for p, entry in self.variables.items() if entry['rank'] < 0]
-            values = self._request(operation, False, lambda client: self._read(
-                [(self.variables[p]['id'], ua.AttributeIds.Value) for p in paths]))
-            return {'variables': {p: plain(v) for p, v in zip(paths, values)}, 'time': now(), 'source': 'device'}
+            readings = self._request(operation, False, lambda client: self._read(
+                [(self.variables[p]['id'], ua.AttributeIds.Value) for p in paths], data_values=True))
+            values, statuses, doubtful = {}, {}, []
+            for path, data in zip(paths, readings):
+                quality = self._quality(data.StatusCode, 'snapshot ' + path)
+                values[path] = plain(data.Value.Value if data.Value is not None else None)
+                if quality:
+                    statuses[path] = quality['status']
+                    doubtful.append(f"{path}: {quality['quality']['detail']}")
+            result = {'variables': values, 'time': now(), 'source': 'device'}
+            if doubtful:
+                result['statuses'] = statuses
+                result['quality'] = {'level': 'uncertain', 'source': 'opcua', 'detail': '; '.join(doubtful)}
+            return result
         if kind == 'get':
             entry = self.variables[path]
             data = self._request(operation, False, lambda client: client.get_node(entry['id']).read_data_value(
                 raise_on_bad_status=False))
-            status = data.StatusCode
-            if status is not None and status.is_bad():
-                raise RuntimeError(f'{operation}: the server reported {status.name}')
+            quality = self._quality(data.StatusCode, operation)
             result = self._reading(data.Value.Value if data.Value is not None else None, entry, cancelled, operation)
-            if status is not None and status.is_uncertain():
-                result['status'] = status.name
-                result['quality'] = {'level': 'uncertain', 'source': 'opcua', 'detail': status.name}
+            result.update(quality)
             result['time'] = data.SourceTimestamp.isoformat() if data.SourceTimestamp else now()
             result['source'] = 'device'
             return result
@@ -448,6 +455,14 @@ class OPCUA(Driver):
         named = entry['outputs'] if len(entry['outputs']) == len(outputs) and all(entry['outputs']) else None
         return {'outputs': {n: plain(v) for n, v in zip(named, outputs)} if named else plain(outputs),
                 'time': now(), 'source': 'device'}
+
+    @staticmethod
+    def _quality(status, operation):
+        if status is not None and status.is_bad():
+            raise RuntimeError(f'{operation}: the server reported {status.name}')
+        if status is not None and status.is_uncertain():
+            return {'status': status.name, 'quality': {'level': 'uncertain', 'source': 'opcua', 'detail': status.name}}
+        return {}
 
     def _reading(self, value, entry, context, operation):
         name = entry['variant'].name

@@ -415,18 +415,32 @@
           "description": "Path into the observation result; default [\"value\"]."
         },
         "minimum": {
-          "type": [
-            "number",
-            "string"
-          ],
-          "description": "A number in the unit of the reading, or a quantity with its unit such as \"20 mK\" when the reading's unit is described."
+          "description": "A number in the unit of the reading, or a quantity with its unit such as \"20 mK\" when the reading's unit is described.",
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/quantity"
+            }
+          ]
         },
         "maximum": {
-          "type": [
-            "number",
-            "string"
-          ],
-          "description": "A number in the unit of the reading, or a quantity with its unit such as \"20 mK\" when the reading's unit is described."
+          "description": "A number in the unit of the reading, or a quantity with its unit such as \"20 mK\" when the reading's unit is described.",
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/quantity"
+            }
+          ]
         },
         "equals": {},
         "statistic": {
@@ -448,24 +462,41 @@
               "description": "A quantity with its unit, such as \"-253.15 °C\""
             },
             {
+              "$ref": "#/$defs/quantity"
+            },
+            {
               "$ref": "#/$defs/instrumentTarget"
             }
           ],
           "description": "A nominal or certified value, or the reading that gives it, such as the setpoint the instrument holds. The value judged is the deviation from it."
         },
         "within": {
-          "type": [
-            "number",
-            "string"
-          ],
-          "description": "With target: the absolute tolerance of the deviation."
+          "description": "With target: the absolute tolerance of the deviation.",
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/quantity"
+            }
+          ]
         },
         "relative": {
-          "type": [
-            "number",
-            "string"
-          ],
-          "description": "With target: the tolerance as a fraction of the target; added to within."
+          "description": "With target: the tolerance as a fraction of the target; added to within.",
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/$defs/quantity"
+            }
+          ]
         }
       }
     },
@@ -520,7 +551,8 @@
           "$ref": "#/$defs/instrumentTolerance"
         },
         "usable": {
-          "$ref": "#/$defs/instrumentTolerance"
+          "$ref": "#/$defs/instrumentTolerance",
+          "description": "Every sample must pass unless statistic explicitly selects an aggregate."
         },
         "reference": {
           "type": "object",
@@ -714,6 +746,23 @@
             ]
           },
           "description": "Path into its result; default [\"value\"]."
+        }
+      }
+    },
+    "quantity": {
+      "type": "object",
+      "required": [
+        "value",
+        "unit"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "type": "number"
+        },
+        "unit": {
+          "type": "string",
+          "minLength": 1
         }
       }
     }

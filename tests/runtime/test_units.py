@@ -2,7 +2,7 @@
 import unittest
 from ai4instruments.iop import IOPError
 from ai4instruments.iop.drivers import parameters
-from ai4instruments.iop.units import convert, parse, quantity
+from ai4instruments.iop.units import convert, difference, parse, quantity
 from . import test_service as fixture
 
 
@@ -11,9 +11,11 @@ class UnitsCase(unittest.TestCase):
         for value, source, target, expected in (
                 (5, 'mV', 'V', 0.005), (1, 'kHz', 'Hz', 1e3), (1, 'GHz', 'MHz', 1e3), (1, 'µm', 'nm', 1e3), (1, 'μm', 'm', 1e-6),
                 (25, '°C', 'K', 298.15), (300, 'K', '°C', 26.85), (32, '°F', '°C', 0), (4.2, 'K', 'mK', 4200),
+                (25, '(°C)', 'K', 298.15), (1, '(°C)/s', 'K/s', 1),
                 (1, 'K/min', 'mK/s', 1000 / 60), (1, 'mbar', 'Pa', 100), (760, 'Torr', 'Pa', 101325), (1, 'hPa', 'mbar', 1),
                 (1, 'atm', 'kPa', 101.325), (90, 'deg', 'rad', 1.5707963267948966), (10, 'G', 'mT', 1), (1, 'h', 'min', 60),
-                (1, 'W m^-2', 'mW/cm^2', 0.1), (2, 'm/s^2', 'm s⁻²', 2), (1, 'J/(mol K)', 'J mol^-1 K^-1', 1),
+                (1, 'W m^-2', 'mW/cm^2', 0.1), (2, 'm/s^2', 'm s⁻²', 2), (2, 'm/s**2', 'm s⁻²', 2),
+                (1, 'J/(mol K)', 'J mol^-1 K^-1', 1),
                 (1, 'L', 'cm³', 1000), (1, 'kΩ', 'ohm', 1000), (1, 'mmol/L', 'mol/m^3', 1), (1, 'eV', 'J', 1.602176634e-19),
                 (1, '%', 'ppm', 1e4), (1, 'A/s', 'mA/ms', 1)):
             self.assertAlmostEqual(convert(value, source, target), expected, delta=1e-9 * max(1, abs(expected)),
@@ -39,6 +41,19 @@ class UnitsCase(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'a quantity is'):
             quantity({'value': True, 'unit': 'V'})
 
+    def test_temperature_differences_preserve_small_tolerances(self):
+        for value in (1.0, 1e-9, 1e-14):
+            self.assertAlmostEqual(difference(value, '°C', 'K') / value, 1)
+            self.assertAlmostEqual(difference(value, '°F', 'K') / value, 5 / 9)
+            self.assertAlmostEqual(difference(value, 'K', '°F') / value, 9 / 5)
+        self.assertEqual(difference(0.01, 'dBm', 'dBm'), 0.01)
+        with self.assertRaisesRegex(ValueError, 'not a unit of the same quantity'):
+            difference(1, 'V', 'K')
+
+    def test_conversions_do_not_lose_values_in_an_intermediate_si_unit(self):
+        self.assertEqual(convert(1e-14, '°C', 'degC'), 1e-14)
+        self.assertAlmostEqual(convert(1e308, 'kV', 'MV') / 1e305, 1)
+
     def test_arguments_are_converted_before_their_bounds_apply(self):
         spec = {'parameters': {'volts': {'type': 'number', 'unit': 'V', 'minimum': -10, 'maximum': 10},
                                'rate': {'type': 'integer', 'unit': 'Hz'}, 'gain': {'type': 'number', 'default': 1}}}
@@ -50,6 +65,33 @@ class UnitsCase(unittest.TestCase):
                                   ({'volts': 1, 'rate': 1, 'gain': '3 V'}, 'gain declares no unit; give a plain number')):
             with self.assertRaisesRegex(ValueError, message):
                 parameters(spec, supplied)
+
+    def test_integer_arguments_do_not_round_fractional_large_values(self):
+        spec = {'parameters': {'rate': {'type': 'integer', 'unit': 'Hz'}}}
+        for value in ('1000000000.5 Hz', '1000000.0005 kHz'):
+            with self.assertRaisesRegex(ValueError, 'not an integer'):
+                parameters(spec, {'rate': value})
+        self.assertEqual(parameters(spec, {'rate': '1 GHz'}), {'rate': 1000000000})
+        with self.assertRaisesRegex(ValueError, 'finite number'):
+            parameters(spec, {'rate': '1e300 GHz'})
+
+    def test_array_items_are_converted_and_keep_declared_units(self):
+        spec = {'parameters': {
+            'bias': {'type': 'array', 'unit': 'V', 'items': {'type': 'number', 'maximum': 1}},
+            'pressure': {'type': 'array', 'items': {'type': 'number', 'unit': 'Pa'}},
+            'wavelength': {'type': 'array', 'unit': 'nm', 'items': {'type': 'array', 'items': {'type': 'number'}}},
+            'temperature': {'type': 'array', 'unit': 'K', 'items': {'type': 'number', 'unit': '°C'}}}}
+        supplied = {'bias': ['250 mV', {'value': 1, 'unit': 'V'}], 'pressure': ['1 mbar'],
+                    'wavelength': [['1 µm']], 'temperature': ['273.15 K']}
+        result = parameters(spec, supplied)
+        self.assertEqual({k: v for k, v in result.items() if k != 'wavelength'},
+                         {'bias': [0.25, 1], 'pressure': [100], 'temperature': [0]})
+        self.assertAlmostEqual(result['wavelength'][0][0], 1000)
+        self.assertEqual(supplied['bias'][0], '250 mV')
+        with self.assertRaisesRegex(ValueError, 'above 1 V'):
+            parameters(spec, {**supplied, 'bias': ['2000 mV']})
+        with self.assertRaisesRegex(ValueError, 'not a unit of the same quantity'):
+            parameters(spec, {**supplied, 'pressure': ['1 mV']})
 
 
 class SubmittedUnitsCase(unittest.TestCase):

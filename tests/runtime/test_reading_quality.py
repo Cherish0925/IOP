@@ -3,7 +3,7 @@ import socketserver
 import threading
 import unittest
 from ai4instruments.iop import IOPError
-from ai4instruments.iop.drivers import Driver
+from ai4instruments.iop.drivers import Driver, judged_quality
 from . import test_service as fixture
 
 
@@ -57,6 +57,18 @@ class Broken(Digitizer):
         description = super().describe()
         description['operations']['read']['quality']['operation'] = 'missing'
         return description
+
+
+class JudgedQualityCase(unittest.TestCase):
+    def test_status_bits_do_not_truncate_or_round_the_reply(self):
+        for reply in (9007199254740993, '9007199254740993', '9007199254740993.0', '9.007199254740993e15'):
+            self.assertFalse(judged_quality({'bits': 1}, reply))
+        for reply in (0, '0', '0.0', '0e3', 2.0):
+            self.assertTrue(judged_quality({'bits': 1}, reply))
+        for reply in (0.5, '0.5', 'NaN', 'Infinity', 'not a status'):
+            with self.assertRaisesRegex(ValueError, 'must be an integer'):
+                judged_quality({'bits': 1}, reply)
+        self.assertFalse(judged_quality({'equals': 9007199254740992}, '9007199254740993'))
 
 
 class QualityCase(unittest.TestCase):
@@ -137,6 +149,30 @@ class QualityCase(unittest.TestCase):
         self.assertEqual(result['two']['quality']['detail'], 'status {"channel": 2} returned True')
         with self.assertRaisesRegex(IOPError, 'Operation read quality: missing must be an operation of this instrument'):
             self.client.register({'id': 'adc2', 'driver': __name__ + ':Broken', 'config': {}})
+
+    def test_scpi_readings_can_use_a_separate_status_operation(self):
+        current = self.client.device_history('dmm')[0]
+        definition = current['definition']
+        definition['config']['operations'] = {
+            'read': {'query': 'MEAS:VOLT?', 'effect': 'observe', 'parameters': {}, 'result': {'type': 'number'},
+                     'quality': {'operation': 'status', 'bits': 1}},
+            'status': {'query': 'STAT:QUES:COND?', 'effect': 'observe', 'parameters': {}, 'result': {'type': 'integer'}}}
+        self.client.configure_device('dmm', definition, current['revision'])
+        self.meter.overloaded = {1}
+        result = self.client.invoke('dmm', 'read')
+        self.assertEqual(result['value'], 1.25)
+        self.assertEqual(result['quality']['detail'], 'status returned 1')
+        self.assertNotIn('quality', self.client.invoke('dmm', 'read'))
+
+    def test_an_unformattable_status_query_keeps_the_reading_in_doubt(self):
+        current = self.client.device_history('dmm')[0]
+        definition = current['definition']
+        definition['config']['operations']['read_voltage']['quality']['query'] = 'STAT? {missing}'
+        self.client.configure_device('dmm', definition, current['revision'])
+        run, result = self.read()
+        self.assertEqual(result['value'], 1.25)
+        self.assertIn('STAT? {missing} gave no status', result['quality']['detail'])
+        self.assertIn('quality', run.info()['operation_records'][0]['in_doubt'])
 
     def test_a_quality_belongs_to_a_query(self):
         with self.assertRaisesRegex(IOPError, 'quality qualifies a reading; it belongs to a query'):

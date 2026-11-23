@@ -5,7 +5,7 @@ description: Use IOP to operate instruments or scientific software, submit exper
 
 # Operate a laboratory
 
-The laboratory is a service that keeps instruments, platforms, methods, experiments and their records. It goes on working when this connection closes. These guides describe IOP 0.14.0; check `lab_context.service.version` and upgrade an older service while idle before using newer options.
+The laboratory is a service that keeps instruments, platforms, methods, experiments and their records. It goes on working when this connection closes. These guides describe IOP 0.15.0; check `lab_context.service.version` and upgrade an older service while idle before using newer options.
 
 ## Working method
 

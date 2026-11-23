@@ -6,6 +6,8 @@
   },
   "driver": "scpi",
   "documentation": [
+    "https://www.lakeshore.com/docs/default-source/product-downloads/336manual.pdf",
+    "https://github.com/lakeshorecryotronics/python-driver/blob/main/lakeshore/model_336.py",
     "https://lmu.web.psi.ch/docu/manuals/bulk_manuals/LakeShore/LS336/336_Manual.pdf"
   ],
   "config": {
@@ -80,7 +82,7 @@
       "description": "Heater 2 reported no open load or short since the previous observation",
       "verify": {"operation": "heater_error", "arguments": {"output": 2}},
       "accept": {"value": ["value"], "equals": 0},
-      "note": "As for heater 1. A laboratory that does not use output 2 can define heater2_ok in the instrument record with its own observation."
+      "note": "As for heater 1. Experiments that use only heater 1 require heater1_ok; selected-condition maintenance can omit this output."
     }
   ]
 }

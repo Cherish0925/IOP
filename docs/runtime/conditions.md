@@ -57,7 +57,7 @@ Conditions are part of the platform description (`conditions`) and are saved wit
 | `verify` | A short reference measurement: one device operation, or a saved operation without `device`, whose named results can come from [views of arrays](operations.md), such as the frequency of a resonance / 一次简短的基准测量：一个设备操作，或不带 `device` 的已保存操作，其具名结果可以取自[数组的视图](operations.md)，例如谐振频率 |
 | `samples`, `interval` | Readings one verification takes and the seconds between them; a tolerance judges a statistic of them / 一次核对取的读数个数及其间隔秒数；容差判断它们的统计量 |
 | `accept` | The tolerance: `value` is the path into the result, with `minimum`, `maximum` or `equals`; or with a `target` and `within`, `relative` or both. `statistic` chooses what several samples give: `mean` (default), `std`, `span` or `slope` per second / 容差：`value` 是结果中的路径，配 `minimum`、`maximum` 或 `equals`；或配 `target` 与 `within`、`relative`。`statistic` 选择多个读数的统计量：`mean`（默认）、`std`、`span` 或每秒 `slope` |
-| `usable` | Whether the reading is usable for this decision; otherwise maintenance revisits declared dependencies / 读数是否适用于这次判断；否则保持过程会重新查看已声明的依赖 |
+| `usable` | Every sample must pass unless an explicit `statistic` selects an aggregate; otherwise maintenance revisits declared dependencies / 默认每个样本均须可用；显式指定 `statistic` 时判断统计量，否则保持过程重新查看已声明的依赖 |
 | `reference` | Values of the accepted verification kept with the experiments that rely on it, such as a dark level used in the analysis / 通过核对时保留的数值，随依赖它的实验保存，例如分析时要扣除的暗计数 |
 | `correct` | What restores the condition, tried in order, each followed by a verification: an operation, or [`tune`](#tuning--调节). A step of a `manual` device asks a person / 恢复该条件的做法，按顺序尝试，每个之后核对一次：一个操作，或 [`tune`](#tuning--调节)；`manual` 设备的步骤交给人 |
 | `settle` | Seconds between a correction and its verification / 校正之后到核对之前等待的秒数 |
@@ -93,6 +93,10 @@ Two forms of tolerance express what most operating points come down to, whatever
 ```
 
 Tolerances may be given with their units when the description states the unit of the reading: `"within": "20 mK"`, `"target": "-253.15 °C"`, `"maximum": "1 K/min"` with `slope`, `"maximum": "5 mK"` with `std`, `"relative": "0.1 %"`. They are kept in the unit of the reading, spreads and drifts as differences, and a unit of another quantity is refused. / 当说明写明读数单位时，容差可带单位给出，按读数单位保存，标准差、极差与漂移按差值换算；量纲不同的单位被拒绝。
+
+Agreement and stability are separate decisions: a mean near the target can hide oscillation. Declare both conditions when the measurement needs both. Dynamic targets convert between declared units; without declarations, their numeric units must already agree. A Lake Shore 336 setpoint uses its control sensor’s preferred units, so it must not be assumed to be in kelvin. / 达到设定值与稳定是不同判断，均值接近目标可能掩盖振荡；两者都需要时分别声明条件。动态目标按已声明单位换算，未声明时须已使用相同数值单位。Lake Shore 336 的设定值采用控制传感器的首选单位，不能默认按开尔文解释。
+
+Quantity objects such as `{"value": 20, "unit": "mK"}` and strings such as `"20 mK"` express the same tolerance. Unreliable verification, target or setting readbacks cannot establish a condition or initiate tuning from that readback. Cancelling maintenance interrupts sampling and settling waits. / 数量对象与带单位字符串等价。不可靠的核对、目标值或设定值回读不能使条件成立，也不能据此开始调节。取消保持过程会中断采样间隔和稳定等待。
 
 A `reference` taken over several samples keeps their mean, as a dark level or a baseline is averaged. `tune` works on either form: on a target it brings the deviation to zero. / 多个读数下的 `reference` 保留其平均值，如暗电平或基线取平均。`tune` 对两种形式都适用：对目标值时把偏差调到零。
 

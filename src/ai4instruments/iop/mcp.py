@@ -205,7 +205,7 @@ def create_server(client, *, http=False, selection=None):
 
     @tool(annotations=read_only)
     def guide(topic: Literal['overview', 'steps', 'sweeps', 'arrays', 'measurements', 'conditions', 'priors', 'experiments', 'programs', 'setup', 'episodes'] = 'overview') -> str:
-        """Read the working method or one topic when needed. steps: ordering, bindings, saved operations. sweeps: scans, repeat, seek, stopping. arrays: selections and fits. measurements: averaging, shared calibration errors, reference normalization. conditions: requires and upkeep. experiments: submission and continuation. programs: SDK and saved progress. setup: instruments and platforms. episodes: research trajectories."""
+        """Read the working method or one topic when needed. steps: ordering, bindings, saved operations. sweeps: scans, repeat, seek, stopping. arrays: selections and fits. measurements: averaging and shared errors. conditions: requires and upkeep. priors: physical operating conditions. experiments: submission and continuation. programs: SDK and saved progress. setup: instruments and platforms. episodes: research trajectories."""
         return guide_text(topic)
 
     @tool(annotations=read_only)
@@ -272,11 +272,14 @@ def create_server(client, *, http=False, selection=None):
                              conditions: list[str] | None = None, run_id: str | None = None,
                              request_id: str | None = None, force: bool = False, invalidate: str | None = None,
                              disturbance: str | None = None, maintenance: str | None = None, wait: float = 0) -> dict | list:
-        """Read conditions and their states; platform/device filters them, condition returns one with records. maintain=true verifies and corrects in dependency order: pass platform, device or conditions, request_id, and run_id inside an experiment. force verifies again what holds. Replies wait up to 25 s; continue with maintenance=<id>. invalidate=<reason> marks conditions due after a disturbance; disturbance=<event> with platform, what the platform lists for it. guide("conditions") explains requires and upkeep."""
+        """Read conditions and their states; platform/device filters them, condition returns one with records. maintain=true verifies and corrects in dependency order: pass platform, device or conditions, request_id, and run_id inside an experiment. force verifies again what holds. Replies wait up to 25 s; continue with maintenance=<id>. invalidate=<reason> marks the selected condition(s), platform or device due; disturbance=<event> reports a platform's named event. guide("conditions") explains requires and upkeep."""
         if maintenance:
             return client.request('/v1/maintenance/' + quote(maintenance, safe='') + waiting(wait))
         if invalidate or disturbance:
-            return client.invalidate(conditions or [], invalidate, platform=platform, disturbance=disturbance)
+            names = list(dict.fromkeys([*(conditions or []), *([condition] if condition else [])]))
+            if not names and not disturbance and (platform or device):
+                names = [row['id'] for row in client.conditions(platform, device)]
+            return client.invalidate(names, invalidate, platform=platform, disturbance=disturbance)
         if maintain:
             return client.request('/v1/conditions/maintain' + waiting(wait), {
                 'platform': platform, 'conditions': conditions, 'run_id': run_id, 'request_id': request_id, 'force': force,

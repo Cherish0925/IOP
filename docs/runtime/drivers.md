@@ -58,9 +58,13 @@ An instrument often says whether a reading is valid: an overload, an overrange, 
 
 An uncertain reading carries `quality` with its reason and is marked `in_doubt.quality`, as data taken while a condition did not hold; results computed from it inherit the doubt, a sweep or repetition with `retake` takes it again, and a condition whose verification reads it finds the verification unusable. / 不确定的读数带有 `quality` 及原因，并像条件失效期间的数据一样标为 `in_doubt.quality`；由它计算的结果继承存疑，带 `retake` 的扫描或重复会重新测量，用它核对的条件判为不可用。
 
+EPICS and OPC UA `snapshot` apply the same validity rules as individual reads. Values remain in `variables`; EPICS alarms are keyed by PV name in `alarms`, and OPC UA uncertain statuses by variable path in `statuses`. An uncertain value adds `quality` naming the affected variables; INVALID or Bad fails the snapshot. / EPICS 和 OPC UA 的 `snapshot` 与逐项读取采用相同的有效性规则。数值仍在 `variables` 中；EPICS 的 `alarms` 按 PV 名保存告警，OPC UA 的 `statuses` 按变量路径保存 Uncertain 状态。不确定数值使快照带上 `quality`，注明受影响的变量；INVALID 或 Bad 使快照失败。
+
 ### Units / 单位
 
 A parameter's `unit` is the unit the instrument takes. A request may give the number with its own unit, `{"value": 250, "unit": "mV"}` or `"250 mV"`: it is converted to the declared unit before `minimum`, `maximum` and the record's `limits` apply, and the operation record holds the converted number. A unit of another quantity is refused before the instrument is called, as is a unit for a parameter without one. Dimensions follow the SI base quantities, with plane angle kept apart so that rad/s is not taken for Hz; `°C` and `°F` convert with their offset when they stand alone. Units the table does not know, and logarithmic units such as `dBm`, are accepted only as the declared unit itself. Declare units with SI symbols so that conversions apply. / 参数的 `unit` 是仪器接受的单位。请求可带上自己的单位给出数值，如 `{"value": 250, "unit": "mV"}` 或 `"250 mV"`：先换算到声明的单位，再按 `minimum`、`maximum` 与设备记录的 `limits` 核对，操作记录保存换算后的数值。量纲不同的单位在调用仪器之前即被拒绝；未声明单位的参数不接受带单位的数值。量纲按 SI 基本量，平面角单独计，因而 rad/s 不会被当作 Hz；`°C`、`°F` 单独出现时按偏移换算。表中没有的单位以及 `dBm` 等对数单位，只接受与声明完全相同的写法。声明单位时请用 SI 符号，以便换算。
+
+An array's numeric items accept quantities too: `["250 mV", "1 V"]` becomes `[0.25, 1]` for an array in V. Items inherit the array's `unit` unless `items` declares its own; conversion and bounds apply recursively before the driver receives the values. / 数组的数值元素同样可以带单位：单位为 V 的数组接收 `["250 mV", "1 V"]` 后得到 `[0.25, 1]`。元素继承数组的 `unit`，除非 `items` 自行声明单位；换算和范围检查递归应用，驱动收到的是换算后的数值。
 
 | Transport / 连接 | `config` fields / 字段 |
 | --- | --- |

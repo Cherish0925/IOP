@@ -225,11 +225,20 @@ class EPICS(Driver):
         if not done.wait(self.timeout):
             missing = sorted(set(names) - set(replies))
             raise RuntimeError('snapshot: no reply for ' + ', '.join(missing))
-        values = {}
+        values, alarms, doubtful = {}, {}, []
         for name in names:
-            data = plain(replies[name].data, self.pvs[name]['kind'])
-            values[name] = data[0] if len(data) == 1 else data
-        return {'variables': values, 'time': datetime.now(timezone.utc).isoformat(), 'source': 'device'}
+            reading = self._reading('snapshot ' + name, self.pvs[name], replies[name], None)
+            values[name] = reading['value']
+            if 'alarm' in reading:
+                alarms[name] = reading['alarm']
+            if 'quality' in reading:
+                doubtful.append(f"{name}: {reading['quality']['detail']}")
+        result = {'variables': values, 'time': datetime.now(timezone.utc).isoformat(), 'source': 'device'}
+        if alarms:
+            result['alarms'] = alarms
+        if doubtful:
+            result['quality'] = {'level': 'uncertain', 'source': 'epics', 'detail': '; '.join(doubtful)}
+        return result
 
     def close(self):
         context = getattr(self, 'context', None)

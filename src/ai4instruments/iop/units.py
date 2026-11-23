@@ -92,10 +92,12 @@ def _split(text, separators):
 
 def _product(text):
     unit, lone = Unit(), None
-    factors = [f for f in _split(text.strip(), ' *·') if f]
+    factors = [f for f in _split(text.strip().replace('**', '^'), ' *·') if f]
     for item in factors:
         if item.startswith('(') and item.endswith(')'):
-            unit = unit * parse(item[1:-1])
+            found = parse(item[1:-1])
+            lone = found if len(factors) == 1 else None
+            unit = unit * found
             continue
         match = FACTOR.match(item)
         if not match:
@@ -129,19 +131,27 @@ def convert(value, source, target):
     """The number ``value`` in unit ``source`` is in unit ``target``; raises ValueError when they differ in dimension."""
     if source == target:
         return value
+    given, wanted = _compatible(source, target)
+    return value * (given.factor / wanted.factor) + (given.offset - wanted.offset) / wanted.factor
+
+
+def _compatible(source, target):
     try:
         given, wanted = parse(source), parse(target)
     except ValueError as error:
         raise ValueError(f'{source} cannot be converted to {target}: {error}; give the value in {target}') from None
     if given.dimension != wanted.dimension:
         raise ValueError(f'{source} is not a unit of the same quantity as {target}')
-    return ((value * given.factor + given.offset) - wanted.offset) / wanted.factor
+    return given, wanted
 
 
 def difference(value, source, target):
     """A difference of ``value`` in unit ``source``, such as a tolerance or a spread, in unit ``target``: a
     difference of 1 °C is 1 K."""
-    return convert(value, source, target) - convert(0, source, target)
+    if source == target:
+        return value
+    given, wanted = _compatible(source, target)
+    return value * (given.factor / wanted.factor)
 
 
 def quantity(value):

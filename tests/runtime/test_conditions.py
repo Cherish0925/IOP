@@ -503,6 +503,25 @@ class ConditionsCase(unittest.TestCase):
         self.assertFalse(report['holds'])
         self.assertEqual((WORLD['x'], WORLD['y']), (0, 0))
 
+    def test_tuning_does_not_move_from_an_uncertain_setting_readback(self):
+        self.client.configure_platform(self.tuned(), expected_revision=1)
+        WORLD['x0'] = 0.5
+        driver = self.engine.devices['coupler']
+        invoke = driver.invoke
+
+        def uncertain(operation, arguments, cancelled):
+            result = invoke(operation, arguments, cancelled)
+            if operation == 'where':
+                result['quality'] = {'level': 'uncertain', 'detail': 'Position encoder is not referenced'}
+            return result
+
+        with patch.object(driver, 'invoke', uncertain):
+            report = self.client.maintain('chain')
+        self.assertFalse(report['holds'])
+        self.assertEqual((WORLD['x'], WORLD['y']), (0, 0))
+        self.assertFalse(any(action in WORLD['log'] for action in ('coupler.set_x', 'coupler.set_y')))
+        self.assertIn('uncertain', self.client.condition('path.aligned')['records'][-1]['error'])
+
     def test_a_monitored_reading_outside_its_limits_makes_conditions_due(self):
         current = self.client.device_history('source')[0]
         self.client.configure_platform({'schema_version': 1, 'id': 'chain', 'devices': ['source', 'coupler', 'detector']}, expected_revision=1)

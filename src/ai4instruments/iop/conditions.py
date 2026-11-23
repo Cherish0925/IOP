@@ -23,6 +23,7 @@ Each pass is recorded like any other, with ``automatic`` and its reasons, and ne
 that asks a person.
 """
 import copy
+import json
 import math
 import re
 import statistics
@@ -124,8 +125,18 @@ def in_reading_unit(condition, unit_of):
         spec = condition.get(key)
         if not isinstance(spec, dict):
             continue
+        unit = unit_of(condition.get('verify')) if spec.get('value', ['value']) == ['value'] else None
+        statistic = spec.get('statistic')
+        target = spec.get('target')
+        if isinstance(target, dict) and 'operation' in target and target.get('value', ['value']) == ['value'] and unit:
+            target_unit = unit_of(target)
+            if target_unit:
+                try:
+                    units.convert(0, target_unit, unit + '/s' if statistic == 'slope' else unit)
+                except ValueError as error:
+                    raise ValueError(f'{what} {key} target: {error}') from None
         given = {k: units.quantity(spec[k]) for k in ('minimum', 'maximum', 'target', 'within', 'relative')
-                 if k in spec and not isinstance(spec[k], dict)}
+                 if k in spec}
         given = {k: v for k, v in given.items() if v is not None}
         if not given:
             continue
@@ -133,11 +144,9 @@ def in_reading_unit(condition, unit_of):
         if 'relative' in given:
             spec['relative'] = units.convert(*given.pop('relative'), '1')
         if given:
-            unit = unit_of(condition.get('verify')) if spec.get('value', ['value']) == ['value'] else None
             if not unit:
                 raise ValueError(f"{what} {key}: {next(iter(given))} has a unit, but the unit of the reading is not "
                                  'described; give a plain number in the unit of the reading')
-            statistic = spec.get('statistic')
             for field, (number, unit_given) in given.items():
                 try:
                     if statistic == 'slope':
@@ -199,6 +208,12 @@ GOALS = ('maximize', 'minimize', 'center')
 
 def number(value):
     return not isinstance(value, bool) and isinstance(value, (int, float)) and math.isfinite(value)
+
+
+def uncertain(result):
+    """Whether an instrument explicitly reports that its reading cannot be trusted."""
+    quality = result.get('quality') if isinstance(result, dict) else None
+    return isinstance(quality, dict) and quality.get('level', 'good') != 'good'
 
 
 def bounds(spec):
@@ -340,12 +355,13 @@ def check(definitions, taken=(), external=(), unit_of=None):
         if 'interval' in condition and (not number(condition['interval']) or condition['interval'] < 0):
             raise ValueError(what + ': interval is the time between samples in seconds')
         accept = criterion(condition.get('accept'), what + ' accept')
-        for spec in (accept, condition.get('usable') or {}):
+        usable = criterion(condition['usable'], what + ' usable') if 'usable' in condition else None
+        for spec in (accept, usable or {}):
             if spec.get('statistic') in ('std', 'span', 'slope') and samples < 2:
                 raise ValueError(what + ': std, span and slope compare several readings; set samples to 2 or more')
         checked.append({**condition, 'after': after, 'verify': step(condition.get('verify'), what + ' verify'),
                         'accept': accept,
-                        **({'usable': criterion(condition['usable'], what + ' usable')} if 'usable' in condition else {}),
+                        **({'usable': usable} if usable is not None else {}),
                         'correct': [tuning(item, accept, what + ' correct') if isinstance(item, dict) and 'tune' in item
                                     else step(item, what + ' correct') for item in corrections]})
     # Instrument conditions never depend on platform conditions, so a cycle lies within this list.
@@ -442,7 +458,7 @@ def instrument(device_id, definitions, unit_of=None):
         corrections = [corrections] if isinstance(corrections, dict) else corrections
         tolerances = {key: {**condition[key], 'target': own(condition[key]['target'], f'{what} {key} target')}
                       for key in ('accept', 'usable') if isinstance(condition.get(key), dict)
-                      and isinstance(condition[key].get('target'), dict)}
+                      and isinstance(condition[key].get('target'), dict) and units.quantity(condition[key]['target']) is None}
         named.append({**condition, **tolerances, 'id': prefix + condition['id'],
                       'after': [prefix + a if isinstance(a, str) else a for a in after] if isinstance(after, list) else after,
                       'verify': own(condition.get('verify'), what + ' verify'),
@@ -503,20 +519,22 @@ def outcome(condition, results, times=None, targets=None):
     results = results if isinstance(results, list) else [results]
     value, kept, targets = None, {}, targets or {}
     # A reading its instrument reports as uncertain cannot show that the condition holds or drifted.
-    if any(isinstance(r, dict) and isinstance(r.get('quality'), dict) and r['quality'].get('level', 'good') != 'good'
-           for r in results):
+    if any(uncertain(r) for r in results):
         return 'unusable', None, kept
 
-    def judged(key):
+    def judged(key, samples=results):
         spec = condition[key]
-        return judge(spec, results, times, spec['target'] if number(spec.get('target')) else targets.get(key))
+        return judge(spec, samples, times, spec['target'] if number(spec.get('target')) else targets.get(key))
     try:
         value, met = judged('accept')
     except (KeyError, IndexError, TypeError, ValueError, statistics.StatisticsError):
         return 'unusable', None, kept
     if 'usable' in condition:
         try:
-            if not judged('usable')[1]:
+            # Invalid individual readings cannot become usable by averaging them together. An explicit
+            # statistic instead asks whether that aggregate is usable for this decision.
+            samples = [results] if 'statistic' in condition['usable'] else ([r] for r in results)
+            if not all(judged('usable', sample)[1] for sample in samples):
                 return 'unusable', value, kept
         except (KeyError, IndexError, TypeError, ValueError, statistics.StatisticsError):
             return 'unusable', value, kept
@@ -683,7 +701,8 @@ class Conditions:
         result = {k: condition[k] for k in ('verify', 'samples', 'interval', 'accept', 'usable', 'after', 'reference')
                   if k in condition}
         try:
-            steps, calls, _ = library.expand([{'id': 'verify', **condition['verify']}], self.engine.library.get)
+            steps, calls, _ = library.expand([{'id': f'reading{index}', **item}
+                                              for index, item in enumerate(readings(condition))], self.engine.library.get)
             result['operations'] = {c['operation']: c['revision'] for c in calls.values()}
             result['devices'] = {s['device']: self.engine.descriptions.get(s['device'], {}).get('revision') for s in steps}
         except ValueError:
@@ -1176,8 +1195,7 @@ class Conditions:
             except StepFailed as error:
                 self.corrected(condition_id, label(item), False, before, None, job['run_id'], str(error))
                 continue
-            if self.stopping.wait(condition.get('settle', 0)):
-                raise Stopped()
+            self._pause(job, condition.get('settle', 0))
             result, value = self._verify(job, condition)
             self.corrected(condition_id, label(item), result == 'holds', before, value, job['run_id'], tuned=tuned)
             if result == 'holds':
@@ -1197,23 +1215,57 @@ class Conditions:
                 self.engine.store.save_maintenance(job)
         return done[entry['condition']]
 
+    def _pause(self, job, duration):
+        """Wait between readings or after corrections, stopping when this experiment is cancelled."""
+        until = monotonic() + duration
+        while True:
+            with self.engine.lock:
+                run = self.engine.runs.get(job['run_id'])
+                if self.stopping.is_set() or self.engine.stopping or not run or run['state'] not in {'queued', 'running'}:
+                    raise Stopped()
+            remaining = until - monotonic()
+            if remaining <= 0:
+                return
+            if self.stopping.wait(min(remaining, 0.1)):
+                raise Stopped()
+
     def _observe(self, job, condition):
         """The readings of one verification: its samples, ``interval`` apart, and the targets it compares with."""
         results, times, targets = [], [], {}
+        paths = [condition[key]['value'] for key in ('accept', 'usable') if key in condition]
+        paths.extend(condition.get('reference', {}).values())
         for index in range(condition.get('samples', 1)):
-            if index and self.stopping.wait(condition.get('interval', 0)):
-                raise Stopped()
-            results.append(self._execute(job, 'verify', condition['verify']))
+            if index:
+                self._pause(job, condition.get('interval', 0))
+            results.append(self._execute(job, 'verify', condition['verify'], paths=paths))
             times.append(monotonic())
         for key in ('accept', 'usable'):
-            target = (condition.get(key) or {}).get('target')
+            spec = condition.get(key) or {}
+            target = spec.get('target')
             if isinstance(target, dict):
-                found = self._execute(job, 'target', {k: v for k, v in target.items() if k != 'value'})
+                found = self._execute(job, 'target', {k: v for k, v in target.items() if k != 'value'},
+                                      paths=[target['value']])
+                if uncertain(found):
+                    targets[key] = None
+                    continue
                 try:
                     for part in target['value']:
                         found = found[part]
                 except (KeyError, IndexError, TypeError):
                     found = None
+                if number(found) and spec['value'] == ['value'] and target['value'] == ['value']:
+                    source, unit = self.unit_of(target), self.unit_of(condition['verify'])
+                    if source and unit:
+                        statistic = spec.get('statistic')
+                        try:
+                            if statistic == 'slope':
+                                found = units.difference(found, source, unit + '/s')
+                            elif statistic in ('std', 'span'):
+                                found = units.difference(found, source, unit)
+                            else:
+                                found = units.convert(found, source, unit)
+                        except ValueError:
+                            found = None
                 targets[key] = found
         return results, times, targets
 
@@ -1461,7 +1513,10 @@ class Conditions:
 
         positions = []
         for knob in knobs:
-            present = self._execute(job, 'read', {k: v for k, v in knob['read'].items() if k != 'value'})
+            present = self._execute(job, 'read', {k: v for k, v in knob['read'].items() if k != 'value'},
+                                    paths=[knob['read']['value']])
+            if uncertain(present):
+                raise StepFailed(f"{knob['read']['device']}.{knob['read']['operation']} returned an uncertain setting")
             try:
                 for key in knob['read']['value']:
                     present = present[key]
@@ -1478,8 +1533,7 @@ class Conditions:
                 positions[index] = bounded
         used = 0
         if positions != start:
-            if self.stopping.wait(condition.get('settle', 0)):
-                raise Stopped()
+            self._pause(job, condition.get('settle', 0))
             initial_outcome, value, _ = outcome(condition, *self._observe(job, condition))
             used += 1
         best, met = score(value) if initial_outcome != 'unusable' else -math.inf, False
@@ -1496,12 +1550,11 @@ class Conditions:
                         if candidate == positions[index]:
                             break
                         self._execute(job, 'set', self._set(knob, candidate))
-                        if self.stopping.wait(condition.get('settle', 0)):
-                            raise Stopped()
+                        self._pause(job, condition.get('settle', 0))
                         found, reading, _ = outcome(condition, *self._observe(job, condition))
                         used += 1
                         candidate_score = score(reading) if found != 'unusable' else -math.inf
-                        if candidate_score > best + gain:
+                        if candidate_score > best + gain or item['until'] == 'accept' and found == 'holds':
                             positions[index], best, advanced, moved = candidate, candidate_score, True, True
                             met = item['until'] == 'accept' and found == 'holds'
                         else:
@@ -1517,8 +1570,8 @@ class Conditions:
                     break
         return {'evaluations': used, 'from': start, 'to': positions}
 
-    def _execute(self, job, name_, item):
-        """Run one operation inside the experiment of this pass and return its result."""
+    def _execute(self, job, name_, item, paths=()):
+        """Run one operation inside this pass; selected readings retain the quality of their data sources."""
         engine, request_id = self.engine, f"{job['id']}.{job['steps']}"
         job['steps'] += 1
         try:
@@ -1539,7 +1592,27 @@ class Conditions:
                 raise Stopped()
             raise StepFailed(str(failed[0].get('error') or failed[0]['state']))
         if name_ in receipt.get('results', {}):
-            return receipt['results'][name_]
+            result = receipt['results'][name_]
+            if paths:
+                # The actual batch retains the flattened result mappings and the method revisions it used.
+                # Follow only outputs this condition reads; an unrelated diagnostic need not qualify them.
+                with engine.store.lock:
+                    row = engine.store.db.execute('SELECT body FROM operation_batches WHERE request_id=? AND run_id=?',
+                                                  (request_id, job['run_id'])).fetchone()
+                named = json.loads(row[0])['calls'][name_]['result']
+                selected = set(named) if any(not path for path in paths) else {path[0] for path in paths}
+                by_step = {op['step']: op for op in receipt['operations']}
+                by_id = {op['id']: op for op in receipt['operations']}
+                lookup = lambda key: by_step.get(key) or by_id.get(key)
+                inputs = {oid for key in selected if key in named for oid in library.input_operations(named[key], lookup)}
+                doubtful = [op for op in receipt['operations'] if op['id'] in inputs
+                            and (op.get('in_doubt') or uncertain(op.get('result')))]
+                if doubtful:
+                    # This local qualification does not change the saved method's public numeric result.
+                    result = {**result, 'quality': {'level': 'uncertain', 'detail': 'Reading uses data in doubt from '
+                                                   + ', '.join(dict.fromkeys(op['device'] + '.' + op['operation']
+                                                                             for op in doubtful))}}
+            return result
         return receipt['operations'][-1].get('result')
 
     def stop(self):

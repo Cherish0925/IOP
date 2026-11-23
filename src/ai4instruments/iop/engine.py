@@ -416,7 +416,9 @@ class Engine:
                 reasons.append(f'{value} is outside the measuring interval {low} to {high}')
         if reasons:
             detail = '; '.join(dict.fromkeys(reasons))
-            result['quality'] = {**(quality if isinstance(quality, dict) else {}), 'level': 'uncertain', 'detail': detail}
+            prior = quality if isinstance(quality, dict) else {}
+            level = prior.get('level', 'good')
+            result['quality'] = {**prior, 'level': level if level != 'good' else 'uncertain', 'detail': detail}
             entry = {'since': op.get('started') or now(), 'found': now(), 'outcome': 'uncertain', 'reason': detail}
             op.setdefault('in_doubt', {})['quality'] = entry
             run = self.runs.get(op['run_id'])
@@ -1996,19 +1998,31 @@ class Engine:
         ``status`` is the operation of the same instrument that says whether the reading is valid."""
         result = driver.invoke(op['operation'], op['arguments'], context)
         if status is not None and isinstance(result, dict):
-            from .drivers import judged_quality, uncertain
+            from .drivers import judged_quality
             arguments = status.get('arguments', {})
             label = status['operation'] + (' ' + json.dumps(arguments) if arguments else '')
+            reason = None
             try:
                 found = driver.invoke(status['operation'], arguments, context)
-                for key in status.get('value', ['value']):
-                    found = found[key]
-                if not judged_quality(status, found):
-                    result = {**result, 'quality': uncertain(f'{label} returned {found}')}
+                quality = found.get('quality') if isinstance(found, dict) else None
+                if isinstance(quality, dict) and quality.get('level', 'good') != 'good':
+                    reason = f"{label} reported {quality['level']}: {quality.get('detail', quality['level'])}"
+                else:
+                    for key in status.get('value', ['value']):
+                        found = found[key]
+                    if not judged_quality(status, found):
+                        reason = f'{label} returned {found}'
             except CancelledError:
                 raise
             except Exception as error:
-                result = {**result, 'quality': uncertain(f'{label} gave no status ({type(error).__name__}: {error})')}
+                reason = f'{label} gave no status ({type(error).__name__}: {error})'
+            if reason:
+                prior = result.get('quality')
+                prior = prior if isinstance(prior, dict) else {}
+                level = prior.get('level', 'good')
+                reasons = [str(prior.get('detail') or level), reason] if level != 'good' else [reason]
+                result = {**result, 'quality': {**prior, 'level': level if level != 'good' else 'uncertain',
+                          'source': prior.get('source', 'instrument'), 'detail': '; '.join(dict.fromkeys(reasons))}}
         try:
             result = json.loads(dumps(result))
         except ValueError:

@@ -7,6 +7,7 @@ import math
 import socket
 import time
 from concurrent.futures import CancelledError
+from decimal import Decimal, InvalidOperation
 from . import arrays, text_protocol, units
 from .store import now
 
@@ -39,8 +40,10 @@ def in_unit(name, field, value):
     except ValueError as error:
         raise ValueError(f"{name} is in {field['unit']}: {error}") from None
     if field.get("type") == "integer":
+        if not math.isfinite(converted):
+            raise ValueError(name + " must be a finite number")
         rounded = round(converted)
-        if abs(converted - rounded) > 1e-9 * max(1.0, abs(converted)):
+        if abs(converted - rounded) > 1e-9:
             raise ValueError(f"{name} is {given[0]} {given[1]} = {converted:g} {field['unit']}, not an integer")
         return rounded
     return converted
@@ -82,8 +85,8 @@ def parameters(spec, supplied):
             if len(value) < field.get("minItems",0) or len(value) > field.get("maxItems",1000000):
                 raise ValueError(name + " has an unsupported length")
             if "items" in field:
-                for item in value:
-                    parameters({"parameters":{"item":field["items"]}},{"item":item})
+                item_field = {**({'unit': field['unit']} if 'unit' in field else {}), **field['items']}
+                value = [parameters({"parameters": {"item": item_field}}, {"item": item})['item'] for item in value]
         elif kind == "object" and not isinstance(value,dict):
             raise ValueError(name + " must be an object")
         if "enum" in field and value not in field["enum"]:
@@ -171,14 +174,20 @@ def judged_quality(quality, reply):
     """Whether a status reply, text or a value read from a result, says the reading is valid."""
     text = reply.strip().strip('"') if isinstance(reply, str) else reply
     if 'bits' in quality:
-        return int(float(text)) & quality['bits'] == 0
+        try:
+            status = Decimal(str(text))
+        except InvalidOperation:
+            raise ValueError('a status bit mask must be an integer') from None
+        if not status.is_finite() or status != status.to_integral_value():
+            raise ValueError('a status bit mask must be an integer')
+        return int(status) & quality['bits'] == 0
     expected = quality['equals']
     if not isinstance(text, str):
         return text == expected
     if isinstance(expected, (int, float)) and not isinstance(expected, bool):
         try:
-            return float(text) == expected
-        except ValueError:
+            return Decimal(text) == Decimal(str(expected))
+        except InvalidOperation:
             return False
     return text == str(expected)
 
@@ -589,10 +598,11 @@ class SCPI(Driver):
                 result["reply"] = value
         if completion:
             result["completion_response"] = observed
-        if is_query and 'quality' in spec:
+        if is_query and 'query' in spec.get('quality', {}):
             # The instrument's own word on whether the reading is valid: overrange, unlocked, invalid input.
-            status = spec['quality']['query'].format_map(arguments)
+            status = spec['quality']['query']
             try:
+                status = status.format_map(arguments)
                 reply = self.exchange(status, True)
                 self._accept(status, reply)
                 if not judged_quality(spec['quality'], reply):

@@ -15,7 +15,7 @@ A condition is something an experiment relies on: an alignment, a lock, a warm-u
 
 ## Maintaining
 
-`operating_conditions(maintain=true, platform=..., request_id=...)` verifies what is due and corrects what drifted, dependencies first; `conditions=[...]` or `device` narrows it, `force` verifies again what holds, `run_id` runs it inside an experiment that reserved the instruments. The reply returns within `wait`; read on with `maintenance=<id>`. After a physical disturbance, `invalidate="what happened"` with `conditions` marks them due; `disturbance` with `platform` names an event the platform lists, such as `enclosure_opened`, and marks what it acts on.
+`operating_conditions(maintain=true, platform=..., request_id=...)` verifies what is due and corrects what drifted, dependencies first; `conditions=[...]` or `device` narrows it, `force` verifies again what holds, `run_id` runs it inside an experiment that reserved the instruments. The reply returns within `wait`; read on with `maintenance=<id>`. After a physical disturbance, `invalidate="what happened"` with `condition`, `conditions`, `platform` or `device` marks the selection due; `disturbance` with `platform` names an event the platform lists, such as `enclosure_opened`, and marks what it acts on.
 
 ## Relying on conditions
 
@@ -32,5 +32,7 @@ A reading its instrument reports as uncertain (`quality`: overload, invalid inpu
 ## Defining
 
 A tolerance can judge several readings: `"samples": 10, "interval": 2` with `"statistic": "std"`, `"span"` or `"slope"` and a `maximum` states that readings are steady; and agreement with a value: `"accept": {"target": {"device": "oven", "operation": "read_setpoint"}, "within": 0.5}` compares the reading with the setpoint the instrument holds, `"target": 100.0, "relative": 0.001` with the certified value of a standard. The value recorded is then the deviation. A tolerance may carry its unit, `"within": "20 mK"`, when the reading's unit is described; it is kept in the unit of the reading.
+
+A mean near a target does not establish stability; use a separate spread or drift condition when both are required. `usable` applies to every sample unless it explicitly chooses a statistic. Dynamic targets convert between declared units; without unit declarations both readings must already share a numeric convention. Instrument-reported invalidity remains unusable, including when the selected value comes through a saved method. Cancelling maintenance interrupts sampling and settling waits.
 
 Conditions are part of a platform definition (`configure_platform`) or of an instrument's record. Add or revise them from what the experiment requires, the instrument's manual and what the operator knows; `configuration_schema("platform")` gives the fields and `guide("priors")` the questions that fill them and the priors common to apparatus of every field. A correction can be an operation, a saved operation, or `tune`, a bounded local adjustment of settings against the verification value; it is not a global optimizer.
