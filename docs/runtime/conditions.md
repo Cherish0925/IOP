@@ -56,7 +56,7 @@ Conditions are part of the platform description (`conditions`) and are saved wit
 | --- | --- |
 | `verify` | A short reference measurement: one device operation, or a saved operation without `device`, whose named results can come from [views of arrays](operations.md), such as the frequency of a resonance / 一次简短的基准测量：一个设备操作，或不带 `device` 的已保存操作，其具名结果可以取自[数组的视图](operations.md)，例如谐振频率 |
 | `samples`, `interval` | Readings one verification takes and the seconds between them; a tolerance judges a statistic of them / 一次核对取的读数个数及其间隔秒数；容差判断它们的统计量 |
-| `accept` | The tolerance: `value` is the path into the result, with `minimum`, `maximum` or `equals`; or with a `target` and `within`, `relative` or both. `statistic` chooses what several samples give: `mean` (default), `std`, `span` or `slope` per second / 容差：`value` 是结果中的路径，配 `minimum`、`maximum` 或 `equals`；或配 `target` 与 `within`、`relative`。`statistic` 选择多个读数的统计量：`mean`（默认）、`std`、`span` 或每秒 `slope` |
+| `accept` | The tolerance: `value` is the path into the result, with `minimum`, `maximum` or `equals`; with `bits`, the status bits that must be clear; or with a `target` and `within`, `relative` or both. `statistic` chooses what several samples give: `mean` (default), `std`, `span` or `slope` per second / 容差：`value` 是结果中的路径，配 `minimum`、`maximum` 或 `equals`；配 `bits`，即必须为零的状态位；或配 `target` 与 `within`、`relative`。`statistic` 选择多个读数的统计量：`mean`（默认）、`std`、`span` 或每秒 `slope` |
 | `usable` | Every sample must pass unless an explicit `statistic` selects an aggregate; otherwise maintenance revisits declared dependencies / 默认每个样本均须可用；显式指定 `statistic` 时判断统计量，否则保持过程重新查看已声明的依赖 |
 | `reference` | Values of the accepted verification kept with the experiments that rely on it, such as a dark level used in the analysis / 通过核对时保留的数值，随依赖它的实验保存，例如分析时要扣除的暗计数 |
 | `correct` | What restores the condition, tried in order, each followed by a verification: an operation, or [`tune`](#tuning--调节). A step of a `manual` device asks a person / 恢复该条件的做法，按顺序尝试，每个之后核对一次：一个操作，或 [`tune`](#tuning--调节)；`manual` 设备的步骤交给人 |
@@ -64,6 +64,7 @@ Conditions are part of the platform description (`conditions`) and are saved wit
 | `valid_for` | Seconds an accepted verification is trusted; without it there is no time-based expiry / 一次通过的观察有效的秒数；不写则没有按时间到期的规则 |
 | `after` | Conditions of this platform that must hold first / 必须先成立的本平台条件 |
 | `kind`, `note` | An extensible category and contextual explanation / 可扩展的分类与背景说明 |
+| `each` | One condition for each channel, input, output or axis: [several channels](#several-channels--多个通道) / 为每个通道、输入、输出或轴各写一个条件：[多个通道](#several-channels--多个通道) |
 
 ### Forms that hold for any instrument / 适用于任何仪器的形式
 
@@ -99,6 +100,34 @@ Agreement and stability are separate decisions: a mean near the target can hide 
 Quantity objects such as `{"value": 20, "unit": "mK"}` and strings such as `"20 mK"` express the same tolerance. Unreliable verification, target or setting readbacks cannot establish a condition or initiate tuning from that readback. Cancelling maintenance interrupts sampling and settling waits. / 数量对象与带单位字符串等价。不可靠的核对、目标值或设定值回读不能使条件成立，也不能据此开始调节。取消保持过程会中断采样间隔和稳定等待。
 
 A `reference` taken over several samples keeps their mean, as a dark level or a baseline is averaged. `tune` works on either form: on a target it brings the deviation to zero. / 多个读数下的 `reference` 保留其平均值，如暗电平或基线取平均。`tune` 对两种形式都适用：对目标值时把偏差调到零。
+
+### Status registers / 状态寄存器
+
+Instruments report faults and events as bits of status registers. `"accept": {"bits": 60}` holds while none of those bits is set; several samples are combined by OR, preserving every reported bit. Registers are integers or exact integer text; fractional and nonfinite readings are refused. `bits` is used on its own, without a numeric tolerance or statistic. / 仪器以状态寄存器的位报告故障和事件。`"accept": {"bits": 60}` 在这些位都未置位时成立；多个读数按位或合并，保留每次报告的状态位。寄存器接受整数或精确的整数文本，拒绝小数及非有限值。`bits` 单独使用，不与数值容差或统计量混用。
+
+The IEEE 488.2 standard event status register `*ESR?` reports query, device, execution and command errors in bits 2–5 (mask 60). Reading it clears it: a zero means none of those events was reported since the previous read or clear. `STATus:QUEStionable:CONDition?` instead reports present states, with the supported queries and bit meanings given by the instrument manual. See [Keysight's status-register reference](https://helpfiles.keysight.com/csg/NA520xA/Programming/GP-IB_Command_Finder/Status.htm). / IEEE 488.2 标准事件状态寄存器 `*ESR?` 的第 2–5 位报告查询、设备、执行与命令错误（掩码 60）。读取即清零：零值表示自上次读取或清除以来未报告这些事件。`STATus:QUEStionable:CONDition?` 则报告当前状态，支持的查询及状态位含义见具体仪器手册。
+
+```json
+{"id": "no_command_errors", "description": "No command errors reported since the previous read or clear",
+ "verify": {"operation": "event_status"}, "accept": {"bits": 60}}
+```
+
+with `"event_status": {"query": "*ESR?", "effect": "observe"}` among the operations of a `scpi` device. The SCPI error queue is read the same way: `SYSTem:ERRor?` returns the oldest entry as `<code>,"<message>"`, `"result": {"type": "integer", "match": "^\\s*([+-]?\\d+)"}` reads its code, and `"accept": {"equals": 0}` states that the queue is empty; each reading removes one entry. An operation's [`quality`](drivers.md) judges the one reading it follows; a condition judges the instrument over time and marks what ran while it did not hold. / 其中 `event_status` 是 `scpi` 设备的一个操作。SCPI 错误队列同样读取：`SYSTem:ERRor?` 以 `<code>,"<message>"` 返回最早的一条，`"result": {"type": "integer", "match": "^\\s*([+-]?\\d+)"}` 读出代码，`"accept": {"equals": 0}` 说明队列为空；每读一次取走一条。操作的 [`quality`](drivers.md) 判断它所跟随的那一次读数；条件判断仪器在一段时间内的状态，并标记不成立期间运行的操作。
+
+Give destructive status reads one owner and retain their replies. Re-reading or clearing an event register acknowledges its history; use a setting or physical readback when the experiment needs to establish recovery. See [Rohde & Schwarz's error-queue example](https://www.rohde-schwarz.com/us/driver-pages/remote-control/instrument-error-checking_231244.html). / 由一个明确的过程负责读取会清除的状态，并保存返回值。重新读取或清除事件寄存器只是处理了历史记录；实验需要确认恢复时，应观察设定值或实际物理状态。
+
+### Several channels / 多个通道
+
+`each` writes one condition for every channel, input, output or axis: / `each` 为每个通道、输入、输出或轴各写一个条件：
+
+```json
+{"id": "output{output}_ok", "description": "Output {output} is not in protection",
+ "each": {"output": [1, 2, 3]},
+ "verify": {"operation": "protection_status", "arguments": {"output": "{output}"}}, "accept": {"bits": 3},
+ "correct": {"operation": "clear_protection", "arguments": {"output": "{output}"}}}
+```
+
+This is `output1_ok`, `output2_ok` and `output3_ok`. `{name}` in the id, description, note, `after`, operations, arguments and result paths takes each value. An argument or path element exactly equal to `"{output}"` keeps its type, including integer indices in `accept`, `usable` and `reference`. Several names give every combination. Each list has 1–100 channel names or integer indices; one template expands to at most 10000 conditions. The id names each variable, and the expanded names must be distinct. Platform conditions, instrument conditions and model descriptions accept it; an existing local condition overrides the model's condition of the same expanded name. / 展开为 `output1_ok`、`output2_ok`、`output3_ok`。id、description、note、`after`、操作、参数与结果路径中的 `{name}` 依次取各个值。恰为 `"{output}"` 的参数或路径元素保留类型，包括 `accept`、`usable` 和 `reference` 中的整数索引。多个名称给出所有组合。每个列表包含 1–100 个通道名或整数索引，一个模板最多展开为 10000 个条件。id 须包含每个变量，展开后的名称不得重复。平台、仪器记录和型号说明均可使用；已有的本地条件优先于展开后同名的型号条件。
 
 A correction acts on the system. A `reference` acts on the data: the condition "the dark level was measured within the last half hour" has no correction beyond measuring again, and its value travels with every experiment that requires it. / 校正作用于系统；`reference` 作用于数据：“半小时内测过暗计数”这个条件的校正就是再测一次，它的数值随每个依赖它的实验保存。
 
@@ -171,7 +200,7 @@ iop conditions                                     # states now
 
 The pass is an experiment of its own, so every verification and correction is an ordinary operation with its record, reservation and monitors. The pass reserves the devices and shared resources used by all its dependencies and corrections together. Independent resources remain available to other experiments. Inside an existing experiment, reserve these resources when starting it and finish its current batch before maintenance. / 一轮保持本身是一次实验，每次观察和校正都是普通操作。整轮共同占用观察、依赖和校正所需的设备与共享资源，其他独立资源仍可并行使用。在已有实验中执行时，启动实验就要预留这些资源，并在当前批次完成后调用。
 
-Saved operations used for observations or corrections keep their own `requires`. Declare those prerequisites in the condition graph where appropriate, or establish them before maintenance. A correction should not require the condition it is meant to restore. / 观察或校正采用的已保存操作，仍保留其自身的 `requires`。把实际前提写入条件依赖图，或在保持前建立这些条件；校正方法不应要求其所要恢复的条件已经成立。
+Saved operations used for observations or corrections keep their own `requires`. Declare what they need in the condition graph with `after`, or establish it before maintenance. A correction should not require the condition it is meant to restore. / 观察或校正采用的已保存操作，仍保留其自身的 `requires`。把它们需要的条件以 `after` 写入依赖图，或在保持前建立；校正方法不应要求其所要恢复的条件已经成立。
 
 ## State / 状态
 
@@ -282,11 +311,11 @@ Record the knowledge needed by the intended experiment, then revise it as the pl
 
 1. Before a measurement counts, what must be true? Use the labels relevant to this platform. / 测量算数之前什么必须成立？采用与本平台有关的分类。
 2. For each, which short measurement tells, and which value is acceptable? / 每一项用哪个简短的测量判断，什么数值可以接受？
-3. When that measurement shows nothing at all, what do you look at first? Which are actual prerequisites? Put those in `after`. / 测量没有有效结果时先看哪里？其中哪些确实是前提？把前提写入 `after`。
+3. When that measurement shows nothing at all, what do you look at first? Which of those must hold first? Put them in `after`. / 测量没有有效结果时先看哪里？其中哪些必须先成立？写入 `after`。
 4. How do you restore it, and what do you try when that does not work? / 怎么恢复，不行时再试什么？
-5. How long does it stay true, and what disturbs it? / 能维持多久，什么会扰动它？
+5. How long does it stay true, and what disturbs it? Name the events in [`disturbances`](#disturbances--扰动). / 能维持多久，什么会扰动它？把这些事件写入 [`disturbances`](#disturbances--扰动)。
 
-Settling times, warm-up times and safe ranges come from the instrument manuals; tolerances and `valid_for` are then corrected from the records. / 稳定时间、预热时间和安全范围来自仪器手册；容差和 `valid_for` 之后根据记录修正。
+Settling times, warm-up times and safe ranges come from the instrument manuals; tolerances and `valid_for` are then corrected from the records. The guide `priors` gives the questions field by field and the priors common to apparatus of every kind. / 稳定时间、预热时间和安全范围来自仪器手册；容差和 `valid_for` 之后根据记录修正。指南 `priors` 逐个字段给出问题，以及各类装置共有的物理先验。
 
 ## Interfaces / 接口
 

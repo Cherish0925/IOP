@@ -16,8 +16,6 @@ Each point is an ordinary operation with its own record; what the points return 
 
 ## repeat
 
-`"retake": true` takes again, before the next point, a point whose reading was uncertain or taken while a condition it relied on was lost: `guide("conditions")`.
-
 `"repeat": 20` runs the step 20 times in turn, at each point of its sweep if it has one; the readings are gathered over a last axis named `repeat`, whose summary gives their mean, spread and error.
 
 ## until
@@ -41,8 +39,8 @@ In place of `sweep`: find where a reading is largest (`maximize`) or smallest (`
 Seek moves continuous numeric parameters. Use a fixed `sweep` of allowed values for integer, categorical or enumerated parameters; the submission rejects them before any calls run.
 
 ```json
-{"id": "align", "device": "fiber", "operation": "couple",
- "seek": {"maximize": ["power"], "points": 60,
+{"id": "align", "device": "positioner", "operation": "read_signal",
+ "seek": {"maximize": ["signal"], "points": 60,
           "over": {"x": {"minimum": -2, "maximum": 2, "step": 0.5, "start": -1.5},
                    "y": {"minimum": -2, "maximum": 2, "step": 0.5}}}}
 ```
@@ -52,6 +50,10 @@ Seek moves continuous numeric parameters. Use a fixed `sweep` of allowed values 
 - Gathered: the readings over an axis named `evaluation`, the places under `positions`, and `best` with its `index`, place `at` and `reading`. Bind the result: `{"step": "align", "path": ["best", "at", "x"]}`.
 - To seek on a number read from an array (the peak of a trace at each place), seek over a saved operation whose named result reads it through a `view`.
 - It is a bounded local search: start it where a coarse sweep read most when the reading has several maxima.
+
+## retake
+
+`"retake": true` takes again, before the next point, a point whose reading was uncertain or taken while a condition it relied on was lost: `guide("conditions")`.
 
 ## retry
 

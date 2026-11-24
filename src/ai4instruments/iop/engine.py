@@ -606,7 +606,7 @@ class Engine:
     def prepare_platform(self, definition):
         definition = platform_model.description(definition, self.devices)
         for procedure in definition['procedures'].values():
-            for step in library.expand(procedure['steps'], self.library.get)[0]:
+            for step in library.expand(procedure['steps'], self.library.get, self._described)[0]:
                 if step['device'] not in definition['devices']:
                     raise ValueError('Procedure device must belong to the platform')
                 self._operation('prepare', step)

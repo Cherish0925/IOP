@@ -42,10 +42,14 @@ def merge_conditions(record, conditions, builtin=()):
     and the conditions it depends on are kept too.
     """
     import fnmatch
-    from .conditions import available, instrument, operations_used, order
+    from .conditions import available, each, instrument, operations_used, order
     own = list(record.get('conditions', []))
-    names = {c.get('id') for c in own if isinstance(c, dict)}
-    candidates = [c for c in conditions if c['id'] not in names]
+    try:
+        # Conditions written for several channels are compared one channel at a time.
+        names = {c.get('id') for c in each(own) if isinstance(c, dict)}
+        candidates = [c for c in each(list(conditions)) if c['id'] not in names]
+    except ValueError:
+        return record
     if not candidates:
         return record
     try:

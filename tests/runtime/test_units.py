@@ -98,6 +98,33 @@ class SubmittedUnitsCase(unittest.TestCase):
     setUp = fixture.ServiceCase.setUp
     tearDown = fixture.ServiceCase.tearDown
 
+    def test_quantity_objects_and_mixed_range_bounds_reach_the_instrument(self):
+        for sweep in ({'angle_deg': [{'value': 0, 'unit': 'rad'}, {'value': 0.1, 'unit': 'rad'}]},
+                      {'angle_deg': {'start': {'value': 0, 'unit': 'rad'}, 'stop': '0.1 rad', 'points': 2}}):
+            with self.subTest(sweep=sweep):
+                run = self.client.submit([{'id': 'scan', 'device': 'stage', 'operation': 'move_to',
+                                           'sweep': sweep, 'arguments': {'duration': 0}}])
+                run.result(5)
+                angles = [r['arguments']['angle_deg'] for r in run.info()['operation_records']]
+                self.assertEqual([round(a, 6) for a in angles], [0, 5.729578])
+        self.client.register({'id': 'limited', 'driver': 'simulated', 'config': {'kind': 'stage'},
+                              'limits': {'move_to': {'angle_deg': {'maximum': 45, 'note': 'Mount stop'}}}})
+        with self.assertRaisesRegex(IOPError, 'Mount stop'):
+            self.client.submit([{'id': 'scan', 'device': 'limited', 'operation': 'move_to',
+                                 'sweep': {'angle_deg': [{'value': 1, 'unit': 'rad'}]}}])
+
+    def test_platform_procedures_keep_unit_bearing_ranges(self):
+        steps = [{'id': 'scan', 'device': 'stage', 'operation': 'move_to',
+                  'sweep': {'angle_deg': {'center': {'value': 0, 'unit': 'rad'}, 'span': '0.2 rad', 'points': 3}},
+                  'arguments': {'duration': 0}}]
+        saved = self.client.configure_platform({'schema_version': 1, 'id': 'bench', 'devices': ['stage'],
+            'procedures': {'initialize': {'steps': steps}}})
+        self.assertEqual(saved['definition']['procedures']['initialize']['steps'], steps)
+        run = self.client.procedure('bench')
+        run.result(5)
+        angles = [r['arguments']['angle_deg'] for r in run.info()['operation_records']]
+        self.assertEqual([round(a, 6) for a in angles], [-5.729578, 0, 5.729578])
+
     def test_an_experiment_records_the_converted_argument_and_refuses_another_quantity(self):
         run = self.client.submit([{'id': 'turn', 'device': 'stage', 'operation': 'move_to',
                                    'arguments': {'angle_deg': '0.5 rad', 'duration': '20 ms'}}])
@@ -107,11 +134,84 @@ class SubmittedUnitsCase(unittest.TestCase):
         with self.assertRaisesRegex(IOPError, r'Step turn \(stage.move_to\): angle_deg is in deg: '
                                               'mm is not a unit of the same quantity as deg'):
             self.client.submit([{'id': 'turn', 'device': 'stage', 'operation': 'move_to', 'arguments': {'angle_deg': '5 mm'}}])
+        # A sweep's range is given in any unit of the parameter; its positions are in the declared one.
+        run = self.client.submit([{'id': 'scan', 'device': 'stage', 'operation': 'move_to',
+                                   'sweep': {'angle_deg': {'start': '0 rad', 'stop': '0.1 rad', 'points': 3}},
+                                   'arguments': {'duration': '1 ms'}}])
+        run.result(5)
+        angles = [r['arguments']['angle_deg'] for r in run.info()['operation_records']]
+        self.assertEqual([round(a, 6) for a in angles], [0.0, 2.864789, 5.729578])
+        with self.assertRaisesRegex(IOPError, 'angle_deg is in deg: V is not a unit of the same quantity as deg'):
+            self.client.submit([{'id': 'scan', 'device': 'stage', 'operation': 'move_to',
+                                 'sweep': {'angle_deg': ['1 V', '2 V']}}])
         # A limit the setup imposes applies to the converted number.
         self.client.register({'id': 'limited', 'driver': 'simulated', 'config': {'kind': 'stage'},
                               'limits': {'move_to': {'angle_deg': {'maximum': 45, 'note': 'The mount hits its stop'}}}})
         with self.assertRaisesRegex(IOPError, 'The mount hits its stop'):
             self.client.submit([{'id': 'turn', 'device': 'limited', 'operation': 'move_to', 'arguments': {'angle_deg': '1 rad'}}])
+
+
+class RangeUnitsCase(unittest.TestCase):
+    def test_integer_ranges_reuse_argument_conversion_without_rounding_fractional_values(self):
+        from ai4instruments.iop import library
+        spec = {'parameters': {'frequency': {'type': 'integer', 'unit': 'Hz'}}}
+        step = {'id': 'scan', 'device': 'clock', 'operation': 'set',
+                'sweep': {'frequency': {'start': '1 kHz', 'stop': {'value': 2, 'unit': 'kHz'}, 'points': 3}}}
+        flat, _, _ = library.expand([step], lambda name: None, lambda d, o: spec)
+        values = [s['arguments']['frequency'] for s in flat]
+        self.assertEqual(values, [1000, 1500, 2000])
+        self.assertTrue(all(type(v) is int for v in values))
+        step['sweep']['frequency']['stop'] = '1000000000.5 Hz'
+        with self.assertRaisesRegex(ValueError, 'not an integer'):
+            library.expand([step], lambda name: None, lambda d, o: spec)
+
+    def test_quantity_objects_in_saved_methods_are_converted_at_expansion(self):
+        from ai4instruments.iop import library
+        method = {'id': 'ramp', 'description': 'Sweep a supplied voltage range', 'layer': 'standard',
+                  'parameters': {'stop': {'type': 'number', 'unit': 'V'}},
+                  'steps': [{'id': 'scan', 'device': 'supply', 'operation': 'set',
+                             'sweep': {'voltage': {'start': {'value': 250, 'unit': 'mV'},
+                                                   'stop': '${stop}', 'points': 2}}}]}
+        library.check(method, lambda name: None)
+        steps, _, _ = library.expand([{'id': 'r', 'operation': 'ramp', 'arguments': {'stop': '500 mV'}}],
+                                      lambda name: dict(method, revision=1), lambda d, o: {'parameters': {
+                                          'voltage': {'type': 'number', 'unit': 'V'}}})
+        self.assertEqual([s['arguments']['voltage'] for s in steps], [0.25, 0.5])
+
+    def test_categorical_labels_and_result_paths_are_not_quantities(self):
+        from ai4instruments.iop import library
+        step = {'id': 'scan', 'device': 'meter', 'operation': 'mode', 'sweep': {'mode': ['1 V', '2 V']}}
+        flat, _, _ = library.expand([step], lambda name: None,
+                                    lambda d, o: {'parameters': {'mode': {'type': 'string'}}})
+        self.assertEqual([s['arguments']['mode'] for s in flat], ['1 V', '2 V'])
+        step = {'id': 'scan', 'device': 'meter', 'operation': 'read', 'sweep': {'voltage': {
+            'start': 0, 'stop': 1, 'points': 2, 'adapt': ['1 V']}}}
+        self.assertIsNotNone(library.swept(step))
+        for malformed in ('search', [], 4):
+            with self.assertRaises(ValueError):
+                library.expand([{'id': 'scan', 'device': 'meter', 'operation': 'read', 'seek': malformed}],
+                               lambda name: None)
+
+    def test_seek_quantity_objects_preserve_temperature_differences(self):
+        from ai4instruments.iop import library
+        over = {'minimum': {'value': 273.15, 'unit': 'K'}, 'maximum': {'value': 283.15, 'unit': 'K'},
+                'step': {'value': 1, 'unit': 'K'}, 'resolution': {'value': 100, 'unit': 'mK'}}
+        flat, _, _ = library.expand([{'id': 'find', 'device': 'oven', 'operation': 'set',
+            'seek': {'maximize': ['value'], 'over': {'temperature': over}, 'points': 5}}],
+            lambda name: None, lambda d, o: {'parameters': {'temperature': {'type': 'number', 'unit': '°C'}}})
+        converted = flat[-1]['gathers']['find']['seek']['over']['temperature']
+        for key, expected in {'minimum': 0, 'maximum': 10, 'step': 1, 'resolution': 0.1}.items():
+            self.assertAlmostEqual(converted[key], expected)
+
+    def test_seek_ranges_convert_positions_and_widths(self):
+        from ai4instruments.iop.library import in_units
+        step = {'id': 'find', 'device': 'oven', 'operation': 'set',
+                'seek': {'maximize': ['value'], 'over': {'celsius': {'minimum': '300 K', 'maximum': '350 K', 'step': '5 K',
+                                                                      'resolution': '100 mK', 'start': '320 K'}}}}
+        over = in_units(step, {'celsius': {'type': 'number', 'unit': '°C'}})['seek']['over']['celsius']
+        expected = {'minimum': 26.85, 'maximum': 76.85, 'step': 5.0, 'resolution': 0.1, 'start': 46.85}
+        for key, value in expected.items():
+            self.assertAlmostEqual(over[key], value, msg=key)
 
 
 if __name__ == '__main__':

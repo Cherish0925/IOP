@@ -1,28 +1,19 @@
-# IOP 0.15.0
+# IOP 0.16.0
 
-## Physical conditions and measurements
+## Unit-bearing ranges and channel conditions
 
-- Conditions can judge repeated readings by mean, standard deviation, span or slope, or compare a reading with a fixed reference or the instrument's current setpoint. Agreement and stability are separate decisions; each experiment selects the conditions it needs.
-- Arguments and tolerances accept unit-bearing strings or quantity objects. Conversion precedes parameter limits, including array items. Dynamic targets convert between declared units; absolute temperatures and temperature differences use their respective conversions. Incompatible dimensions are refused.
-- Keep instrument-reported quality with readings from SCPI status queries, status operations, EPICS alarms and OPC UA status codes. Existing non-good quality is preserved when interval or saturation checks add a reason. Native snapshots retain affected channel names and status information.
-- Verification, target and tuning readbacks retain the quality of the data they use, including selected results of saved operations. Unrelated diagnostic branches do not invalidate a usable result. A per-sample usability check cannot be hidden by averaging; an explicit statistic still selects an aggregate.
-- Revisions to a dynamic target's device or method make prior observations due. Cancelling maintenance interrupts sampling and settling waits. Tuning keeps an acceptable trial even when its gain is smaller than the search threshold.
+- Sweep values and seek ranges accept quantity objects and strings in any compatible unit of the parameter. Positions convert with temperature offsets; spans, steps and resolutions convert as differences. Conversion applies before parameter limits, through saved methods and platform procedures. Categorical string labels remain unchanged, and quantities are distinguished from references to earlier results.
+- Conditions can require selected status bits to be clear. Samples are combined by bitwise OR, with exact integer parsing shared by conditions and reading quality. Fractional and nonfinite registers are refused; bit masks cannot be mixed with numeric tolerances or statistics.
+- `each` defines one condition per channel, input, output or axis. Typed substitution covers arguments, dependencies, targets and result paths. Each expansion has a checked size; local conditions take precedence over model conditions with the same expanded name. The Lake Shore 336 description uses this form for its two heater outputs.
+- Guides distinguish current instrument states from event registers or error queues consumed by a query. They keep experiment-specific recovery in the method, and retain the independent roles of stability, target agreement and reading quality.
 
-## Platforms and agent interfaces
-
-- Platforms name physical disturbances and the conditions each affects. MCP can invalidate a named condition, a list, a platform or a device; dependent conditions become due through the existing dependency graph.
-- Add the on-demand `priors` guide across HTTP, CLI, MCP and clients. It explains reference/sample context, calibration, equilibrium, transient experiments, measurement intervals and apparatus-specific dependencies.
-- Add a simulated fiber-coupled optical bench with warm-up, mechanical and thermal drift, coupling, saturation and dark references. Its device models remain separate from the runtime's general scheduling and condition mechanisms.
-- Add a Lake Shore Model 336 description for temperature, input validity, setpoints and heater state. Setpoints follow the control sensor's preferred units; the description does not assume kelvin. The profile covers the listed commands and is exercised with protocol fixtures.
-
-IOP Connect and the source plugin manifests are 1.9.0. The runtime, native executor, TypeScript client and DeepSeek package are 0.15.0. Existing stored experiments and numeric result shapes are retained. Unit-bearing inputs are optional. Sampled `usable` guards now check each sample by default; use an explicit `statistic` for an aggregate guard.
+The runtime, Rust executor, TypeScript client and DeepSeek package are 0.16.0; IOP Connect and source plugin manifests are 1.10.0. Existing numeric requests, saved experiments and explicit condition definitions remain supported. New ranges and channel templates require IOP 0.16.0.
 
 ## 中文
 
-工作条件新增重复读数的均值、标准差、极差和斜率判断，以及对固定参考值或仪器当前设定值的比较。达到目标与保持稳定分别判断；各实验自行选择依赖条件。参数和容差支持带单位字符串及数量对象，数组元素同样先换算再判断范围，动态目标按已声明单位换算，绝对温度与温差分别处理。
+- 扫描值和搜索范围支持带单位字符串及数量对象。位置按温度偏移换算，跨度、步长与分辨率按差值换算；封装方法和平台流程使用同一条转换路径，转换后再检查参数范围。字符串档位保留原值，数量对象与前序结果引用分别处理。
+- 条件支持状态位掩码。多次读数按位或合并，与读数质量共用精确整数解析；小数和非有限值被拒绝，位掩码不与数值容差或统计量混用。
+- `each` 为通道、输入、输出或轴分别展开条件，保留参数、依赖、目标及结果路径中的值类型。展开数量在分配前检查，本地同名条件优先于型号说明。Lake Shore 336 的两个加热输出使用这一形式。
+- 指南区分当前物理状态与读取后清除的事件、错误队列；恢复步骤由具体实验方法定义，稳定性、目标一致性和读数质量仍分别表达。
 
-读数保留 SCPI、EPICS、OPC UA 和状态操作提供的质量信息。核对、目标和调节回读使用实际数据来源的质量，封装方法不会因提取标量而丢掉它，无关的诊断分支也不会使有效结果失效。默认逐样本检查可用性，避免平均掩盖无效样本；显式指定统计量时仍可判断整体。目标方法或设备修订后重新观察，取消保持过程可中断采样和稳定等待。
-
-平台可以声明扰动及其影响的条件。新增按需读取的物理先验指南、包含预热与漂移等机制的光纤耦合模拟平台，以及 Lake Shore 336 部分命令的型号说明。指南区分参考物与未知样品，按具体方法定义依赖，不规定所有领域共用一套实验顺序。
-
-IOP Connect 与源码插件清单统一为 1.9.0，其余发行组件为 0.15.0，保留已有实验记录和数值结果结构。新增仪器型号以协议模拟验证，未在本次开发环境中连接实物。
+运行时、Rust 执行器、TypeScript 客户端和 DeepSeek 包为 0.16.0；IOP Connect 与源码插件清单为 1.10.0。保留已有数值请求、实验记录和显式条件定义。新增范围写法与通道模板要求服务端为 IOP 0.16.0。

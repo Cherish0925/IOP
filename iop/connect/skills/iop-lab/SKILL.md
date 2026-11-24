@@ -5,7 +5,7 @@ description: Use IOP to operate instruments or scientific software, submit exper
 
 # Operate a laboratory
 
-The laboratory is a service that keeps instruments, platforms, methods, experiments and their records. It goes on working when this connection closes. These guides describe IOP 0.15.0; check `lab_context.service.version` and upgrade an older service while idle before using newer options.
+The laboratory is a service that keeps instruments, platforms, methods, experiments and their records. It goes on working when this connection closes. These guides describe IOP 0.16.0; check `lab_context.service.version` and upgrade an older service while idle before using newer options.
 
 ## Working method
 
@@ -31,7 +31,7 @@ Each is short, with examples. Read one when the task needs it: `guide(topic)`, o
 | `sweeps` | `sweep`, `adapt`, `repeat`, `until`, `seek`, `retake`, `retry` |
 | `arrays` | `read_array`: summaries, windows, maps, lines, crossings, fits |
 | `measurements` | Streaming means, correlated uncertainty, dark/reference correction, precision stopping |
-| `conditions` | What an experiment relies on: `requires`, maintenance, `upkeep`, data in doubt |
+| `conditions` | What an experiment relies on: `requires`, maintenance, `upkeep`, disturbances, data in doubt, tolerance forms |
 | `priors` | Writing what is known of an apparatus as conditions: the questions, the general forms, priors by concept across fields |
 | `experiments` | The three forms, following a run, failure and continuation, files, archives |
 | `programs` | Writing a research program: the package, the SDK inside it, saved progress |
