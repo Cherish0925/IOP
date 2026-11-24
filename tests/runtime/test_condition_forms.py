@@ -32,13 +32,16 @@ class Loop(Driver):
             'clear': {'parameters': {'channel': {'type': 'integer', 'minimum': 1, 'maximum': 4}}}}}
 
     def invoke(self, operation, arguments, cancelled):
-        p, now = PROCESS, time.monotonic()
+        p, now = PROCESS, PROCESS['clock']()
         if operation == 'set_setpoint':
             p.update(start=self.present(now), setpoint=arguments['value'], since=now)
         elif operation == 'set_offset':
             p['offset'] = arguments['value']
         elif operation == 'wait':
-            cancelled.wait(arguments['seconds'])
+            if p['wait'] is None:
+                cancelled.wait(arguments['seconds'])
+            else:
+                p['wait'](arguments['seconds'])
         elif operation == 'setpoint':
             return {'value': p['setpoint'] + self.config.get('setpoint_offset', 0)}
         elif operation == 'offset':
@@ -64,7 +67,7 @@ class FormsCase(unittest.TestCase):
     def setUp(self):
         fixture.ServiceCase.setUp(self)
         PROCESS.update(setpoint=20.0, start=20.0, since=time.monotonic(), tau=0.2, offset=0.0, drift=0.0, noise=0.0,
-                       sequence=deque(), rng=random.Random(3), reads=0, status={})
+                       sequence=deque(), rng=random.Random(3), reads=0, status={}, clock=time.monotonic, wait=None)
         self.client.register({'id': 'loop', 'driver': __name__ + ':Loop'})
 
     tearDown = fixture.ServiceCase.tearDown
@@ -81,15 +84,21 @@ class FormsCase(unittest.TestCase):
                     'verify': {'device': 'loop', 'operation': 'read'},
                     'accept': {'target': {'device': 'loop', 'operation': 'setpoint'}, 'within': 0.5},
                     'correct': {'device': 'loop', 'operation': 'wait', 'arguments': {'seconds': 4}}})
-        # A time constant a slow machine still sees the value approach with.
-        PROCESS['tau'] = 0.5
+        # Advance only the simulated process clock, so HTTP latency cannot settle it before verification.
+        elapsed = [0.0]
+
+        def advance(seconds):
+            elapsed[0] += seconds
+
+        PROCESS.update(clock=lambda: elapsed[0], wait=advance, since=0.0, tau=0.5)
         self.client.submit([{'id': 'heat', 'device': 'loop', 'operation': 'set_setpoint', 'arguments': {'value': 300}}]).result(5)
         entry = self.entry()
         # 280 below the setpoint just after the change; eight time constants later within half a unit of it.
         self.assertEqual((entry['found'], entry['result'], entry['by']), ('drifted', 'corrected', 'loop.wait'))
         self.assertLess(abs(entry['value']), 0.5)
         records = [r for r in self.client.condition('loop.at_setpoint')['records'] if r['type'] == 'verified']
-        self.assertLess(records[0]['value'], -200)
+        self.assertEqual(records[0]['value'], -280)
+        self.assertAlmostEqual(entry['value'], -280 * math.exp(-8))
         # A new setpoint is a new target: the same tolerance follows it.
         self.client.submit([{'id': 'cool', 'device': 'loop', 'operation': 'set_setpoint', 'arguments': {'value': 77}}]).result(5)
         self.assertEqual(self.entry(force=True)['found'], 'drifted')
