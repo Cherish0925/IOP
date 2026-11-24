@@ -103,14 +103,18 @@ A `reference` taken over several samples keeps their mean, as a dark level or a 
 
 ### Status registers / 状态寄存器
 
-Instruments report faults and events as bits of status registers, read by a query and explained in the manual. `"accept": {"bits": 60}` holds while none of those bits is set; several samples are combined by OR. For every IEEE 488.2 instrument, the standard event status register `*ESR?` sets bit 2 for a query error, 3 for a device-dependent error, 4 for an execution error and 5 for a command error (mask 60); reading it clears it, so the condition states that no command failed since it was last read. SCPI's `STATus:QUEStionable:CONDition?` gives the questionable states present now, such as an output in current limit, an unlocked reference or an overtemperature; its bits depend on the instrument. / 仪器以状态寄存器的位报告故障和事件，由查询命令读取，含义见手册。`"accept": {"bits": 60}` 在这些位都未置位时成立；多个读数按位或合并。对所有 IEEE 488.2 仪器，标准事件状态寄存器 `*ESR?` 的第 2 位为查询错误、第 3 位为设备相关错误、第 4 位为执行错误、第 5 位为命令错误（掩码 60）；读取即清零，所以该条件说明自上次读取以来没有命令失败。SCPI 的 `STATus:QUEStionable:CONDition?` 给出当前存在的可疑状态，例如输出进入限流、参考失锁或过温，各位含义随仪器而定。
+Instruments report faults and events as bits of status registers. `"accept": {"bits": 60}` holds while none of those bits is set; several samples are combined by OR, preserving every reported bit. Registers are integers or exact integer text; fractional and nonfinite readings are refused. `bits` is used on its own, without a numeric tolerance or statistic. / 仪器以状态寄存器的位报告故障和事件。`"accept": {"bits": 60}` 在这些位都未置位时成立；多个读数按位或合并，保留每次报告的状态位。寄存器接受整数或精确的整数文本，拒绝小数及非有限值。`bits` 单独使用，不与数值容差或统计量混用。
+
+The IEEE 488.2 standard event status register `*ESR?` reports query, device, execution and command errors in bits 2–5 (mask 60). Reading it clears it: a zero means none of those events was reported since the previous read or clear. `STATus:QUEStionable:CONDition?` instead reports present states, with the supported queries and bit meanings given by the instrument manual. See [Keysight's status-register reference](https://helpfiles.keysight.com/csg/NA520xA/Programming/GP-IB_Command_Finder/Status.htm). / IEEE 488.2 标准事件状态寄存器 `*ESR?` 的第 2–5 位报告查询、设备、执行与命令错误（掩码 60）。读取即清零：零值表示自上次读取或清除以来未报告这些事件。`STATus:QUEStionable:CONDition?` 则报告当前状态，支持的查询及状态位含义见具体仪器手册。
 
 ```json
-{"id": "no_command_errors", "description": "No command failed since the last reading",
+{"id": "no_command_errors", "description": "No command errors reported since the previous read or clear",
  "verify": {"operation": "event_status"}, "accept": {"bits": 60}}
 ```
 
 with `"event_status": {"query": "*ESR?", "effect": "observe"}` among the operations of a `scpi` device. The SCPI error queue is read the same way: `SYSTem:ERRor?` returns the oldest entry as `<code>,"<message>"`, `"result": {"type": "integer", "match": "^\\s*([+-]?\\d+)"}` reads its code, and `"accept": {"equals": 0}` states that the queue is empty; each reading removes one entry. An operation's [`quality`](drivers.md) judges the one reading it follows; a condition judges the instrument over time and marks what ran while it did not hold. / 其中 `event_status` 是 `scpi` 设备的一个操作。SCPI 错误队列同样读取：`SYSTem:ERRor?` 以 `<code>,"<message>"` 返回最早的一条，`"result": {"type": "integer", "match": "^\\s*([+-]?\\d+)"}` 读出代码，`"accept": {"equals": 0}` 说明队列为空；每读一次取走一条。操作的 [`quality`](drivers.md) 判断它所跟随的那一次读数；条件判断仪器在一段时间内的状态，并标记不成立期间运行的操作。
+
+Give destructive status reads one owner and retain their replies. Re-reading or clearing an event register acknowledges its history; use a setting or physical readback when the experiment needs to establish recovery. See [Rohde & Schwarz's error-queue example](https://www.rohde-schwarz.com/us/driver-pages/remote-control/instrument-error-checking_231244.html). / 由一个明确的过程负责读取会清除的状态，并保存返回值。重新读取或清除事件寄存器只是处理了历史记录；实验需要确认恢复时，应观察设定值或实际物理状态。
 
 ### Several channels / 多个通道
 
@@ -123,7 +127,7 @@ with `"event_status": {"query": "*ESR?", "effect": "observe"}` among the operati
  "correct": {"operation": "clear_protection", "arguments": {"output": "{output}"}}}
 ```
 
-This is `output1_ok`, `output2_ok` and `output3_ok`. `{name}` in the id, description, note, `after` and arguments takes each value; an argument that is exactly `"{output}"` keeps the value's type. Several names give every combination. The id names each of them, so that the conditions are distinct. Platform conditions, instrument conditions and model descriptions accept it. / 展开为 `output1_ok`、`output2_ok`、`output3_ok`。id、description、note、`after` 和参数中的 `{name}` 依次取各个值；恰为 `"{output}"` 的参数保留值的类型。多个名称给出所有组合。id 须包含每个名称，使各条件互不相同。平台条件、仪器条件和型号说明都可使用。
+This is `output1_ok`, `output2_ok` and `output3_ok`. `{name}` in the id, description, note, `after`, operations, arguments and result paths takes each value. An argument or path element exactly equal to `"{output}"` keeps its type, including integer indices in `accept`, `usable` and `reference`. Several names give every combination. Each list has 1–100 channel names or integer indices; one template expands to at most 10000 conditions. The id names each variable, and the expanded names must be distinct. Platform conditions, instrument conditions and model descriptions accept it; an existing local condition overrides the model's condition of the same expanded name. / 展开为 `output1_ok`、`output2_ok`、`output3_ok`。id、description、note、`after`、操作、参数与结果路径中的 `{name}` 依次取各个值。恰为 `"{output}"` 的参数或路径元素保留类型，包括 `accept`、`usable` 和 `reference` 中的整数索引。多个名称给出所有组合。每个列表包含 1–100 个通道名或整数索引，一个模板最多展开为 10000 个条件。id 须包含每个变量，展开后的名称不得重复。平台、仪器记录和型号说明均可使用；已有的本地条件优先于展开后同名的型号条件。
 
 A correction acts on the system. A `reference` acts on the data: the condition "the dark level was measured within the last half hour" has no correction beyond measuring again, and its value travels with every experiment that requires it. / 校正作用于系统；`reference` 作用于数据：“半小时内测过暗计数”这个条件的校正就是再测一次，它的数值随每个依赖它的实验保存。
 

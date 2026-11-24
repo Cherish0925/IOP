@@ -23,6 +23,7 @@ Each pass is recorded like any other, with ``automatic`` and its reasons, and ne
 that asks a person.
 """
 import copy
+import itertools
 import json
 import math
 import re
@@ -34,7 +35,7 @@ from datetime import datetime, timezone
 from time import monotonic
 from . import batches, library
 from .engine import SATISFIED
-from .drivers import parameters
+from .drivers import parameters, status_register
 from .errors import RequestError
 from .platforms import closest, name, strings
 from . import units
@@ -72,8 +73,8 @@ def criterion(value, what):
     if 'statistic' in value and value['statistic'] not in STATISTICS:
         raise ValueError(what + ': statistic is one of ' + ', '.join(STATISTICS))
     if 'target' in value:
-        if value.keys() & {'minimum', 'maximum', 'equals'}:
-            raise ValueError(what + ': a target takes within or relative, not minimum, maximum or equals')
+        if value.keys() & {'minimum', 'maximum', 'equals', 'bits'}:
+            raise ValueError(what + ': a target takes within or relative, not minimum, maximum, equals or bits')
         target = value['target']
         if not number(target):
             if not isinstance(target, dict):
@@ -183,12 +184,9 @@ def judge(spec, results, times=None, target=None):
         values.append(value)
     if 'bits' in spec:
         # A status register: the condition holds while none of these bits is set in any sample.
-        try:
-            register = 0
-            for value in values:
-                register |= int(float(value))
-        except (TypeError, ValueError):
-            raise ValueError(f'{value!r} is not a status register value') from None
+        register = 0
+        for value in values:
+            register |= status_register(value)
         return register, register & spec['bits'] == 0
     name = spec.get('statistic', 'mean' if len(values) > 1 else None)
     if name:
@@ -339,36 +337,37 @@ def each(definitions):
             continue
         what = 'Condition ' + str(condition.get('id'))
         values = condition['each']
-        if (not isinstance(values, dict) or not values or any(not isinstance(k, str) or not re.fullmatch(r'[A-Za-z_]\w*', k)
+        if (not isinstance(values, dict) or not values or any(not isinstance(k, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', k)
                                                               for k in values)
                 or any(not isinstance(v, list) or not v or len(v) > 100 for v in values.values())):
             raise ValueError(what + ': each maps names to the lists of values the condition is written for, '
                                     'such as {"channel": ["CH1", "CH2"]}')
+        if any(type(item) not in (str, int) for items in values.values() for item in items):
+            raise ValueError(what + ': each values are channel names or integer indices')
+        if math.prod(len(items) for items in values.values()) > 10000:
+            raise ValueError(what + ': each expands to at most 10000 conditions')
         missing = [k for k in values if '{' + k + '}' not in str(condition.get('id'))]
         if missing:
             raise ValueError(what + ': the id names {' + '}, {'.join(missing) + '}, so that each one is distinct')
-        combinations = [{}]
-        for key, items in values.items():
-            combinations = [{**c, key: item} for c in combinations for item in items]
-
         def put(value, chosen, inside=False):
             if isinstance(value, str):
-                for key, item in chosen.items():
-                    if inside and value == '{' + key + '}':
-                        return item
-                    value = value.replace('{' + key + '}', str(item))
-                return value
+                match = re.fullmatch(r'\{([A-Za-z_][A-Za-z0-9_]*)\}', value)
+                if inside and match and match[1] in chosen:
+                    return chosen[match[1]]
+                return re.sub(r'\{([A-Za-z_][A-Za-z0-9_]*)\}',
+                              lambda m: str(chosen[m[1]]) if m[1] in chosen else m[0], value)
             if isinstance(value, dict):
                 return {k: put(v, chosen, inside) for k, v in value.items()}
             if isinstance(value, list):
                 return [put(v, chosen, inside) for v in value]
             return value
-        for chosen in combinations:
+        for items in itertools.product(*values.values()):
+            chosen = dict(zip(values, items))
             copy_ = {k: v for k, v in condition.items() if k != 'each'}
             for key in ('id', 'description', 'note', 'after'):
                 if key in copy_:
                     copy_[key] = put(copy_[key], chosen)
-            for key in ('verify', 'correct', 'accept', 'usable'):
+            for key in ('verify', 'correct', 'accept', 'usable', 'reference'):
                 if key in copy_:
                     copy_[key] = put(copy_[key], chosen, inside=True)
             expanded.append(copy_)

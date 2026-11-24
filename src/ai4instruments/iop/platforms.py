@@ -41,12 +41,14 @@ def closest(name, names):
 def sources(binding):
     """What a binding reads: its source, or the sources of the ends of the range a point of a sweep reads."""
     if isinstance(binding, dict) and isinstance(binding.get('range'), dict):
-        return [found for end in binding['range'].values() if isinstance(end, dict) for found in sources(end)]
+        return [found for end in binding['range'].values()
+                if isinstance(end, dict) and end.keys() != {'value', 'unit'} for found in sources(end)]
     if isinstance(binding, dict) and isinstance(binding.get('seek'), dict):
         # A place a seek reads comes from its own earlier points; the numbers bounding its search may be read.
         over = binding['seek'].get('over')
         return [found for item in (over.values() if isinstance(over, dict) else []) if isinstance(item, dict)
-                for end in item.values() if isinstance(end, dict) for found in sources(end)]
+                for end in item.values() if isinstance(end, dict) and end.keys() != {'value', 'unit'}
+                for found in sources(end)]
     return [binding]
 
 

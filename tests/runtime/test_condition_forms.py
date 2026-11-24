@@ -7,7 +7,7 @@ import unittest
 from collections import deque
 from unittest.mock import patch
 from ai4instruments.iop import IOPError
-from ai4instruments.iop.conditions import check, outcome
+from ai4instruments.iop.conditions import check, each, judge, outcome
 from ai4instruments.iop.drivers import Driver
 from . import test_service as fixture
 
@@ -335,6 +335,52 @@ class FormsCase(unittest.TestCase):
 
 
 class FormDefinitionCase(unittest.TestCase):
+    def test_status_bits_keep_exact_integers_and_every_sample(self):
+        criterion = {'value': ['value'], 'bits': 1}
+        for value in (9007199254740993, '9007199254740993', '9007199254740993.0', '9.007199254740993e15'):
+            self.assertEqual(judge(criterion, [{'value': 0}, {'value': value}]), (9007199254740993, False))
+        self.assertEqual(judge({'value': ['value'], 'bits': 4}, [{'value': 1}, {'value': 2}]), (3, True))
+        for value in (0.5, '0.5', True, None, 'NaN', 'Infinity', float('inf')):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'must be an integer'):
+                judge(criterion, {'value': value})
+
+    def test_channel_conditions_expand_dependencies_targets_and_reference_paths(self):
+        base = {'each': {'channel': [0, 1]}, 'description': 'Channel {channel}',
+                'verify': {'device': 'rack', 'operation': 'read', 'arguments': {'channel': '{channel}'}}}
+        definitions = [dict(base, id='ready{channel}', accept={'bits': 1}),
+                       dict(base, id='level{channel}', after=['ready{channel}'],
+                            accept={'value': ['channels', '{channel}'], 'within': 0.01,
+                                    'target': {'device': 'rack', 'operation': 'setpoint',
+                                               'arguments': {'channel': '{channel}'}}},
+                            reference={'level': ['channels', '{channel}']})]
+        expanded = check(definitions)
+        self.assertEqual([c['id'] for c in expanded], ['ready0', 'ready1', 'level0', 'level1'])
+        self.assertEqual(expanded[3]['after'], ['ready1'])
+        self.assertEqual(expanded[3]['accept']['target']['arguments'], {'channel': 1})
+        self.assertEqual(expanded[3]['reference'], {'level': ['channels', 1]})
+        self.assertEqual(definitions[1]['reference']['level'], ['channels', '{channel}'])
+
+    def test_channel_expansion_checks_values_and_size_before_building_combinations(self):
+        base = {'id': 'c{a}_{b}_{c}', 'each': {k: list(range(100)) for k in 'abc'}}
+        with self.assertRaisesRegex(ValueError, 'at most 10000 conditions'):
+            each([base])
+        for value in (True, None, 1.5, {'channel': 1}, [1]):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'channel names or integer indices'):
+                each([{'id': 'c{a}', 'each': {'a': [value]}}])
+
+    def test_model_channel_conditions_preserve_local_overrides(self):
+        from ai4instruments.iop.identification import merge_conditions
+        model = {'id': 'ch{channel}_ok', 'each': {'channel': [1, 2]}, 'description': 'Channel {channel}',
+                 'verify': {'operation': 'status', 'arguments': {'channel': '{channel}'}}, 'accept': {'bits': 4}}
+        own = {'id': 'ch1_ok', 'description': 'Channel 1 uses a stricter fault mask',
+               'verify': {'operation': 'status', 'arguments': {'channel': 1}}, 'accept': {'bits': 12}}
+        record = {'conditions': [own], 'config': {'operations': {'status': {
+            'parameters': {'channel': {'type': 'integer', 'enum': [1, 2]}}}}}}
+        merged = merge_conditions(record, [model])['conditions']
+        self.assertEqual([c['id'] for c in merged], ['ch1_ok', 'ch2_ok'])
+        self.assertEqual([c['accept']['bits'] for c in merged], [12, 4])
+        self.assertEqual(merged[1]['verify']['arguments'], {'channel': 2})
+
     def test_every_sample_must_be_usable_unless_a_statistic_is_explicit(self):
         base = {'id': 'c', 'description': 'Stable usable readings', 'verify': {'device': 'loop', 'operation': 'read'},
                 'samples': 2, 'accept': {'statistic': 'span', 'maximum': 0.1},
@@ -353,6 +399,7 @@ class FormDefinitionCase(unittest.TestCase):
         base = {'id': 'c', 'description': 'A condition', 'verify': {'device': 'loop', 'operation': 'read'}}
         for change, message in (
                 ({'accept': {'target': 5, 'within': 1, 'maximum': 6}}, 'a target takes within or relative'),
+                ({'accept': {'target': 5, 'within': 1, 'bits': 4}}, 'a target takes within or relative'),
                 ({'accept': {'target': 5}}, 'give within, an absolute tolerance, or relative'),
                 ({'accept': {'maximum': 6, 'within': 1}}, 'within and relative belong to a target'),
                 ({'accept': {'target': 5, 'within': -1}}, 'within is a nonnegative number'),

@@ -15,7 +15,7 @@ import math
 import re
 from collections import deque
 from . import arrays, sweeps as sweeping, units, views
-from .drivers import parameter_definitions, parameters, span
+from .drivers import in_unit, parameter_definitions, parameters, span
 from .platforms import dependencies, fields, name, sources
 
 LAYERS = ('standard', 'workflow')
@@ -36,17 +36,23 @@ def placeholders(value):
 
 
 def quantities(value):
-    """Whether a sweep or seek gives a number with its unit anywhere; it is converted once the parameter's unit is known."""
-    if isinstance(value, str):
+    """Whether sweep or seek positions or widths need the parameter's unit before expansion."""
+    if not isinstance(value, dict):
+        return False
+
+    def given(item):
+        if isinstance(item, dict) and item.keys() == {'value', 'unit'}:
+            return True
         try:
-            return units.quantity(value) is not None
+            return units.quantity(item) is not None
         except ValueError:
-            return False
-    if isinstance(value, dict):
-        # A value read from an earlier result names its path; it is not a quantity.
-        return not value.keys() & {'path', 'view'} and any(quantities(item) for item in value.values())
-    if isinstance(value, list):
-        return any(quantities(item) for item in value)
+            return True  # Report the malformed quantity once the parameter is known.
+
+    for spec in value.values():
+        items = spec if isinstance(spec, list) else (
+            [spec[key] for key in POSITIONS + WIDTHS if key in spec] if isinstance(spec, dict) else [])
+        if any(given(item) for item in items):
+            return True
     return False
 
 
@@ -57,19 +63,13 @@ POSITIONS, WIDTHS = ('start', 'stop', 'center', 'minimum', 'maximum'), ('span', 
 def in_units(step, described):
     """The step with the numbers its sweep and seek give with units in the units its parameters declare."""
     def converted(name, value, width=False):
+        field = described.get(name) or {}
+        if field.get('type', 'number') not in ('number', 'integer'):
+            return value  # Categorical labels such as "1 V" remain strings.
         try:
-            given = units.quantity(value)
+            return in_unit(name, field, value, difference=width)
         except ValueError as error:
-            raise ValueError(f"Step {step['id']}: {name}: {error}") from None
-        if given is None:
-            return value
-        unit = (described.get(name) or {}).get('unit')
-        if not isinstance(unit, str) or not unit:
-            raise ValueError(f"Step {step['id']}: {name} declares no unit; give plain numbers")
-        try:
-            return (units.difference if width else units.convert)(given[0], given[1], unit)
-        except ValueError as error:
-            raise ValueError(f"Step {step['id']}: {name} is in {unit}: {error}") from None
+            raise ValueError(f"Step {step['id']}: {error}") from None
 
     def ranged(name, spec):
         if isinstance(spec, list):
@@ -207,7 +207,7 @@ def retried(value, what):
     return value
 
 
-def swept(step):
+def swept(step, *, units_resolved=False):
     """The points, shape and axes of a step's sweep, repetition or seek, or None while parameters still give them."""
     if 'seek' in step:
         if step.keys() & {'sweep', 'repeat', 'until', 'retake'}:
@@ -216,7 +216,7 @@ def swept(step):
         over = step['seek'].get('over') if isinstance(step['seek'], dict) else None
         if isinstance(over, dict) and set(over) & (set(step.get('arguments', {})) | set(step.get('bindings', {}))):
             raise ValueError(f"Step {step['id']}: a parameter the seek moves is not also given in arguments or bindings")
-        if placeholders(step['seek']) or quantities(step['seek'].get('over')):
+        if placeholders(step['seek']) or not units_resolved and quantities(over):
             return None
         try:
             return sweeping.seeking(step['seek'])
@@ -241,7 +241,7 @@ def swept(step):
         if any(isinstance(spec, dict) and 'adapt' in spec for spec in sweep.values()):
             raise ValueError(f"Step {step['id']}: an adaptive sweep placed its points from what they read, so its points "
                              "are not taken again")
-    if placeholders(sweep) or placeholders(step.get('repeat')) or quantities(sweep):
+    if placeholders(sweep) or placeholders(step.get('repeat')) or not units_resolved and quantities(sweep):
         return None
     try:
         found = sweeping.grid(sweep, step.get('repeat'))
@@ -286,9 +286,8 @@ def expand(steps, lookup, describe=None):
                 raise ValueError('Each step needs id and operation')
             spec = (describe(step['device'], step['operation']) if describe else None) if 'device' in step \
                 else lookup(step['operation'])
-            if quantities(step.get('sweep')) or quantities((step.get('seek') or {}).get('over')):
-                step = in_units(step, (spec or {}).get('parameters') or {})
-            found = swept(step)
+            step = in_units(step, (spec or {}).get('parameters') or {})
+            found = swept(step, units_resolved=True)
             if found is None or placeholders(step.get('until', {})):
                 raise ValueError(f'Step {sweep_id}: give the values of sweep, repeat, until and seek; "${{name}}" takes '
                                  'them from the parameters of a saved operation')
@@ -397,7 +396,7 @@ def expand(steps, lookup, describe=None):
                 found = PLACEHOLDER.match(end) if isinstance(end, str) else None
                 if key != 'points' and found and found[1] in bound:
                     end = bound[found[1]]
-                elif key != 'points' and isinstance(end, dict):
+                elif key != 'points' and isinstance(end, dict) and 'step' in end:
                     end = {**end, 'step': f'{call}.{end["step"]}'}
                 ends[key] = end
             return ends

@@ -279,9 +279,18 @@
             "additionalProperties": {
               "type": "array",
               "minItems": 1,
-              "maxItems": 100
+              "maxItems": 100,
+              "items": {
+                "type": [
+                  "string",
+                  "integer"
+                ]
+              }
             },
-            "description": "Write the condition once for several channels, inputs, outputs or axes: {\"channel\": [\"CH1\", \"CH2\"]} makes one condition for each value; \"{channel}\" in the id, description, note, after and arguments is replaced by it."
+            "description": "One condition per channel name or integer index. Substitute {name} in id, description, note, after, operations, arguments and result paths. Each list has 1–100 values; one template expands to at most 10000 conditions.",
+            "propertyNames": {
+              "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+            }
           },
           "description": {
             "type": "string",
@@ -604,7 +613,57 @@
           "minimum": 1,
           "description": "A status register: met while none of these bits is set in the reading."
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "bits"
+            ]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "minimum"
+                  ]
+                },
+                {
+                  "required": [
+                    "maximum"
+                  ]
+                },
+                {
+                  "required": [
+                    "equals"
+                  ]
+                },
+                {
+                  "required": [
+                    "statistic"
+                  ]
+                },
+                {
+                  "required": [
+                    "target"
+                  ]
+                },
+                {
+                  "required": [
+                    "within"
+                  ]
+                },
+                {
+                  "required": [
+                    "relative"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
     },
     "conditionTuning": {
       "type": "object",

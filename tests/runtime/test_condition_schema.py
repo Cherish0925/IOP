@@ -49,5 +49,9 @@ class ConditionSchemaCase(unittest.TestCase):
                 validator.validate(written)
                 self.assertFalse(validator.is_valid({**written, 'accept': {'bits': 0}}))
                 self.assertFalse(validator.is_valid({**written, 'each': {'output': []}}))
+                self.assertFalse(validator.is_valid({**written, 'each': {'output': [True]}}))
+                self.assertFalse(validator.is_valid({**written, 'each': {'invalid-name': [1]}}))
+                for extra in ({'target': 1, 'within': 0}, {'maximum': 1}, {'equals': 0}, {'statistic': 'mean'}):
+                    self.assertFalse(validator.is_valid({**written, 'accept': {'bits': 3, **extra}}))
         expanded = conditions.instrument('psu', [condition])
         self.assertEqual([c['id'] for c in expanded], ['psu.output1_ok', 'psu.output2_ok'])

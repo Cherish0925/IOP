@@ -23,10 +23,11 @@ def span(field):
     return f"above {field['maximum']}{unit(field)}" if "maximum" in field else f"below {field['minimum']}{unit(field)}"
 
 
-def in_unit(name, field, value):
+def in_unit(name, field, value, *, difference=False):
     """A number given with its unit, {"value": 5, "unit": "mV"} or "5 mV", in the unit the parameter declares.
 
-    A unit of another quantity is refused, as is a unit for a parameter that declares none."""
+    A unit of another quantity is refused, as is a unit for a parameter that declares none.
+    Range widths use difference=True to omit absolute temperature offsets."""
     try:
         given = units.quantity(value)
     except ValueError as error:
@@ -36,7 +37,7 @@ def in_unit(name, field, value):
     if not isinstance(field.get("unit"), str) or not field["unit"]:
         raise ValueError(f"{name} declares no unit; give a plain number")
     try:
-        converted = units.convert(given[0], given[1], field["unit"])
+        converted = (units.difference if difference else units.convert)(given[0], given[1], field["unit"])
     except ValueError as error:
         raise ValueError(f"{name} is in {field['unit']}: {error}") from None
     if field.get("type") == "integer":
@@ -170,17 +171,23 @@ def quality_spec(spec):
     return quality
 
 
+def status_register(reply):
+    """Read integer status bits without passing through floating point or truncating a fraction."""
+    text = reply.strip().strip('"') if isinstance(reply, str) else reply
+    try:
+        status = Decimal(str(text))
+    except InvalidOperation:
+        raise ValueError('a status bit mask must be an integer') from None
+    if not status.is_finite() or status != status.to_integral_value():
+        raise ValueError('a status bit mask must be an integer')
+    return int(status)
+
+
 def judged_quality(quality, reply):
     """Whether a status reply, text or a value read from a result, says the reading is valid."""
-    text = reply.strip().strip('"') if isinstance(reply, str) else reply
     if 'bits' in quality:
-        try:
-            status = Decimal(str(text))
-        except InvalidOperation:
-            raise ValueError('a status bit mask must be an integer') from None
-        if not status.is_finite() or status != status.to_integral_value():
-            raise ValueError('a status bit mask must be an integer')
-        return int(status) & quality['bits'] == 0
+        return status_register(reply) & quality['bits'] == 0
+    text = reply.strip().strip('"') if isinstance(reply, str) else reply
     expected = quality['equals']
     if not isinstance(text, str):
         return text == expected
