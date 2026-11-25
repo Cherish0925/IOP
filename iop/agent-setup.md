@@ -1,187 +1,53 @@
-# IOP · Agent integration
+# Connect an agent to IOP
 
-[Install a host plugin or connect a remote MCP client](connect/README.md)
-
-[中文](agent-setup.zh-CN.md) · [Application and platforms](product.md) · [HTTP API](../docs/runtime/http-api.md) · [Platform schema](schema/platform.schema.json)
-
-Codex, Claude Code, DeepSeek Harness, Qiushi Engine and other research software can connect through MCP, CLI, HTTP or the Python/TypeScript clients. All interfaces use the same service, instruments, platform configuration and experiment records.
-
-## Tasks for an agent
-
-Choose the task that matches the laboratory's current state; these are entry points, not stages to repeat in every conversation. Replace bracketed details when known. The agent reads existing records and asks for missing physical or connection information as needed. MCP prompts become available after the host connects; the deployment task uses the host's own terminal and installation capabilities.
-
-1. **Deploy and connect the host**:
-
-   > Set up IOP from https://github.com/EnvFoundry/IOP for [instrument computer and agent host, if known]. First identify where your tools execute and where the instruments are connected; reuse existing installations and laboratory data. Install the appropriate release or source on the instrument computer and start its service. Follow the connection guide: for local, SSH or remote REST access, generate a named bridge with `iop connect` and install and activate it in this host; for a native HTTP MCP client, configure the gateway endpoint in that host. If a host interface or access step needs me, state the exact action. Complete a `lab_context` call through this host and report the laboratory, service version, connection and data location.
-
-2. **Connect the instruments**, prompt `connect`:
-
-   > Connect [instrument or devices needed for the task]. Read the existing laboratory records and setup guide. Discover missing connections, use the model's manual or SDK to describe operations, and save setup limits and relevant conditions. Ask me only for missing physical information, then retain it. Check the needed operations against suitable observations and report the device IDs, readings with units, run IDs and what remains to be done.
-
-3. **Describe the platform**:
-
-   > Describe or update platform [name] for [task], using existing records, manuals and the physical information I supply. Save its instruments, wiring, shared resources, methods and relevant conditions. Distinguish measured state, operator reports and assumptions. Show what is ready and what the next experiment needs; establish its required conditions when preparing to run.
-
-4. **Run an experiment**, prompt `measure(goal)`:
-
-   > Measure [quantity or observable, range and required precision where known] on [platform]. Reuse an applicable saved method and declare the conditions the result needs. Choose a step graph, a continuous experiment or a program for this task; preview a step graph before submitting. Submit once, retain the run ID, and report the observations, relevant uncertainty, analysis assumptions and saved data.
-
-5. **Research**, prompt `research(question)`:
-
-   > Investigate [question] on [platform], within [time, sample or measurement budget, if specified]. Read prior experiments first. Choose measurements or computations that distinguish the plausible explanations, compare observations with predictions, and record the result and next decision. Adapt the method when a route fails; report an answer within its supported scope or the specific input or capability needed to continue.
-
-6. **Continue and reuse**:
-
-   > Continue [project or run ID]. Find its records, read the current state and follow work still running. Reuse completed results; if interrupted, resolve the cause and any unknown physical outcome before continuing. Ask only for changed or missing site information. Preserve the method and relevant experience for later work.
-
-`begin` reads the current state; `report(run_id)` explains a recorded experiment and `keep(run_id)` saves its method. Neither finishes a running experiment: use `finish_experiment` for an external experiment after its operations and transfers complete. Guides cover `setup`, `conditions`, `priors`, `experiments` and `research`; read the relevant one when needed. A generated connection file alone does not establish host access: the first host tool call does. Without MCP prompt support, use the task text above through the host's supported CLI or client connection.
+IOP keeps instruments, methods, experiments and results in one laboratory service. MCP, CLI, HTTP and the Python/TypeScript clients use that same service.
 
 ## First connection
 
-The release installers include the Agent component. Print the MCP connection configuration using the installed `iop` command:
+Install IOP on the instrument computer. Follow the [connection guide](connect/README.md) for your agent host and for local, SSH or remote access. For a local MCP host:
 
 ```sh
 iop mcp-config
 ```
 
-Use its `command` and `args` in your agent host's MCP server settings. The output uses the common `mcpServers` JSON structure; hosts using another configuration format use the same command and argument list. Paths refer to the current installation. No connection token is printed.
+Use the returned command and arguments in the host's MCP settings, then call `lab_context`. A terminal-based agent can use `iop context --start`. Once connected, begin with the current laboratory state and the [working method](connect/skills/iop-lab/SKILL.md).
 
-The host starts `iop mcp`. It connects to the local service, starting it if necessary. Closing the MCP process leaves that service and accepted experiments running. Call `lab_context` first: it returns saved platforms, instrument operation names, available drivers, visible connections, resource usage and remaining setup work.
+## Tasks for an agent
 
-Terminal-based agents can instead call:
+Choose the task needed now. Replace known bracketed details; existing installations and experiments carry forward.
 
-```sh
-iop context --start
-```
+**Deploy**
 
-Add `--refresh` for a new connection scan; otherwise IOP reuses its current inventory. The desktop/browser settings page exports the same laboratory description as JSON.
+> Connect this agent to IOP from https://github.com/EnvFoundry/IOP for [instrument computer]. Identify where your tools and the instruments run. Reuse the existing installation and data, or install IOP there. Follow the connection guide for this host. Complete a lab_context call and report the connection and data location. Tell me the exact local action if one is needed.
 
-For source installations, install `.[agent]` in the IOP environment. Set `IOP_AGENT=0` in the release installer to omit MCP dependencies. Python 3.10 uses the maintained MCP SDK 1.x; Python 3.11+ uses SDK 2.x. Both paths are covered by the runtime workflow. SDK references: [v1](https://py.sdk.modelcontextprotocol.io/v1/) and [v2](https://py.sdk.modelcontextprotocol.io/).
+**Connect instruments** — MCP prompt `connect`
 
-## Configure once, then reuse
+> Connect [devices] for [task]. Reuse existing descriptions and read guide("setup"). Take commands, units and ranges from the model manual or SDK. Ask only for missing wiring, sample or apparatus information and save it. Try the operations needed for the task and report their actual response.
 
-1. Read `lab_context`. Reuse existing instruments and platforms.
-2. For a new instrument, read its documentation and choose an installed adapter. Read `configuration_schema("device")`, then call `register_instrument`. Repeating the identical record reuses the connection.
-3. Save devices, physical connections, shared objects and named procedures with `configure_platform`. Use the current revision when editing. Ask only for physical details that cannot be obtained from existing descriptions or connected equipment.
-4. Run the saved initialization procedure when the experiment needs it. Saving configuration alone performs no device action.
-5. Submit an experiment or program; retain its run ID. Inspect progress and results later. Reuse `request_id` when retrying the same submission.
+**Describe a platform**
 
-An individual instrument can operate without a platform. A platform records relationships among devices used together. Serial/parallel ordering comes from experiment dependencies; shared resources describe objects requiring coordinated use.
+> Save or update [platform] for [task]: its instruments, wiring, shared resources, reusable methods and relevant operating conditions. Use existing records and the physical details I supply. Prepare only what the next experiment needs.
 
-## MCP tools
+**Measure** — MCP prompt `measure(goal)`
 
-| Tool | Purpose |
-| --- | --- |
-| `lab_context` | Current laboratory description; optional connection refresh |
-| `describe_instrument` | Operations, arguments and units for one device |
-| `describe_platform` | Devices, connections, shared resources, procedures and signal timing of one platform |
-| `guide` | The working method, or one part of it with examples, read when a task needs it |
-| `configuration_schema` | Device, platform or workflow JSON schema |
-| `register_instrument` | Register a connection using an installed driver |
-| `register_instruments` | Register multiple descriptions, returning each result; IDs may be omitted |
-| `discover_instruments` | Start background discovery or read the cached inventory |
-| `configure_platform` | Save or preview platform configuration |
-| `configure_resources` | Set named resource capacities |
-| `run_procedure` | Execute initialization or another saved procedure |
-| `saved_operations` | List, read or save Standard and Workflow Operations; a step without `device` uses one |
-| `operating_conditions` | What must hold on a platform, or on one instrument, for experiments: read the states, maintain them, or record a disturbance |
-| `submit_experiment` | Submit a graph of instrument operations and dependencies |
-| `submit_program` | Upload a directory or ZIP from the MCP host for service execution |
-| `experiment` | Status, paged operations, output files and optional result |
-| `find_experiments` | Experiments newest first, found again by name, project, request ID, instrument or state |
-| `cancel_experiment` | Request cancellation |
-| `reconnect_instrument` | Reconnect a device or a previously unavailable SDK |
-| `resolve_resources` | Record observed instrument state and return interrupted resources to use |
-| `manual_tasks` | Steps waiting for a person: instruction and readings to report |
-| `report_manual_step` | Report a step done with its readings, failed or unsure, as the person stated |
-| `download_file` | Save an experiment output on the MCP host |
-| `save_experiment` | Save a whole experiment as one ZIP on the MCP host: records, files and an RO-Crate description |
+> Measure [quantity, range and precision] on [platform]. Reuse a suitable method, prepare its conditions and run the experiment. Read the result with its units and relevant uncertainty. Save the data and a short explanation of what it means.
 
-An argument a tool does not take is refused, as is a field a step or a submission does not take: a misspelt `requires` or `retry` never runs an experiment without it.
+**Research** — MCP prompt `research(question)`
 
-`iop://laboratory` exposes the same context as an MCP resource. Submissions return immediately. `experiment` returns at most 100 operations per page; pass the returned cursor as `after`. Retrieve large data through output files.
+> Investigate [question] on [platform] within [budget, if specified]. Start from earlier results. Choose measurements or calculations that help answer the question, compare predictions with observations, and use the result to choose the next action. Keep the objective while changing an unproductive approach. Save the result and what to do next.
 
-### Guides
+**Continue**
 
-Tool descriptions are read on every turn, so they stay short and point to guides read when a task needs them. `guide()` returns the working method; `guide(topic)` returns one part with examples: `steps`, `sweeps`, `arrays`, `measurements`, `conditions`, `priors`, `experiments`, `research`, `programs`, `setup` or `episodes`. The same texts are the skill a host plugin installs (`SKILL.md` with its `references/`), the MCP resources `iop://guides/{topic}`, `iop guide [topic]` in a terminal, `GET /v1/guides/{topic}`, and `guide(topic)` in the Python and TypeScript clients. The texts are in [connect/skills/iop-lab](connect/skills/iop-lab/); a guide names only tools and options that exist, which the runtime cases verify.
+> Continue [project or run]. Find its saved records, follow work still running and reuse completed results. Resume interrupted work after resolving its cause. Ask only for changed or missing physical information. Keep useful methods and apparatus knowledge for later work.
 
-### Prompts
+The prompts `begin`, `report(run_id)` and `keep(run_id)` read the laboratory, explain a result and retain a method. Use `finish_experiment` to close a continuous experiment after its operations complete. Hosts without MCP prompts can use the task text through their CLI or client connection.
 
-Hosts that list MCP prompts offer six as commands a person starts work with; each names the tools to use and what to report.
+## Keep the context small
 
-| Prompt | Starts |
-|---|---|
-| `begin` | Reading the laboratory: what is ready, what can continue, what needs the person |
-| `connect` | Connecting task-relevant instruments: reuse descriptions, configure and check their operations |
-| `measure(goal)` | A measurement from a goal: descriptions, a saved method when one exists, a preview, one submission, the arrays |
-| `research(question)` | Rounds of expectation, experiment, analysis and decision on one question, each decision recorded |
-| `report(run_id)` | An account of one experiment from its record alone, with what failed or is in doubt |
-| `keep(run_id)` | Saving an experiment's method as a Standard or Workflow Operation; the steps it was submitted as are placed in the prompt |
+Read one instrument, guide or result when needed. Use cursors for changes and array slices for data. Details remain in the laboratory.
 
-`begin` is always offered; `connect` comes with the `setup` and `experiments` toolsets, the others with `experiments`.
+Connections can select toolsets with `iop mcp-config --toolsets experiments,attention`: 30 tools for an established laboratory. Add `setup` to register instruments and platforms; add `episodes` for learning trajectories. All 45 tools remain available when no selection is supplied.
 
-### Toolsets
+The same on-demand guide is available through `guide(topic)`, `iop guide [topic]`, `iop://guides/{topic}` and the clients. Native HTTP MCP uses a bridge or SDK for local file transfers.
 
-Hosts that cap the number of tools, or carry every tool description in each request, can load part of them: `iop mcp --toolsets experiments,attention`, or `IOP_MCP_TOOLSETS=experiments,attention` in the host's environment (an SSH connection passes it on as the argument). `lab_context`, `describe_instrument`, `describe_platform` and `guide` are always offered. When a next step needs a tool that is left out, the server instructions tell the agent to ask for its toolset. `iop mcp-config --toolsets ...` prints the launcher with the choice.
-
-| Toolset | Tools | For |
-| --- | --- | --- |
-| `setup` | 12 | Registering instruments, model descriptions, platforms and resources |
-| `experiments` | 21 | Saved operations, operating conditions, experiments, batches, acquisitions, programs, results and files |
-| `attention` | 5 | Reconnecting and releasing instruments, held resources and manual steps |
-| `episodes` | 3 | Research episodes and transitions |
-
-All four (45 tools, about 24 kB of descriptions and parameters) are the default. `experiments,attention` offers 30 tools in about 18 kB for a laboratory that is already set up.
-
-## Remote service
-
-```sh
-iop --endpoint http://lab-computer:8765 mcp-config
-```
-
-Set `IOP_TOKEN` in the agent host's environment or secret configuration. The MCP process runs beside the agent and forwards work to the reachable instrument service. It does not start another local service when a remote endpoint is selected. See [server configuration](../docs/runtime/README.md).
-
-## SDK access
-
-```python
-from ai4instruments.iop import Client
-lab = Client()  # Reads environment variables or local connection settings.
-print(lab.context()['platforms'])
-print(lab.schema('workflow'))
-```
-
-```typescript
-import { IOP } from '@ai4instruments/iop';
-const lab = new IOP(process.env.IOP_ENDPOINT, process.env.IOP_TOKEN);
-const context = await lab.context();
-const schema = await lab.schema('workflow');
-```
-
-HTTP exposes `GET /v1/context` and `GET /v1/schemas/{name}`. Retrieve detailed operations at `GET /v1/devices/{id}` only for instruments needed by the current task.
-
-## Multiple instruments and repeated calls
-
-Start discovery with `discover_instruments()`, then inspect progress with `discover_instruments(refresh=false)`. Serial, VISA and USB inventory remain distinct; model commands come from instrument descriptions, installed drivers and manufacturer documentation. `register_instruments(definitions)` registers multiple devices and returns each generated ID or error. IDs do not require operator input.
-
-Python and TypeScript `run.invoke()` wait for the target operation and return as soon as its result is available. Submit independent calls concurrently; the service schedules device, bus and platform resources. When all steps are known, submit one workflow using `after` and `bindings`. Put feedback-dependent loops inside experiment programs.
-
-[Instrument setup](instrument-setup.md) · [Measurements](performance/README.md)
-
-## Identity and automatic setup
-
-Read `lab_context` first. `discover_instruments(refresh=false).instruments` retains identity, source, presence and required setup fields. Use automatically registered instruments directly. `complete_instrument_setup` entries in `next_steps` identify the remaining protocol, communication settings, driver or model operations.
-
-- `identify_instrument(device)`: schedule an identity read and save its result; returns a run ID.
-- `instrument_profiles()`: read bundled and local model descriptions.
-- `save_instrument_profile(definition)`: save model operations and add new operations to identified devices.
-- `retry_instrument_discovery(connection_key)`: retry a connection immediately; omit the key to retry all.
-
-Python: `identify()`, `instrument_profiles()`, `save_instrument_profile()`, `retry_discovery()`. TypeScript: `identify()`, `instrumentProfiles()`, `saveInstrumentProfile()`, `retryDiscovery()`. Read `configuration_schema("instrument-profile")` for the description format.
-
-## Continuing work
-
-The default context links to full descriptions; use `lab_context(after=cursor)` for subsequent changes. `instrument_configuration` reads or edits versioned settings. `continue_program` continues an experiment that stopped: a step graph from the operations that completed, a program that declares resume support from the progress it saved. [Program progress and binary data](continuity.md).
-
-## Installed model descriptions
-
-`instrument_profiles(manufacturer=..., model=...)` returns short pages. Continue with `next_offset`; set `details=true` for operation definitions. Sources include package versions and original documentation. Equally applicable descriptions remain explicit choices applied through existing device configuration. [Instrument support packages](instrument-packages.md).
+[Host connections](connect/README.md) · [Instrument setup](instrument-setup.md) · [Python, TypeScript and HTTP](../docs/runtime/http-api.md) · [Program continuation](continuity.md) · [Instrument packages](instrument-packages.md)

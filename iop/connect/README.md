@@ -24,7 +24,7 @@ updates are separate; the plugin does not replace drivers or laboratory data.
 
 ## Install one connection
 
-Install the release on the lab computer. From IOP 0.8.4, run the following on the **agent execution host**. Use the full IOP executable printed by the installer when a desktop application does not inherit the terminal PATH.
+Install the release on the lab computer. Run the following on the **agent execution host**. Use the full IOP executable printed by the installer when a desktop application does not inherit the terminal PATH.
 
 ```sh
 iop connect --name bench --local
@@ -50,9 +50,9 @@ The connector writes a receipt with paths, without contacting an instrument. Its
 | Other stdio MCP clients | Read the printed `mcp` JSON. Register its executable and argument array in the host's MCP settings. If using a remote token, allow the named environment variable through to the child process. |
 | HTTP/SDK programs | Use the existing REST, Python or TypeScript client with a specific laboratory endpoint. `/v1` is the IOP API; `/mcp` belongs to the separate MCP gateway. |
 
-**Install directly from GitHub** when the agent host can run `iop mcp` on its PATH. Add marketplace `Cherish0925/IOP` in Codex or Claude Code; install `iop-lab@iop`. It uses the IOP connection of that process. For isolated labs or a GUI without that PATH, use the named connection above. A hosted product should assign an account, credential and lab to its execution worker; the connector does not provide tenant isolation.
+The returned paths identify the packages to install in the host. Run the same named connection command again when its configuration changes. To use the standalone connector ZIP, extract it and run `python install.py --name bench`; use the installed IOP Python or pass `--iop-python PATH`.
 
-**Upgrade separately.** Reinstalling the connector does not update the daemon or drivers. Old generated package directories remain available to clients using them. Upgrade the daemon with the matching platform installer after accepted work finishes. User data remains in the same IOP data directory. For the standalone connector ZIP, extract it and run `python install.py --name bench`; use the installed IOP Python or pass `--iop-python PATH`. The standalone connector also works with the 0.8.3 stdio service. The HTTP gateway requires 0.8.4.
+Runtime updates use the platform installer after accepted work finishes; existing laboratory data remains in place. A hosted service assigns each execution worker its laboratory endpoint and credentials.
 
 ## First experiment
 

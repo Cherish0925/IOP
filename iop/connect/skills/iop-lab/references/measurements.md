@@ -43,11 +43,3 @@ The [reference-measurement example](https://github.com/EnvFoundry/IOP/tree/main/
 ## Assumptions of the model
 
 Nonlinear propagation uses first-order derivatives, following [JCGM 100, §5](https://www.iso.org/sites/JCGM/GUM/JCGM100/C045315e-html/C045315e_FILES/MAIN_C045315e/05_e.html). The mean's repeatability assumes independent observations of a stationary quantity. Drift, autocorrelation, detector saturation and model discrepancy need their own model or correction. Invalid/nonfinite data are refused, never silently dropped. `normalize` refuses a zero corrected reference; near-zero references may need a nonlinear uncertainty model. The example reports no ratio when the reference's relative standard uncertainty exceeds its configured limit. A precision target is a stopping rule for this estimated uncertainty, not a confidence-interval coverage guarantee.
-
-## 中文
-
-`measurements` 用于研究程序中的校正、归一化与不确定度传播。`Estimate` 保存数值、单位和具名误差贡献；每个贡献带符号，单位与数值相同，表示标准不确定度而非置信区间。同名项表示同一误差源，不同名称表示独立误差源。共同增益在比值中可以抵消，共用暗信号的相关性会被保留；不能仅因两个读数来自同一校准证书就假定它们完全相关。
-
-`RunningMean` 以固定内存累计次数、均值和平方偏差，可序列化进 `run.checkpoint`。重复性项使用均值的标准误差，至少需要两个独立读数；额外指定的共同校准项不会因平均而缩小。`merge` 仅用于不重叠的数据组。首次操作前保存空进度，再用稳定 `request_id` 完成读取并更新进度，中断后相同请求会取回原记录。
-
-`normalize` 计算共享暗信号校正后的信号/参考比值；其他模型用 `propagate` 显式给出偏导数。单位转换显式完成，非有限读数会报错。模型使用一阶传播；漂移、自相关、饱和及参考接近零时应使用适合的模型。精度目标用于停止采样，不代表置信区间覆盖率的保证。完整可运行方法和模拟参数见上面的实例链接。
