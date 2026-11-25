@@ -2,6 +2,8 @@
 
 A measurement method assumes particular apparatus and sample states. Depending on the method, these can include equilibrium, calibration, a measuring interval, alignment, synchronization or a controlled environment. Transient and driven experiments may require a changing state instead. Write the observable assumptions as conditions (`guide("conditions")`), select them with `requires`, and use `upkeep` where they need renewal. The Runtime then checks and maintains those declared conditions and keeps their observations with the experiment.
 
+Read existing records before asking the operator. Keep the source and scope of what is learned: the model manual, a site observation, a measured calibration or an empirical rule. Put physical connections in the platform, device bounds in `limits`, repeatable actions in saved methods, and useful explanations in their descriptions or `note`. A hypothesis or a useful rule of thumb remains revisable; an unobserved state does not become verified because someone expects it. Changing the sample, wavelength, range or wiring may invalidate only part of this knowledge; report the relevant disturbance and renew the affected conditions.
+
 ## From what the operator knows to a condition
 
 Ask the operator, or read the manual, for each question; each answer is one field of the condition saved with `configure_platform(definition)`, or of an instrument's record when it belongs to that instrument wherever it is used.
@@ -60,6 +62,7 @@ Each concept names what to observe and gives cases from several fields; the valu
 - **Order of bring-up.** Vacuum before high voltage, cooling before current, warm-up before calibration, calibration before alignment, alignment before signal: write the order the operator follows as `after`.
 - **Interaction between instruments.** One instrument disturbs another: heater switching and ground loops, pump vibration, radio-frequency pickup, a shared supply. Write the disturbing state as a condition of the disturbed measurement, or keep conflicting operations apart with shared resources.
 - **Sample state.** The sample is in the state the method assumes: equilibrated at temperature, degassed, not bleached or damaged by the measurement, at its concentration, viable. Use `kind` `sample_integrity`.
+- **Reference position.** A device that infers position from counted steps may lose its reference after power loss or a stall. Read its position-valid status and follow the model's reference procedure before a move that needs it. Absolute encoders or retained references may avoid homing; homing itself moves hardware and needs the setup's travel and sample constraints. Make dependent alignment checks come `after` the reference check.
 - **History.** Backlash, magnetic and mechanical hysteresis, piezo creep: approach every position from the same side inside the saved operation that sets it, and say so in `note`.
 - **Computation.** A solver or a simulation has converged, a residual is below its tolerance, a mesh or time step no longer changes the result: conditions of a computed platform are written the same way.
 

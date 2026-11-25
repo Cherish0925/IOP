@@ -45,6 +45,8 @@ Claude Code：`claude plugin marketplace add Cherish0925/IOP`，再执行 `claud
 
 ## 第一次使用
 
+[交给 Agent 的任务](../agent-setup.zh-CN.md#交给-agent-的任务)提供配置、现场知识、测量、研究和续接的提示词。[模拟光学平台](../../examples/iop/optical-bench/README.md)给出从设备到实验记录的完整示例。
+
 读取 `lab_context`，再用 `describe_instrument` 查询所选设备的操作、参数和单位。接线、样品或校准条件无法从机器读出时，由了解现场的人补齐。提交前选定 `request_id`，保存实验室名和返回的实验 ID；重连后以 `experiment(run_id, include_result=true)` 读取结果。只有在原提交的回复丢失时，才用相同请求 ID 重发相同内容。
 
 ## Portable 与 DeepSeek 连接

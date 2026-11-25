@@ -1,15 +1,28 @@
 ---
 name: iop-lab
-description: Use IOP to operate instruments or scientific software, submit experiments, and retrieve laboratory results.
+description: Use IOP to connect instruments and scientific software, run automated experiments and research on them, and retrieve laboratory results.
 ---
 
 # Operate a laboratory
 
-The laboratory is a service that keeps instruments, platforms, methods, experiments and their records. It goes on working when this connection closes. These guides describe IOP 0.16.0; check `lab_context.service.version` and upgrade an older service while idle before using newer options.
+The laboratory is a service that keeps instruments, platforms, methods, experiments and their records. It goes on working when this connection closes. These guides describe IOP 0.17.0; check `lab_context.service.version` and upgrade an older service while idle before using newer options.
+
+## Where the work stands
+
+Read `lab_context` and choose the work the current task needs. Reuse existing instruments, platforms and experiments; a new conversation does not start the laboratory over. Prepare only the devices and conditions involved in this task.
+
+| Stage | Done when | Guide |
+| --- | --- | --- |
+| Connect instruments | The needed operations have descriptions, setup limits and recorded checks | `setup` |
+| Describe a platform | Its wiring, shared resources, methods and relevant conditions are saved; unmet conditions are explicit | `setup`, `conditions`, `priors` |
+| Run an experiment | Its result and required conditions are recorded under a run ID | `experiments`, `steps`, `sweeps` |
+| Investigate a question | Observations support a decision and a next step, or an answer with its scope | `research` |
+| Continue earlier work | The previous run is found and its state determines whether to follow, resume or read it | `experiments` |
+| Keep a method | Reusable steps or a program have parameters and an applicable saved definition | `steps`, `programs` |
 
 ## Working method
 
-1. Read `lab_context`: instruments, platforms, saved operations, active experiments, what does not hold, and `next_steps`. Do what `next_steps` asks first. On later reads pass its `cursor` as `after` to receive only changes.
+1. Read `lab_context`: instruments, platforms, saved operations, active experiments, what does not hold, and `next_steps`. Handle next steps that affect the task; unrelated offline devices need not block it. On later reads pass its `cursor` as `after` to receive only changes.
 2. Read `describe_instrument` before choosing operations, arguments and units, and `describe_platform` for wiring. A discovered port alone does not identify an instrument, a sample or its wiring; ask the person only for what cannot be read or done remotely.
 3. Reuse what is saved. Device operations are Basic Operations; `lab_context.operations` lists the Standard and Workflow Operations saved here. Use one as a step without `device` instead of recomposing it, and save a method that worked with `saved_operations(definition)`.
 4. Choose the form of the experiment:
@@ -34,8 +47,9 @@ Each is short, with examples. Read one when the task needs it: `guide(topic)`, o
 | `conditions` | What an experiment relies on: `requires`, maintenance, `upkeep`, disturbances, data in doubt, tolerance forms |
 | `priors` | Writing what is known of an apparatus as conditions: the questions, the general forms, priors by concept across fields |
 | `experiments` | The three forms, following a run, failure and continuation, files, archives |
+| `research` | Rounds of question, design, run, analysis and decision; confirming, stopping, reporting |
 | `programs` | Writing a research program: the package, the SDK inside it, saved progress |
-| `setup` | Describing an instrument, platforms, limits, manual steps, held resources |
+| `setup` | Connecting an instrument in four steps, by how open it is and by what it does; platforms, limits, manual steps |
 | `episodes` | Research trajectories for learning |
 
 ## What keeps the record true

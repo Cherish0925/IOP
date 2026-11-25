@@ -10,9 +10,11 @@
 
 In a continuous experiment reserve every instrument and shared resource the work depends on when starting it; `wait=25` returns results in the same reply.
 
+Use the tools this connection actually offers. Native HTTP MCP omits host-file uploads and exports; submit program packages or export archives through a stdio bridge or the HTTP/Python/TypeScript client. Existing saved programs can still be invoked through their saved methods.
+
 ## Requests and IDs
 
-Choose `request_id` before submitting. A reply with a run ID means the service accepted the work; it continues when this connection closes. After a lost reply repeat the identical request with the same `request_id`: the original record returns and nothing runs twice.
+Choose `request_id` before submitting. A reply with a run ID means the service accepted the work. Submitted steps and programs continue when this connection closes; a continuous experiment waits for any future decisions the host has not yet submitted. After a lost reply repeat the identical request with the same `request_id`: the original record returns and nothing runs twice.
 
 Give an experiment a `name` that says what it measures and a `project` for the line of work it belongs to. A run ID lost with the conversation is then found again: `find_experiments(search)` lists experiments newest first whose name, project, `request_id` or an instrument used contains the text; `state` narrows it, e.g. to `interrupted`.
 
@@ -33,6 +35,8 @@ A failed operation ends a step graph as `failed`; a service restart leaves start
 An operation whose outcome is unknown holds its instruments: observe their state with an operation described as `effect: "observe"`, record it with `resolve_resources`, then continue. Resubmitting a failed run under a new `request_id` starts from the beginning.
 
 `cancel_experiment` only when stopping is intended.
+
+A completed experiment is read, not resumed. A changed sample, question or acquisition setup normally needs a new run with a new request ID and a reference to the earlier work. Reuse methods and applicable calibration, but do not treat earlier sample data as newly acquired results.
 
 ## Saving
 

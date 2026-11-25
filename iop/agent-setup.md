@@ -6,6 +6,36 @@
 
 Codex, Claude Code, DeepSeek Harness, Qiushi Engine and other research software can connect through MCP, CLI, HTTP or the Python/TypeScript clients. All interfaces use the same service, instruments, platform configuration and experiment records.
 
+## Tasks for an agent
+
+Choose the task that matches the laboratory's current state; these are entry points, not stages to repeat in every conversation. Replace bracketed details when known. The agent reads existing records and asks for missing physical or connection information as needed. MCP prompts become available after the host connects; the deployment task uses the host's own terminal and installation capabilities.
+
+1. **Deploy and connect the host**:
+
+   > Set up IOP from https://github.com/EnvFoundry/IOP for [instrument computer and agent host, if known]. First identify where your tools execute and where the instruments are connected; reuse existing installations and laboratory data. Install the appropriate release or source on the instrument computer and start its service. Follow the connection guide: for local, SSH or remote REST access, generate a named bridge with `iop connect` and install and activate it in this host; for a native HTTP MCP client, configure the gateway endpoint in that host. If a host interface or access step needs me, state the exact action. Complete a `lab_context` call through this host and report the laboratory, service version, connection and data location.
+
+2. **Connect the instruments**, prompt `connect`:
+
+   > Connect [instrument or devices needed for the task]. Read the existing laboratory records and setup guide. Discover missing connections, use the model's manual or SDK to describe operations, and save setup limits and relevant conditions. Ask me only for missing physical information, then retain it. Check the needed operations against suitable observations and report the device IDs, readings with units, run IDs and what remains to be done.
+
+3. **Describe the platform**:
+
+   > Describe or update platform [name] for [task], using existing records, manuals and the physical information I supply. Save its instruments, wiring, shared resources, methods and relevant conditions. Distinguish measured state, operator reports and assumptions. Show what is ready and what the next experiment needs; establish its required conditions when preparing to run.
+
+4. **Run an experiment**, prompt `measure(goal)`:
+
+   > Measure [quantity or observable, range and required precision where known] on [platform]. Reuse an applicable saved method and declare the conditions the result needs. Choose a step graph, a continuous experiment or a program for this task; preview a step graph before submitting. Submit once, retain the run ID, and report the observations, relevant uncertainty, analysis assumptions and saved data.
+
+5. **Research**, prompt `research(question)`:
+
+   > Investigate [question] on [platform], within [time, sample or measurement budget, if specified]. Read prior experiments first. Choose measurements or computations that distinguish the plausible explanations, compare observations with predictions, and record the result and next decision. Adapt the method when a route fails; report an answer within its supported scope or the specific input or capability needed to continue.
+
+6. **Continue and reuse**:
+
+   > Continue [project or run ID]. Find its records, read the current state and follow work still running. Reuse completed results; if interrupted, resolve the cause and any unknown physical outcome before continuing. Ask only for changed or missing site information. Preserve the method and relevant experience for later work.
+
+`begin` reads the current state; `report(run_id)` explains a recorded experiment and `keep(run_id)` saves its method. Neither finishes a running experiment: use `finish_experiment` for an external experiment after its operations and transfers complete. Guides cover `setup`, `conditions`, `priors`, `experiments` and `research`; read the relevant one when needed. A generated connection file alone does not establish host access: the first host tool call does. Without MCP prompt support, use the task text above through the host's supported CLI or client connection.
+
 ## First connection
 
 The release installers include the Agent component. Print the MCP connection configuration using the installed `iop` command:
@@ -73,20 +103,22 @@ An argument a tool does not take is refused, as is a field a step or a submissio
 
 ### Guides
 
-Tool descriptions are read on every turn, so they stay short and point to guides read when a task needs them. `guide()` returns the working method; `guide(topic)` returns one part with examples: `steps`, `sweeps`, `arrays`, `measurements`, `conditions`, `priors`, `experiments`, `programs`, `setup` or `episodes`. The same texts are the skill a host plugin installs (`SKILL.md` with its `references/`), the MCP resources `iop://guides/{topic}`, `iop guide [topic]` in a terminal, `GET /v1/guides/{topic}`, and `guide(topic)` in the Python and TypeScript clients. The texts are in [connect/skills/iop-lab](connect/skills/iop-lab/); a guide names only tools and options that exist, which the runtime cases verify.
+Tool descriptions are read on every turn, so they stay short and point to guides read when a task needs them. `guide()` returns the working method; `guide(topic)` returns one part with examples: `steps`, `sweeps`, `arrays`, `measurements`, `conditions`, `priors`, `experiments`, `research`, `programs`, `setup` or `episodes`. The same texts are the skill a host plugin installs (`SKILL.md` with its `references/`), the MCP resources `iop://guides/{topic}`, `iop guide [topic]` in a terminal, `GET /v1/guides/{topic}`, and `guide(topic)` in the Python and TypeScript clients. The texts are in [connect/skills/iop-lab](connect/skills/iop-lab/); a guide names only tools and options that exist, which the runtime cases verify.
 
 ### Prompts
 
-Hosts that list MCP prompts offer four as commands a person starts work with; each names the tools to use and what to report.
+Hosts that list MCP prompts offer six as commands a person starts work with; each names the tools to use and what to report.
 
 | Prompt | Starts |
 |---|---|
 | `begin` | Reading the laboratory: what is ready, what can continue, what needs the person |
+| `connect` | Connecting task-relevant instruments: reuse descriptions, configure and check their operations |
 | `measure(goal)` | A measurement from a goal: descriptions, a saved method when one exists, a preview, one submission, the arrays |
+| `research(question)` | Rounds of expectation, experiment, analysis and decision on one question, each decision recorded |
 | `report(run_id)` | An account of one experiment from its record alone, with what failed or is in doubt |
 | `keep(run_id)` | Saving an experiment's method as a Standard or Workflow Operation; the steps it was submitted as are placed in the prompt |
 
-`begin` is always offered; the others come with the `experiments` toolset.
+`begin` is always offered; `connect` comes with the `setup` and `experiments` toolsets, the others with `experiments`.
 
 ### Toolsets
 

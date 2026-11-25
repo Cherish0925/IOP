@@ -6,6 +6,36 @@
 
 Codex、Claude Code、DeepSeek Harness、Qiushi Engine 等研究软件可以通过 MCP、CLI、HTTP 或 Python / TypeScript 客户端使用 IOP。各入口连接同一个运行服务，复用同一份仪器说明、平台配置和实验记录。
 
+## 交给 Agent 的任务
+
+按实验室当前状态选择任务，不必在每次会话中重新走完全部步骤。方括号内的信息知道多少填多少，Agent 先读已有记录，再询问缺失的现场或连接信息。MCP 提示在宿主连接后才可用；部署任务使用宿主自身的终端和安装能力。
+
+1. **部署并连接宿主**：
+
+   > 为 [仪器电脑与 Agent 宿主，已知时填写] 配置 IOP（https://github.com/EnvFoundry/IOP）。先确认你的工具实际在哪台电脑运行、仪器连接在哪台电脑，复用已有安装和实验室数据。在仪器电脑安装适合的发行包或源码并启动服务。按照连接说明配置通路：本机、SSH 或远程 REST 连接用 `iop connect` 生成具名桥接包，在当前宿主安装、激活；原生 HTTP MCP 客户端则在宿主配置网关地址。如果某个宿主界面或访问步骤需要我操作，请说明具体动作。最后通过当前宿主调用 `lab_context`，汇报实验室、服务版本、连接方式和数据位置。
+
+2. **接入仪器**，提示 `connect`：
+
+   > 接入 [仪器或当前任务需要的设备]。先读已有实验室记录和接入指南，发现缺少的连接，依据型号手册或 SDK 描述操作，保存本装置的限制与相关条件。只向我询问缺失的现场信息，并保留下来。用合适的观测核对需要的操作，汇报设备编号、带单位的读数、运行编号和待完成事项。
+
+3. **描述平台**：
+
+   > 为 [任务] 描述或更新平台 [名称]，依据已有记录、手册和我提供的现场信息，保存仪器、接线、共享资源、方法与相关条件。区分实测状态、人的报告和假设。说明哪些已就绪、下一次实验还需要什么；准备运行时再建立它所依赖的条件。
+
+4. **运行实验**，提示 `measure(goal)`：
+
+   > 在 [平台] 测量 [物理量或可观测现象、范围和精度要求，已知时填写]。复用适用的方法，声明结果所需条件。按任务选择步骤图、持续实验或程序；步骤图先预览再提交。提交一次，保留运行编号，汇报观测、相关不确定度、分析假设和数据位置。
+
+5. **研究**，提示 `research(question)`：
+
+   > 在 [平台] 研究 [问题]，遵守 [时间、样品或测量预算，如已指定]。先读已有实验，选择能区分合理解释的测量或计算，将观测与预测比较，记录结果和下一步决定。一条路线失败时调整方法；给出有适用范围的答案，或说明继续推进具体缺少的信息与能力。
+
+6. **继续与复用**：
+
+   > 继续 [项目或运行编号]。找回记录并读取当前状态，跟进仍在运行的工作，复用已完成的数据。若实验中断，先处理原因和未知的物理执行结果，再续接。只询问变化或缺失的现场信息，把方法和相关经验保留给后续工作。
+
+`begin` 读取现状；`report(run_id)` 说明实验记录，`keep(run_id)` 保存方法。二者都不会结束正在运行的实验：外部持续实验的操作与文件传输完成后，用 `finish_experiment` 结束。按需读取 `setup`、`conditions`、`priors`、`experiments`、`research` 等指南。生成连接文件后，还需要宿主实际调用成功，才能确认接通。不支持 MCP 提示的宿主，可以通过其 CLI 或客户端连接使用上述任务文字。
+
 ## 第一次连接
 
 发行包安装脚本默认安装 Agent 组件。用安装后的 `iop` 命令生成连接配置：
@@ -73,20 +103,22 @@ MCP 资源 `iop://laboratory` 提供相同的实验室说明。提交工具立�
 
 ### 指南
 
-工具说明每一轮都会被读取，所以保持简短，细节放在任务需要时才读的指南里。`guide()` 返回工作方法；`guide(topic)` 返回其中一部分及示例：`steps`、`sweeps`、`arrays`、`measurements`、`conditions`、`priors`、`experiments`、`programs`、`setup`、`episodes`。同一份文本也是宿主插件安装的技能（`SKILL.md` 及其 `references/`）、MCP 资源 `iop://guides/{topic}`、终端里的 `iop guide [topic]`、`GET /v1/guides/{topic}`，以及 Python 和 TypeScript 客户端的 `guide(topic)`。文本在 [connect/skills/iop-lab](connect/skills/iop-lab/)；指南只提到确实存在的工具和选项，运行用例对此逐一核对。
+工具说明每一轮都会被读取，所以保持简短，细节放在任务需要时才读的指南里。`guide()` 返回工作方法；`guide(topic)` 返回其中一部分及示例：`steps`、`sweeps`、`arrays`、`measurements`、`conditions`、`priors`、`experiments`、`research`、`programs`、`setup`、`episodes`。同一份文本也是宿主插件安装的技能（`SKILL.md` 及其 `references/`）、MCP 资源 `iop://guides/{topic}`、终端里的 `iop guide [topic]`、`GET /v1/guides/{topic}`，以及 Python 和 TypeScript 客户端的 `guide(topic)`。文本在 [connect/skills/iop-lab](connect/skills/iop-lab/)；指南只提到确实存在的工具和选项，运行用例对此逐一核对。
 
 ### 提示
 
-支持 MCP 提示的宿主会把四条提示列为命令，由人用来开始一项工作；每条都写明用哪些工具、汇报什么。
+支持 MCP 提示的宿主会把六条提示列为命令，由人用来开始一项工作；每条都写明用哪些工具、汇报什么。
 
 | 提示 | 开始的工作 |
 |---|---|
 | `begin` | 读取实验室现状：哪些已就绪，哪些实验可以继续，哪些事需要人来做 |
+| `connect` | 接入当前任务需要的仪器：复用说明、配置并核对相关操作 |
 | `measure(goal)` | 从目标到测量结果：读取说明，优先用已保存的方法，先预览，提交一次，再读数组 |
+| `research(question)` | 围绕一个问题按回合研究：预期、实验、分析、决定，每次决定都有记录 |
 | `report(run_id)` | 只依据记录说明一次实验，包括失败和存疑的部分 |
 | `keep(run_id)` | 把一次实验的方法保存为 Standard Operation 或 Workflow Operation；提交时的步骤会直接放进提示里 |
 
-`begin` 始终提供；其余三条随 `experiments` 工具集提供。
+`begin` 始终提供；`connect` 随 `setup` 与 `experiments` 工具集提供，其余随 `experiments` 提供。
 
 ### 工具集
 

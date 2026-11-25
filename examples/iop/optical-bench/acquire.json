@@ -1,0 +1,11 @@
+{
+  "name": "Fiber image",
+  "project": "fiber-bench-introduction",
+  "request_id": "fiber-image-001",
+  "platform": "fiber-bench",
+  "requires": ["image.linear", "image.dark"],
+  "upkeep": true,
+  "steps": [
+    {"id": "image", "device": "camera", "operation": "acquire"}
+  ]
+}
