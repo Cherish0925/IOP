@@ -56,13 +56,15 @@ class OpticalBenchCase(unittest.TestCase):
         self.assertEqual(entries['image.linear']['by'], 'tune camera.exposure')
         self.assertEqual(entries['image.dark']['result'], 'verified')
         # An image taken while they hold carries the dark level at its exposure.
-        run = self.client.submit([{'id': 'image', 'device': 'camera', 'operation': 'acquire'}],
-                                 platform='fiber-bench', requires=['image.linear', 'image.dark'])
+        spec = example('acquire.json')
+        run = self.client.run(self.client.request('/v1/runs', spec)['id'])
         image = run.result(10)['image']
         self.assertTrue(1500 <= image['peak'] <= 3700 and image['saturated'] == 0, image)
         recorded = run.info()['conditions']
         self.assertEqual(set(recorded), {'laser.warm', 'table.quiet', 'fiber.coupled', 'image.linear', 'image.dark'})
         self.assertAlmostEqual(recorded['image.dark']['reference']['dark'], 100.5, delta=3)
+        self.assertEqual(self.client.runs(search=spec['project'])[0]['id'], run.id)
+        self.assertEqual(self.client.request('/v1/runs', spec)['id'], run.id)
 
     def test_a_knock_is_waited_out_and_the_beam_found_again(self):
         self.maintain()

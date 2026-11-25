@@ -16,25 +16,52 @@ A laser is steered by a two-axis mirror into a fiber; a power meter reads the fi
 
 ## Run it
 
+From the repository root, use a separate demonstration directory and an automatically assigned port. Keep using this directory when returning to the example. / 在仓库根目录运行，使用独立的演示目录和自动分配的端口；下次继续时仍使用这个目录。
+
 ```sh
-iop init
-iop start
-iop register examples/iop/optical-bench/devices.json
-iop platform apply examples/iop/optical-bench/platform.json
-iop conditions --platform fiber-bench --maintain
+iop --home ./iop-demo init --port 0
+iop --home ./iop-demo start
+iop --home ./iop-demo register examples/iop/optical-bench/devices.json
+iop --home ./iop-demo platform apply examples/iop/optical-bench/platform.json
+iop --home ./iop-demo conditions --platform fiber-bench --maintain
 ```
 
 The first pass waits 25 minutes for the laser, as a real diode would; for a quick try, add `"warmed": true` to the laser's config, or set `warmup_s` to a few seconds and the wait in `laser.warm` to five times that, before registering. Then:
 
 ```sh
-iop conditions --platform fiber-bench                       # all hold
-iop call table disturb --arguments '{"severity": 1}'        # someone knocks the table
-iop conditions --platform fiber-bench --disturbance knock   # the operator reports it
-iop conditions --platform fiber-bench --maintain            # waits it out, tunes the mirror again
-iop conditions fiber.coupled                                # records, corrections that worked, drift trend
+iop --home ./iop-demo conditions --platform fiber-bench
+iop --home ./iop-demo call table disturb --arguments '{"severity": 1}'
+iop --home ./iop-demo conditions --platform fiber-bench --disturbance knock
+iop --home ./iop-demo conditions --platform fiber-bench --maintain
+iop --home ./iop-demo conditions fiber.coupled
 ```
 
 An experiment that names `requires: ["image.linear", "image.dark"]` is accepted only while they hold, and records the dark level it relied on; with `upkeep` the Runtime keeps them between its operations.
+
+## Acquire and return later · 测量与跨会话读取
+
+The included submission names the platform, conditions, measurement, project and request. Run it after the conditions hold:
+
+```sh
+iop --home ./iop-demo run examples/iop/optical-bench/acquire.json
+iop --home ./iop-demo runs --search fiber-bench-introduction
+iop --home ./iop-demo result RUN_ID
+```
+
+Replace `RUN_ID` with the returned ID. The image result includes the peak, saturated-pixel count and sensor temperature; the run retains the dark reference used. Repeating the unchanged submission returns the same run. For a new acquisition, copy the file and choose a new `request_id`; changes to the sample or settings belong to a new measurement. / 将 `RUN_ID` 换成返回的编号。图像结果含峰值、饱和像素数与传感器温度，实验保留当时的暗背景。相同提交返回原实验；重新测量时复制文件并更换 `request_id`。
+
+For an agent, connect it to this demonstration directory with `iop connect --name fiber-demo --local --lab-home ABSOLUTE_DEMO_PATH`, install the generated host package, then:
+
+| Task / 任务 | MCP calls / 调用 |
+| --- | --- |
+| Read the setup / 读取平台 | `lab_context`, `describe_platform(platform="fiber-bench")`, `describe_instrument(device="camera")` |
+| Take an image / 采集图像 | `submit_experiment` with the fields of `acquire.json`, first with `preview=true`, then submit |
+| Follow the result / 跟进结果 | `experiment_updates(run_id, wait=25)`, `experiment(run_id, include_result=true)` |
+| Return in another conversation / 新会话找回 | `find_experiments(search="fiber-bench-introduction")`, then read the returned run |
+
+The `keep` prompt can turn this acquisition into a saved method. This example uses simulated readings; the scattering transmission-matrix experiment needs its own instrument descriptions, pattern sequence, calibration and reconstruction program. / `keep` 提示可以将采集过程保存成方法。本例使用模拟读数；散射传输矩阵实验还需要相应设备说明、图案序列、标定和重建程序。
+
+When finished with the demonstration service: `iop --home ./iop-demo stop`. Its data remain available for the next session.
 
 ## Adapt to a real bench · 用于实际平台
 

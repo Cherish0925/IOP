@@ -56,6 +56,8 @@ The connector writes a receipt with paths, without contacting an instrument. Its
 
 ## First experiment
 
+The [tasks for an agent](../agent-setup.md#tasks-for-an-agent) provide prompts for setup, physical knowledge, measurements, research and continuation. The [simulated optical bench](../../examples/iop/optical-bench/README.md) gives a complete device-to-record example.
+
 Read `lab_context` and `describe_instrument`. Submit once with a stable `request_id`; keep the laboratory name and returned run ID. Read `experiment(run_id, include_result=true)` after reconnecting. Repeat a submission with its original request ID only for the identical experiment. A successful installation does not identify cables, samples, or an unknown instrument's command set.
 
 ## Portable and DeepSeek connections

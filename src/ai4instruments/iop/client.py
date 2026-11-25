@@ -142,7 +142,7 @@ class Client:
 
     def guide(self, topic='overview'):
         """How to work with this laboratory, as text: the working method, or one part of it with examples
-        (steps, sweeps, arrays, measurements, conditions, priors, experiments, programs, setup, episodes)."""
+        (steps, sweeps, arrays, measurements, conditions, priors, experiments, research, programs, setup, episodes)."""
         return self.request('/v1/guides/' + quote(topic, safe=''))['text']
 
     def schema(self, name):

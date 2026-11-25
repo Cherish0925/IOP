@@ -161,7 +161,8 @@ class MCPCase(unittest.TestCase):
         for block in re.findall(r'```python\n(.*?)```', texts['programs'], re.S):
             compile(block, 'programs guide', 'exec')
         # Every interface reads the same text.
-        self.assertEqual(self.client.guide('sweeps'), texts['sweeps'])
+        for topic in ('sweeps', 'research'):
+            self.assertEqual(self.client.guide(topic), texts[topic])
         self.assertEqual(self.client.request('/v1/guides')['guides'], ['overview', *mcp.GUIDES])
         with self.assertRaisesRegex(IOPError, 'Unknown guide: wiring'):
             self.client.guide('wiring')
@@ -269,6 +270,20 @@ class MCPCase(unittest.TestCase):
         for selection, offered in (('experiments', False), ('setup,experiments', True)):
             server_ = mcp.create_server(self.client, selection=selection)
             self.assertEqual('connect' in {prompt.name for prompt in asyncio.run(server_.list_prompts())}, offered, selection)
+
+    def test_http_saved_methods_do_not_upload_gateway_paths(self):
+        import asyncio
+        from ai4instruments.iop import mcp
+        server = mcp.create_server(self.client, http=True)
+        with patch.object(self.client, 'save_operation') as save:
+            with self.assertRaisesRegex(Exception, 'HTTP MCP cannot read gateway paths'):
+                asyncio.run(server.call_tool('saved_operations', {
+                    'definition': {'id': 'local-program'}, 'program': self.temp.name}))
+            save.assert_not_called()
+        method = {'id': 'read.position', 'layer': 'standard', 'description': 'Read the stage position',
+                  'steps': [{'id': 'read', 'device': 'stage', 'operation': 'position'}]}
+        asyncio.run(server.call_tool('saved_operations', {'definition': method}))
+        self.assertEqual(self.client.saved_operation('read.position')['id'], 'read.position')
 
     def test_toolsets_offer_part_of_the_tools(self):
         import asyncio

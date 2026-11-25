@@ -8,29 +8,33 @@ Codex, Claude Code, DeepSeek Harness, Qiushi Engine and other research software 
 
 ## Tasks for an agent
 
-Work with IOP passes through five stages. Each is one task for an agent session: Codex, Claude Code, DeepSeek Harness, Qiushi Engine or another host. Give the text of a stage as it stands, with the bracketed parts filled in. From the second stage on, hosts that list MCP prompts offer the same tasks as commands.
+Choose the task that matches the laboratory's current state; these are entry points, not stages to repeat in every conversation. Replace bracketed details when known. The agent reads existing records and asks for missing physical or connection information as needed. MCP prompts become available after the host connects; the deployment task uses the host's own terminal and installation capabilities.
 
-1. **Deploy**, on the computer connected to the instruments:
+1. **Deploy and connect the host**:
 
-   > Install IOP from https://github.com/EnvFoundry/iop on this computer, from the release for this system or from source. Start the service with `iop init` and `iop start`, connect this agent host with `iop connect` and complete the installation it prints, then report what `iop context --start` returns.
+   > Set up IOP from https://github.com/EnvFoundry/IOP for [instrument computer and agent host, if known]. First identify where your tools execute and where the instruments are connected; reuse existing installations and laboratory data. Install the appropriate release or source on the instrument computer and start its service. Follow the connection guide: for local, SSH or remote REST access, generate a named bridge with `iop connect` and install and activate it in this host; for a native HTTP MCP client, configure the gateway endpoint in that host. If a host interface or access step needs me, state the exact action. Complete a `lab_context` call through this host and report the laboratory, service version, connection and data location.
 
 2. **Connect the instruments**, prompt `connect`:
 
-   > Connect the instruments of this laboratory. Find, register, constrain and verify each one by its class, and ask me only for what neither the instruments nor their manuals tell.
+   > Connect [instrument or devices needed for the task]. Read the existing laboratory records and setup guide. Discover missing connections, use the model's manual or SDK to describe operations, and save setup limits and relevant conditions. Ask me only for missing physical information, then retain it. Check the needed operations against suitable observations and report the device IDs, readings with units, run IDs and what remains to be done.
 
 3. **Describe the platform**:
 
-   > Describe the platform [name]: its instruments, wiring, shared resources and the conditions its experiments rely on, from the manuals and from what I tell you. Save it, maintain its conditions once and report their states.
+   > Describe or update platform [name] for [task], using existing records, manuals and the physical information I supply. Save its instruments, wiring, shared resources, methods and relevant conditions. Distinguish measured state, operator reports and assumptions. Show what is ready and what the next experiment needs; establish its required conditions when preparing to run.
 
 4. **Run an experiment**, prompt `measure(goal)`:
 
-   > [Goal: the quantity, its range, the uncertainty it needs.] Use a saved method where one exists, require the conditions the result relies on, preview, submit once and report the result with its uncertainty.
+   > Measure [quantity or observable, range and required precision where known] on [platform]. Reuse an applicable saved method and declare the conditions the result needs. Choose a step graph, a continuous experiment or a program for this task; preview a step graph before submitting. Submit once, retain the run ID, and report the observations, relevant uncertainty, analysis assumptions and saved data.
 
 5. **Research**, prompt `research(question)`:
 
-   > [Question.] Work in rounds of expectation, experiment, analysis and decision; record each decision; stop when the question is answered or the laboratory cannot go further, and report.
+   > Investigate [question] on [platform], within [time, sample or measurement budget, if specified]. Read prior experiments first. Choose measurements or computations that distinguish the plausible explanations, compare observations with predictions, and record the result and next decision. Adapt the method when a route fails; report an answer within its supported scope or the specific input or capability needed to continue.
 
-`begin` reads where the work stands; `report(run_id)` and `keep(run_id)` close an experiment. Each task follows a guide: `setup`; `conditions` and `priors`; `experiments`, `steps` and `sweeps`; `research`.
+6. **Continue and reuse**:
+
+   > Continue [project or run ID]. Find its records, read the current state and follow work still running. Reuse completed results; if interrupted, resolve the cause and any unknown physical outcome before continuing. Ask only for changed or missing site information. Preserve the method and relevant experience for later work.
+
+`begin` reads the current state; `report(run_id)` explains a recorded experiment and `keep(run_id)` saves its method. Neither finishes a running experiment: use `finish_experiment` for an external experiment after its operations and transfers complete. Guides cover `setup`, `conditions`, `priors`, `experiments` and `research`; read the relevant one when needed. A generated connection file alone does not establish host access: the first host tool call does. Without MCP prompt support, use the task text above through the host's supported CLI or client connection.
 
 ## First connection
 
@@ -108,7 +112,7 @@ Hosts that list MCP prompts offer six as commands a person starts work with; eac
 | Prompt | Starts |
 |---|---|
 | `begin` | Reading the laboratory: what is ready, what can continue, what needs the person |
-| `connect` | Connecting the instruments of this computer: find, register, constrain, and verify each by its class |
+| `connect` | Connecting task-relevant instruments: reuse descriptions, configure and check their operations |
 | `measure(goal)` | A measurement from a goal: descriptions, a saved method when one exists, a preview, one submission, the arrays |
 | `research(question)` | Rounds of expectation, experiment, analysis and decision on one question, each decision recorded |
 | `report(run_id)` | An account of one experiment from its record alone, with what failed or is in doubt |
