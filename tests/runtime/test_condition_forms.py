@@ -439,7 +439,7 @@ class FormDefinitionCase(unittest.TestCase):
         example = json.loads(re.search(r'```json\r?\n(.*?)```', mcp.guide_text('priors'), re.S).group(1))
         checked = check(example)
         self.assertEqual([c['accept'].get('statistic') or type(c['accept'].get('target')).__name__ for c in checked],
-                         ['float', 'slope', 'dict'])
+                         ['dict'])
 
 
 if __name__ == '__main__':

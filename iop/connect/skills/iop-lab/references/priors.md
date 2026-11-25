@@ -31,18 +31,20 @@ Use `after` only for actual dependencies, such as cooling before heating or a re
 
 ## Example
 
-A cryostat reading can be compared with its current setpoint. The operations below must be described for the actual controller and report compatible units.
+A cryostat reading can be compared with its current setpoint. Use this list in the platform's `conditions`. Its operations must be described for the actual controller and report compatible units.
 
 ```json
-{
-  "id": "cryostat.at_setpoint",
-  "description": "The sample stage is at its setpoint",
-  "verify": {"device": "cryostat", "operation": "read_kelvin", "arguments": {"input": "A"}},
-  "samples": 5,
-  "interval": 2,
-  "accept": {"target": {"device": "cryostat", "operation": "read_setpoint", "arguments": {"output": 1}}, "within": 0.02},
-  "correct": {"device": "cryostat", "operation": "wait", "arguments": {"seconds": 120}}
-}
+[
+  {
+    "id": "cryostat.at_setpoint",
+    "description": "The sample stage is at its setpoint",
+    "verify": {"device": "cryostat", "operation": "read_kelvin", "arguments": {"input": "A"}},
+    "samples": 5,
+    "interval": 2,
+    "accept": {"target": {"device": "cryostat", "operation": "read_setpoint", "arguments": {"output": 1}}, "within": 0.02},
+    "correct": {"device": "cryostat", "operation": "wait", "arguments": {"seconds": 120}}
+  }
+]
 ```
 
 ## Keep experience useful

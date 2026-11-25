@@ -3,6 +3,7 @@
 from html import escape as esc
 from pathlib import Path
 import json
+import posixpath
 import re
 import subprocess
 
@@ -29,9 +30,16 @@ buttons[0].onclick=()=>move(-1);buttons[1].onclick=()=>move(1);addEventListener(
 
 
 def html(md):
-    return subprocess.check_output(
+    rendered = subprocess.check_output(
         ["pandoc", "--from=gfm", "--to=html5", "--wrap=none"], input=md, text=True
     )
+    # The standalone ZIP contains the connection guides; other documents live in the repository.
+    def document(match):
+        target = match.group(1)
+        if target.startswith(("#", "/")) or ":" in target:
+            return match.group(0)
+        return 'href="' + BASE + '/blob/main/' + posixpath.normpath('iop/connect/' + target) + '"'
+    return re.sub(r'href="([^"]+)"', document, rendered)
 
 
 def render(zh):
