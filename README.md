@@ -61,25 +61,13 @@ Later steps can bind to gathered results, such as the angle of most power or the
 
 ## Operating conditions
 
-A platform describes the conditions required by its experiments: observations, tolerances, dependencies, correction methods and optional validity periods. `maintain` runs these methods using the same operations and scheduler as experiments. Corrections reserve the coupled devices together; independent platforms can keep working.
+Describe what the experiment needs: an observed quantity or state, its tolerance, and a method to restore it when applicable. These conditions can belong to an instrument or a platform. Experiments select them with `requires`; `upkeep` maintains them between operations or while the platform is idle. A changed sample, cable or enclosure can renew the affected conditions without repeating unrelated setup.
 
-Experiments name their conditions with `requires`. The Runtime checks their recorded state before each dependent operation, keeps the observations with the results, and marks relevant intervals when a later observation reveals drift. Bounded `tune` provides a local numerical search; saved operations and programs express other methods. Classification and dependencies remain configurable for each platform.
-
-An instrument's own conditions, such as warm-up, overload or reference lock, belong to its record and can come with its model description, so every instrument of that model starts with them; platform conditions build on them.
-
-A platform that declares `upkeep` is kept by the Runtime: while its instruments are idle, it observes what is unknown, due, about to expire or forecast to drift out of tolerance, and corrects what drifted. Each automatic pass is recorded with its reasons and never runs a step that asks a person. Any experiment, a step graph, a continuous experiment or a program, can declare `upkeep` for the conditions it requires: the Runtime then restores them inside the experiment before its operations and renews them between operations, so a sweep of several hours keeps an alignment trusted for minutes. See [operating conditions](docs/runtime/conditions.md).
-
-Tolerances take the forms an operating point comes down to in any field: a range; steady readings, several samples judged by their standard deviation, span or drift; agreement with a value, the setpoint the instrument holds or the certified value of a standard; and status bits that must be clear, such as the IEEE 488.2 error bits every SCPI instrument reports. One condition can be written for every channel, input or axis. A platform names the disturbances its operators report, such as an opened enclosure or a changed sample, with the conditions each acts on. The guide `priors` turns what an operator knows of an apparatus into conditions, organized by measurement concept with cases from many fields.
-
-Every reading keeps the instrument's word on its validity: a status operation or query, the measuring interval and saturation its description states, EPICS alarms and OPC UA status codes. An uncertain reading is marked in doubt like data taken while a condition did not hold, and a sweep can take it again. Arguments may be given with their units; they are converted to the declared unit before limits apply, and a unit of another quantity is refused before the instrument is called.
+The runtime coordinates these operations with experiments and retains their observations. It marks measurements affected by drift or instrument status so the research program can assess or repeat them. Device bounds, units and timing stay in the instrument description. Read [operating conditions](docs/runtime/conditions.md) for the format and [apparatus knowledge](iop/connect/skills/iop-lab/references/priors.md) for calibration, settling, references and other physical considerations.
 
 ## Measured arrays
 
-Traces, spectra, images, buffers and numeric streams retain their type, shape, units and axes. `read_array` returns bounded summaries, traces or maps, with exact values in a selected window. The full array can be downloaded as a NumPy file; complex data can be read as modulus, phase, power or a component.
-
-Views can locate peaks, dips and level crossings, or fit a straight line, Lorentzian or Gaussian with standard errors. The same analysis can follow each row of a map. Rust `iop-execd` processes large files outside the service process; a bounded Python implementation provides matching results.
-
-Saved operations can name values from these views. Later steps bind to them, and operating conditions use them for verification or tuning. See [reading arrays](docs/runtime/drivers.md#reading-arrays--读取数组).
+Traces, spectra, images and streams retain type, shape, units and axes. `read_array` provides summaries, selected windows, peaks and curve fits; full arrays remain downloadable as NumPy files. Rust `iop-execd` handles large files outside the service, with a matching Python implementation. Later operations can use the results. See [reading arrays](docs/runtime/drivers.md#reading-arrays--读取数组).
 
 ## Measurement methods
 
@@ -89,9 +77,7 @@ The [reference measurement program](examples/iop/reference-measurement/) acquire
 
 ## Research and learning
 
-Episode records retain the experiment trajectory alongside the three operation roles. Python, TypeScript and MCP clients can save versioned task/policy identities, observations, rewards and termination information. Each transition links to completed operations in that experiment. Identical retries return the saved record; reconnection preserves the sequence. JSON Lines export supports downstream data processing and learning. A whole experiment saves as one ZIP of its records and files with an RO-Crate description that research data repositories read.
-
-An episode does not reset equipment. Use an explicit preparation procedure and measured initial state. Parallel physical episodes require independent available resources. IOP provides execution and data; the research program defines the scientific task and the learning algorithm.
+Keep research decisions with their experiments and recover them across conversations. Episode records link actions, observations and feedback to completed instrument operations; JSON Lines exports support downstream learning. An experiment exports as a ZIP of its records and files with an RO-Crate description. The research program defines its scientific objective and learning algorithm. Physical preparation uses the platform's procedures and available resources. See [research guidance](iop/connect/skills/iop-lab/references/research.md) and [episodes](docs/runtime/episodes.md).
 
 ## Develop
 

@@ -148,17 +148,15 @@ def create_server(client, *, http=False, selection=None):
 
     options = {'stateless_http': True, 'json_response': True} if http and sys.version_info < (3, 11) else {}
     server = Server('IOP Runtime', **options, instructions=(
-        'Read lab_context first; handle next_steps relevant to the task. Read describe_instrument before choosing operations and '
-        'arguments. Reuse what is saved: instrument and platform descriptions, and the Standard and Workflow Operations '
-        'lab_context lists; a step without device uses one. Submit once with a request_id you choose, keep the run ID and '
-        'read results later; after a lost reply repeat the identical request, and find_experiments finds the work of an '
-        'earlier conversation. guide() gives the working method and '
-        'guide(topic) one part with examples: ' + ', '.join(GUIDES) + '. Record only what was observed: resolve_resources '
-        'takes the instrument state seen, report_manual_step what the person stated.' +
-        (' HTTP omits host-file uploads and exports; use a stdio bridge or the SDK for those.' if http else '') +
+        'Start with lab_context and the current task. Reuse saved instruments, methods and experiments. '
+        'Read describe_instrument for the operations needed; guide(topic) supplies details on demand. '
+        'Submit once with a request_id; after a lost reply repeat the identical request with that ID. '
+        'Read results or array slices as needed. find_experiments recovers earlier work. '
+        'Ask for missing physical information and record what the person reports.' +
+        (' Use a stdio bridge or the SDK for host-file transfers.' if http else '') +
         ('' if len(chosen) == len(TOOLSETS) else
-         f" This connection offers the toolsets {', '.join(chosen)}. When a next step needs a tool of "
-         f"{', '.join(name for name in TOOLSETS if name not in chosen)}, ask the person to add that toolset to this connection (--toolsets or IOP_MCP_TOOLSETS).")))
+         f" Available toolsets {', '.join(chosen)}. Add {', '.join(name for name in TOOLSETS if name not in chosen)} "
+         'with --toolsets or IOP_MCP_TOOLSETS when needed.')))
 
     def tool(**options):
         """Register a tool whose result reaches the agent as compact JSON rather than indented JSON."""
@@ -557,58 +555,45 @@ def create_server(client, *, http=False, selection=None):
 
     @prompt(title='Begin work in this laboratory')
     def begin() -> str:
-        """Read the laboratory and say what is ready and what needs the person."""
-        return ('Read `lab_context`. Tell me briefly which instruments and platforms are ready and which are not, which '
-                'saved operations there are, which experiments are open or can continue, and which next_steps affect '
-                'the task. Continue authorized work; unrelated devices need not block it. Ask for missing physical details or a '
-                'decision that changes its scope, and preserve existing experiments and configuration.')
+        """Read the laboratory and continue the current task."""
+        return ('Read `lab_context`. Reuse existing instruments, methods and experiments for the current task. '
+                'Follow relevant next_steps and continue the work. Ask only for missing physical information or '
+                'a decision that changes the task. Briefly state the current result and next action.')
 
     @prompt('setup', 'experiments', title='Connect instruments to this laboratory')
     def connect() -> str:
-        """Find, register, constrain and verify each instrument, asking the person only for what cannot be read."""
+        """Connect the needed instruments and read their actual response."""
         return ('Read `lab_context` and `guide` with topic setup. Reuse existing descriptions; connect the devices needed '
-                'for this task on the instrument service computer. Use `discover_instruments` for missing connections, '
-                '`instrument_profiles` for models and `identify_instrument` for configured SCPI devices. Take commands '
-                'and units from the model manual; choose an adapter, register the device and set its setup limits and '
-                'relevant conditions before exercising it. Check a sensor with a suitable reference; an actuator with '
-                'actual-state readback or an independent observation; a controller with its measured response; a '
-                'computation with an appropriate reference case. Ask only for physical details absent from existing '
-                'records, instruments and manuals, and retain them. Report device IDs, the observations and run IDs, '
-                'and what still needs the person; follow the setup guide for manual steps.')
+                'for this task on the instrument computer. Take commands, units and ranges from the model manual or SDK. '
+                'Ask for missing apparatus details and save them. Check a sensor against a reference, an actuator by '
+                'actual-position readback or another observation, a controller by its measured response, and a computation by a known case. '
+                'Report the device IDs, actual response and anything still needed.')
 
     @prompt('experiments', title='Plan and run a measurement')
     def measure(goal: str) -> str:
         """Choose a reusable method or program, acquire the data and report its scientific meaning."""
-        return ('Goal: ' + goal + '\n\nWork as `guide` describes. Read `lab_context`, then `describe_instrument` for each '
-                'instrument involved, and look in `saved_operations` for a method that already does this: use it rather '
-                'than new steps. Choose a step graph for known steps, a continuous experiment for decisions between '
-                'calls, or a submitted program for an algorithm. Name required conditions in requires. Preview a step '
-                'graph before submitting; keep long loops and saved progress in a program. For repeated measurements, '
-                'dark subtraction or reference normalization, read `guide(measurements)` and preserve shared calibration '
-                'errors. Submit once with a request_id and follow it with `experiment_updates`. Read relevant arrays or '
-                'saved results. Report the measured quantity with units and uncertainty, the assumptions of the '
-                'reduction, any points in doubt, and what the goal still lacks.')
+        return ('Goal: ' + goal + '\n\nRead `lab_context` and the relevant `describe_instrument`. Reuse a method from '
+                '`saved_operations` or choose an experiment form with `guide` topic experiments. Prepare the required '
+                'conditions, submit once with a request_id and follow `experiment_updates`. Read the relevant results; '
+                'use topic measurements for reductions and uncertainty. Report the quantity, units, uncertainty and '
+                'assumptions that affect the answer. Save the data and what remains to do.')
 
     @prompt('experiments', title='Investigate a research question')
     def research(question: str) -> str:
-        """Rounds of question, experiment, analysis and decision on the instruments of this laboratory."""
+        """Use observations to choose the next research action."""
         return ('Question: ' + question + '\n\nRead `lab_context` and `guide` with topic research; use `find_experiments` '
-                'to recover prior work. Choose measurements or computations that distinguish plausible explanations '
-                'within the task budget. Reuse applicable methods and choose a step graph, continuous experiment or '
-                'program; preview step graphs before submission and retain the project and run IDs. Compare observations '
-                'with predictions, inspect data in doubt and its effect on the conclusion, and record a concise decision '
-                'and next step with `save_experiment_file`. Preserve raw results and save methods worth reusing. '
-                'Change an unproductive approach while keeping the research objective. Report what is supported, '
-                'with units and uncertainty where applicable, the runs it rests on and what enables further progress.')
+                'to recover earlier work. Choose measurements or calculations that help answer the question within '
+                'the available budget. Compare predictions with observations and use the result to choose the '
+                'next action. Change an unproductive approach while keeping the objective. Save raw results and a short '
+                'conclusion and next step with `save_experiment_file`, including the project and run IDs.')
 
     @prompt('experiments', title='Report what an experiment observed')
     def report(run_id: str) -> str:
         """An account of one experiment from its record alone."""
-        return ('Report on experiment ' + run_id + ' from its record alone. Read it with `experiment` (include_result=true, '
-                'then in_doubt=true), `operation_result` for a failure, and `read_array` for each array: its summary, and '
-                'lines and fits where they apply. Say what ran, on which instruments and relying on which conditions; '
-                'what was observed, with units and errors, and where the files are; what failed or is in doubt, and why; '
-                'and whether it can continue. Where the record does not say, say so.')
+        return ('Report on experiment ' + run_id + '. Read `experiment` with include_result=true and any in_doubt records. '
+                'Use `operation_result` or `read_array` for details needed to explain the result. State what was measured, '
+                'the relevant conditions, units and uncertainty, and where the data are. Explain unresolved results and '
+                'whether work can continue. Keep claims within what the record shows.')
 
     @prompt('experiments', title='Save the method of an experiment for reuse')
     def keep(run_id: str) -> str:
@@ -619,11 +604,9 @@ def create_server(client, *, http=False, selection=None):
                     'It was submitted as these steps:\n\n' + steps + '\n\n' if steps and len(steps) <= PROMPT_STEPS else
                     'Its submission is experiment.json among its files (`experiment_files`). ' if steps else
                     'Read what it did with `experiment`. ') +
-                'Turn the values that will differ next time into parameters and save it with `saved_operations` '
-                '(definition): a Standard Operation when it is one method built on device operations, a Workflow Operation '
-                'when it joins several methods. `guide` with topic steps shows the form. Show me the definition saved, then '
-                'read a step that uses it with `submit_experiment` and preview=true, to see that it expands to the same '
-                'operations.')
+                'Read `guide` with topic steps. Parameterize values that change between uses and save the method with '
+                '`saved_operations` (definition). Preview a call with `submit_experiment` and preview=true. Show the saved '
+                'method and an example of its use.')
 
     @server.resource('iop://guides/operations')
     def operating_guide() -> str:

@@ -25,8 +25,8 @@ stored experiments and configuration when extending formats. An interrupted
 connection does not mean an instrument action can be repeated.
 
 Keep summaries small; return details and arrays on request. Add guide topics to
-`mcp.GUIDES`, its tool annotation and the TypeScript guide type. Update English
-and Chinese entry documents together. Change source guides, then regenerate
+`mcp.GUIDES`, its tool annotation and the TypeScript guide type. Keep agent
+instructions in English, with one canonical task entry. Change source guides, then regenerate
 their packaged copies; generated output is not a second source.
 
 Useful commands from the repository root:

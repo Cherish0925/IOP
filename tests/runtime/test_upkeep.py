@@ -93,15 +93,22 @@ class UpkeepCase(unittest.TestCase):
     def test_a_lost_condition_is_attempted_again_after_retry_s(self):
         fixed = {k: v for k, v in SOURCE.items() if k != 'correct'}
         WORLD['level'] = 0.5
-        # retry_s leaves room for a slow machine to finish the first pass well before the next is due.
-        self.client.configure_platform(chain(fixed, retry_s=2))
-        self.until(lambda: self.states()['source.stable'] == 'lost')
-        reads = WORLD['log'].count('source.read')
-        time.sleep(0.3)
-        self.assertEqual(WORLD['log'].count('source.read'), reads)
-        self.assertEqual(self.client.upkeep('chain')[0]['pending'], {})
-        WORLD['level'] = 1.0
-        self.until(lambda: self.states()['source.stable'] == 'holds')
+        # Advance the condition clock explicitly: HTTP and host scheduling must not consume retry_s.
+        started = time.time()
+        stamp = lambda elapsed: datetime.fromtimestamp(started + elapsed, timezone.utc).isoformat()
+        with patch('ai4instruments.iop.conditions.now', return_value=stamp(0)) as clock:
+            self.client.configure_platform(chain(fixed, retry_s=2))
+            self.until(lambda: self.states()['source.stable'] == 'lost')
+            self.until(self.last)
+            reads = WORLD['log'].count('source.read')
+            clock.return_value = stamp(1)
+            self.engine.conditions._upkeep('chain')
+            self.assertEqual(self.client.upkeep('chain')[0]['pending'], {})
+            self.assertEqual(WORLD['log'].count('source.read'), reads)
+            WORLD['level'] = 1.0
+            clock.return_value = stamp(2)
+            self.engine.conditions.wake.set()
+            self.until(lambda: self.states()['source.stable'] == 'holds')
 
     def test_automatic_passes_leave_steps_that_ask_a_person(self):
         self.client.register({'id': 'bench', 'driver': 'manual',
