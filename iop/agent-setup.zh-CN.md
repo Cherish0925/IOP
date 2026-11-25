@@ -6,6 +6,32 @@
 
 Codex、Claude Code、DeepSeek Harness、Qiushi Engine 等研究软件可以通过 MCP、CLI、HTTP 或 Python / TypeScript 客户端使用 IOP。各入口连接同一个运行服务，复用同一份仪器说明、平台配置和实验记录。
 
+## 交给 Agent 的任务
+
+使用 IOP 依次经过五个阶段，每个阶段是交给一个 Agent 会话的一项任务：Codex、Claude Code、DeepSeek Harness、Qiushi Engine 或其他宿主。把对应阶段的文字原样交给它，补全方括号里的内容。从第二个阶段起，支持 MCP 提示的宿主把同样的任务列为命令。
+
+1. **部署**，在连接仪器的计算机上：
+
+   > 在本机安装 IOP（https://github.com/EnvFoundry/iop），使用本系统的发行包或从源码安装。用 `iop init` 和 `iop start` 启动服务，用 `iop connect` 连接本 Agent 宿主并完成它给出的安装步骤，然后汇报 `iop context --start` 的结果。
+
+2. **接入仪器**，提示 `connect`：
+
+   > 接入本实验室的仪器。逐台发现、登记、写明约束，并按设备类别核对；只向我询问仪器和说明书都无法提供的信息。
+
+3. **描述平台**：
+
+   > 描述平台 [名称]：它的仪器、接线、共享资源，以及实验所依赖的工作条件，依据说明书和我提供的信息。保存后维持一次这些条件，并汇报它们的状态。
+
+4. **运行实验**，提示 `measure(goal)`：
+
+   > [目标：被测量、范围、需要的不确定度。] 有已保存的方法就用它；声明结果所依赖的条件；先预览，提交一次，汇报结果及其不确定度。
+
+5. **研究**，提示 `research(question)`：
+
+   > [问题。] 按回合进行：预期、实验、分析、决定；记录每次决定；问题得到回答或实验室无法继续时停止，并汇报。
+
+`begin` 读取工作进展；`report(run_id)` 和 `keep(run_id)` 用于结束一次实验。每项任务对应一份指南：`setup`；`conditions` 与 `priors`；`experiments`、`steps` 与 `sweeps`；`research`。
+
 ## 第一次连接
 
 发行包安装脚本默认安装 Agent 组件。用安装后的 `iop` 命令生成连接配置：
@@ -73,20 +99,22 @@ MCP 资源 `iop://laboratory` 提供相同的实验室说明。提交工具立�
 
 ### 指南
 
-工具说明每一轮都会被读取，所以保持简短，细节放在任务需要时才读的指南里。`guide()` 返回工作方法；`guide(topic)` 返回其中一部分及示例：`steps`、`sweeps`、`arrays`、`measurements`、`conditions`、`priors`、`experiments`、`programs`、`setup`、`episodes`。同一份文本也是宿主插件安装的技能（`SKILL.md` 及其 `references/`）、MCP 资源 `iop://guides/{topic}`、终端里的 `iop guide [topic]`、`GET /v1/guides/{topic}`，以及 Python 和 TypeScript 客户端的 `guide(topic)`。文本在 [connect/skills/iop-lab](connect/skills/iop-lab/)；指南只提到确实存在的工具和选项，运行用例对此逐一核对。
+工具说明每一轮都会被读取，所以保持简短，细节放在任务需要时才读的指南里。`guide()` 返回工作方法；`guide(topic)` 返回其中一部分及示例：`steps`、`sweeps`、`arrays`、`measurements`、`conditions`、`priors`、`experiments`、`research`、`programs`、`setup`、`episodes`。同一份文本也是宿主插件安装的技能（`SKILL.md` 及其 `references/`）、MCP 资源 `iop://guides/{topic}`、终端里的 `iop guide [topic]`、`GET /v1/guides/{topic}`，以及 Python 和 TypeScript 客户端的 `guide(topic)`。文本在 [connect/skills/iop-lab](connect/skills/iop-lab/)；指南只提到确实存在的工具和选项，运行用例对此逐一核对。
 
 ### 提示
 
-支持 MCP 提示的宿主会把四条提示列为命令，由人用来开始一项工作；每条都写明用哪些工具、汇报什么。
+支持 MCP 提示的宿主会把六条提示列为命令，由人用来开始一项工作；每条都写明用哪些工具、汇报什么。
 
 | 提示 | 开始的工作 |
 |---|---|
 | `begin` | 读取实验室现状：哪些已就绪，哪些实验可以继续，哪些事需要人来做 |
+| `connect` | 接入本机仪器：发现、登记、写明约束，并按设备类别核对 |
 | `measure(goal)` | 从目标到测量结果：读取说明，优先用已保存的方法，先预览，提交一次，再读数组 |
+| `research(question)` | 围绕一个问题按回合研究：预期、实验、分析、决定，每次决定都有记录 |
 | `report(run_id)` | 只依据记录说明一次实验，包括失败和存疑的部分 |
 | `keep(run_id)` | 把一次实验的方法保存为 Standard Operation 或 Workflow Operation；提交时的步骤会直接放进提示里 |
 
-`begin` 始终提供；其余三条随 `experiments` 工具集提供。
+`begin` 始终提供；`connect` 随 `setup` 与 `experiments` 工具集提供，其余随 `experiments` 提供。
 
 ### 工具集
 

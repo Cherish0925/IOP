@@ -24,6 +24,8 @@ iop connect --name bench --local
 
 Agent 宿主可以安装 `iop connect` 生成的连接目录，或在兼容的 MCP 客户端中配置 `iop mcp`。支持本机、SSH 和远程 HTTP 服务。[连接说明](iop/connect/README.zh-CN.md)给出各宿主的具体方法。插件连接实验室服务，驱动和实验平台配置由该服务保留。Agent 从一份简洁的实验室概况和一段简短的工作方法开始，任务需要时再读取某台仪器的说明或某一部分工作的指南（`guide`，或终端里的 `iop guide`），每一轮携带的内容因此保持很小。
 
+这些步骤都可以交给 Agent 完成。[交给 Agent 的任务](iop/agent-setup.zh-CN.md#交给-agent-的任务)按阶段给出交给 Agent 会话的任务文字：在连接仪器的计算机上部署、接入仪器、描述平台、实验与研究。
+
 ## 各部分负责什么
 
 | 部分 | 职责 |

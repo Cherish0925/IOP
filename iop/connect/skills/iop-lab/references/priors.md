@@ -60,6 +60,7 @@ Each concept names what to observe and gives cases from several fields; the valu
 - **Order of bring-up.** Vacuum before high voltage, cooling before current, warm-up before calibration, calibration before alignment, alignment before signal: write the order the operator follows as `after`.
 - **Interaction between instruments.** One instrument disturbs another: heater switching and ground loops, pump vibration, radio-frequency pickup, a shared supply. Write the disturbing state as a condition of the disturbed measurement, or keep conflicting operations apart with shared resources.
 - **Sample state.** The sample is in the state the method assumes: equilibrated at temperature, degassed, not bleached or damaged by the measurement, at its concentration, viable. Use `kind` `sample_integrity`.
+- **Reference position.** Stages, goniometers, filter wheels and valves that count steps lose their position at power-off or after a stall: home them before positioning, and make every alignment that depends on the position come `after` the homing.
 - **History.** Backlash, magnetic and mechanical hysteresis, piezo creep: approach every position from the same side inside the saved operation that sets it, and say so in `note`.
 - **Computation.** A solver or a simulation has converged, a residual is below its tolerance, a mesh or time step no longer changes the result: conditions of a computed platform are written the same way.
 

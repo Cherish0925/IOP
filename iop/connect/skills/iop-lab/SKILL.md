@@ -1,11 +1,23 @@
 ---
 name: iop-lab
-description: Use IOP to operate instruments or scientific software, submit experiments, and retrieve laboratory results.
+description: Use IOP to connect instruments and scientific software, run automated experiments and research on them, and retrieve laboratory results.
 ---
 
 # Operate a laboratory
 
 The laboratory is a service that keeps instruments, platforms, methods, experiments and their records. It goes on working when this connection closes. These guides describe IOP 0.16.0; check `lab_context.service.version` and upgrade an older service while idle before using newer options.
+
+## Where the work stands
+
+Work on a laboratory moves through these stages; `lab_context` shows how far it has come. Start at the first that is not done.
+
+| Stage | Done when | Guide |
+| --- | --- | --- |
+| Instruments connected | Every instrument is registered with its limits and verified by its class | `setup` |
+| Platform described | Wiring, shared resources and the conditions its experiments rely on are saved, and the conditions hold | `conditions`, `priors` |
+| Automated experiments | An experiment submitted once runs to its result with the conditions it requires | `experiments`, `steps`, `sweeps` |
+| Research | Rounds of question, experiment, analysis and decision, each recorded | `research` |
+| Methods kept | A method used twice is a saved operation | `steps` |
 
 ## Working method
 
@@ -34,8 +46,9 @@ Each is short, with examples. Read one when the task needs it: `guide(topic)`, o
 | `conditions` | What an experiment relies on: `requires`, maintenance, `upkeep`, disturbances, data in doubt, tolerance forms |
 | `priors` | Writing what is known of an apparatus as conditions: the questions, the general forms, priors by concept across fields |
 | `experiments` | The three forms, following a run, failure and continuation, files, archives |
+| `research` | Rounds of question, design, run, analysis and decision; confirming, stopping, reporting |
 | `programs` | Writing a research program: the package, the SDK inside it, saved progress |
-| `setup` | Describing an instrument, platforms, limits, manual steps, held resources |
+| `setup` | Connecting an instrument in four steps, by how open it is and by what it does; platforms, limits, manual steps |
 | `episodes` | Research trajectories for learning |
 
 ## What keeps the record true

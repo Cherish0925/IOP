@@ -136,7 +136,7 @@ export class IOP {
   deviceHistory(device: string) { return this.request<{id: string; revision: number; definition: Record<string, unknown>}[]>(`/v1/devices/${encodeURIComponent(device)}/history`); }
   configureDevice(device: string, definition: Record<string, unknown>, expectedRevision: number) { return this.request(`/v1/devices/${encodeURIComponent(device)}/configuration`, { definition, expected_revision: expectedRevision }); }
   /** How to work with this laboratory, as text: the working method, or one part of it with examples. */
-  async guide(topic: 'overview' | 'steps' | 'sweeps' | 'arrays' | 'conditions' | 'priors' | 'experiments' | 'programs' | 'measurements' | 'setup' | 'episodes' = 'overview') {
+  async guide(topic: 'overview' | 'steps' | 'sweeps' | 'arrays' | 'conditions' | 'priors' | 'experiments' | 'research' | 'programs' | 'measurements' | 'setup' | 'episodes' = 'overview') {
     return (await this.request<{ topic: string; text: string }>('/v1/guides/' + topic)).text;
   }
   schema(name: 'device' | 'platform' | 'workflow' | 'instrument-profile' | 'operation') { return this.request<Record<string, unknown>>('/v1/schemas/' + name); }

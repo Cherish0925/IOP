@@ -19,7 +19,7 @@ PROMPT_STEPS = 8000
 # descriptions and the guide are always offered. Every tool belongs to exactly one toolset.
 ALWAYS = ('lab_context', 'describe_instrument', 'describe_platform', 'guide')
 # What an agent reads when a task needs it, so that tool descriptions, read on every turn, stay short.
-GUIDES = ('steps', 'sweeps', 'arrays', 'measurements', 'conditions', 'priors', 'experiments', 'programs', 'setup', 'episodes')
+GUIDES = ('steps', 'sweeps', 'arrays', 'measurements', 'conditions', 'priors', 'experiments', 'research', 'programs', 'setup', 'episodes')
 TOOLSETS = {
     'setup': ('configuration_schema', 'register_instrument', 'instrument_configuration', 'register_instruments',
               'discover_instruments', 'identify_instrument', 'instrument_profiles', 'save_instrument_profile',
@@ -204,8 +204,8 @@ def create_server(client, *, http=False, selection=None):
         return client.platform(platform)
 
     @tool(annotations=read_only)
-    def guide(topic: Literal['overview', 'steps', 'sweeps', 'arrays', 'measurements', 'conditions', 'priors', 'experiments', 'programs', 'setup', 'episodes'] = 'overview') -> str:
-        """Read the working method or one topic when needed. steps: ordering, bindings, saved operations. sweeps: scans, repeat, seek, stopping. arrays: selections and fits. measurements: averaging and shared errors. conditions: requires and upkeep. priors: physical operating conditions. experiments: submission and continuation. programs: SDK and saved progress. setup: instruments and platforms. episodes: research trajectories."""
+    def guide(topic: Literal['overview', 'steps', 'sweeps', 'arrays', 'measurements', 'conditions', 'priors', 'experiments', 'research', 'programs', 'setup', 'episodes'] = 'overview') -> str:
+        """Read the working method or one topic when needed. steps: ordering, bindings, saved operations. sweeps: scans, repeat, seek, stopping. arrays: selections and fits. measurements: averaging and shared errors. conditions: requires and upkeep. priors: physical operating conditions. experiments: submission and continuation. research: rounds of question and experiment. programs: SDK and saved progress. setup: instruments and platforms. episodes: research trajectories."""
         return guide_text(topic)
 
     @tool(annotations=read_only)
@@ -548,9 +548,9 @@ def create_server(client, *, http=False, selection=None):
             arguments.model_rebuild(force=True)
             registered.parameters['additionalProperties'] = False
 
-    def prompt(toolset=None, **options):
-        """Register a prompt a person starts work with, offered when the tools it names are."""
-        return server.prompt(**options) if toolset is None or toolset in chosen else lambda function: function
+    def prompt(*needed, **options):
+        """Register a prompt a person starts work with, offered when the toolsets of the tools it names are."""
+        return server.prompt(**options) if set(needed) <= set(chosen) else lambda function: function
 
     @prompt(title='Begin work in this laboratory')
     def begin() -> str:
@@ -559,6 +559,21 @@ def create_server(client, *, http=False, selection=None):
                 'saved operations there are, which experiments are open or can continue, and what its next_steps ask, of '
                 'you and of me. Continue work already authorized by the task. Ask for missing physical details or a '
                 'decision that changes its scope, and preserve existing experiments and configuration.')
+
+    @prompt('setup', 'experiments', title='Connect the instruments of this computer')
+    def connect() -> str:
+        """Find, register, constrain and verify each instrument, asking the person only for what cannot be read."""
+        return ('Connect the instruments of this laboratory as `guide` with topic setup describes. Read `lab_context` and '
+                'do what its next_steps ask. Start `discover_instruments`; identify each connection with '
+                '`identify_instrument` or a model description from `instrument_profiles`; choose its adapter by how open '
+                'the instrument is, take operations, units and ranges from its manual, and register it with '
+                '`register_instrument`. Add the limits of this setup, the measuring interval and status of its readings, '
+                'and its own conditions. Verify each in a short `submit_experiment` by its class: a sensor against a '
+                'known reference or its state without stimulus; an actuator by a small change inside its limits, '
+                'confirmed by its readback or by a sensor that sees the effect; a controller by a nearby setpoint that '
+                'the controlled quantity reaches and holds. Ask me only for what neither the instruments nor their '
+                'manuals tell: wiring, the sample, and what this setup tolerates. Report each instrument with its '
+                'operations, limits, conditions and what its verification showed.')
 
     @prompt('experiments', title='Plan and run a measurement')
     def measure(goal: str) -> str:
@@ -572,6 +587,19 @@ def create_server(client, *, http=False, selection=None):
                 'errors. Submit once with a request_id and follow it with `experiment_updates`. Read relevant arrays or '
                 'saved results. Report the measured quantity with units and uncertainty, the assumptions of the '
                 'reduction, any points in doubt, and what the goal still lacks.')
+
+    @prompt('experiments', title='Investigate a research question')
+    def research(question: str) -> str:
+        """Rounds of question, experiment, analysis and decision on the instruments of this laboratory."""
+        return ('Question: ' + question + '\n\nWork in rounds as `guide` with topic research describes. Read '
+                '`lab_context`, `describe_platform` and the saved operations. In each round write what you expect, design '
+                'one experiment that can decide it, preview it with `submit_experiment` and preview=true, submit it once '
+                'under one project and follow it with `experiment_updates`. Analyze the arrays with `read_array`, set '
+                'aside data in doubt, compare with what you expected, and record the decision and its reason with '
+                '`save_experiment_file`: answered, refine, revise or repair. Save a method you use twice with '
+                '`saved_operations`. Stop when the question is answered at the uncertainty it needs, or when the next '
+                'step needs what this laboratory cannot do. Report the answer with units and uncertainty, the run IDs '
+                'it rests on, the conditions they relied on, and what remains open.')
 
     @prompt('experiments', title='Report what an experiment observed')
     def report(run_id: str) -> str:

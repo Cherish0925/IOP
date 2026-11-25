@@ -1,5 +1,8 @@
 # Working on IOP
 
+To install IOP and work with instruments, rather than develop IOP, follow the
+[tasks for an agent](iop/agent-setup.md#tasks-for-an-agent).
+
 IOP runs instruments and experiment programs independently of their agent host.
 Start with [README.md](README.md); the runtime's responsibilities are in
 [architecture](docs/runtime/architecture.md). Operating guidance lives in
