@@ -264,19 +264,31 @@ class UpkeepCase(unittest.TestCase):
         self.engine.config['upkeep_interval_s'] = 3600
         self.client.configure_platform(chain(SOURCE, PATH, keep=False))
         self.client.maintain('chain')
-        run = self.client.submit([
-            {'id': 'scan', 'device': 'detector', 'operation': 'read', 'repeat': 2, 'retake': True},
-            {'id': 'steer', 'device': 'stage', 'operation': 'move_to', 'arguments': {'duration': 0},
-             'repeat': 2, 'retake': True,
-             'bindings': {'angle_deg': {'step': 'scan', 'view': {'field': 'signal'}, 'path': ['summary', 'mean']}}},
-            {'id': 'wait', 'device': 'aux', 'operation': 'wait', 'arguments': {'duration': 2}, 'after': ['steer']},
-        ], requires=['path.aligned'], upkeep=True)
-        self.until(lambda: any(op['step'] == 'wait' and op['state'] == 'running'
-                               for op in run.operations()['operations']))
-        # The experiment is still active. A verification discovers drift since before scan and steer ran.
-        WORLD['alignment'] = 0.5
-        self.client.maintain('chain', force=True)
-        info = run.wait(timeout=15)
+        started, release = threading.Event(), threading.Event()
+        driver, original = self.engine.devices['aux'], self.engine.devices['aux'].invoke
+
+        def pause(operation, arguments, cancelled):
+            started.set()
+            if not release.wait(30):
+                raise TimeoutError('Test did not release the pause')
+            return original(operation, arguments, cancelled)
+
+        with patch.object(driver, 'invoke', pause):
+            try:
+                run = self.client.submit([
+                    {'id': 'scan', 'device': 'detector', 'operation': 'read', 'repeat': 2, 'retake': True},
+                    {'id': 'steer', 'device': 'stage', 'operation': 'move_to', 'arguments': {'duration': 0},
+                     'repeat': 2, 'retake': True,
+                     'bindings': {'angle_deg': {'step': 'scan', 'view': {'field': 'signal'}, 'path': ['summary', 'mean']}}},
+                    {'id': 'wait', 'device': 'aux', 'operation': 'wait', 'arguments': {'duration': 0}, 'after': ['steer']},
+                ], requires=['path.aligned'], upkeep=True)
+                self.assertTrue(started.wait(10))
+                # Keep the experiment active until maintenance observes drift, regardless of host speed.
+                WORLD['alignment'] = 0.5
+                self.client.maintain('chain', force=True)
+            finally:
+                release.set()
+            info = run.wait(timeout=15)
         self.assertEqual(info['state'], 'completed', info.get('error'))
         operations = info['operation_records']
         self.assertTrue(any(op.get('retakes') and op['step'].startswith('scan.') for op in operations))
